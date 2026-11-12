@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from . import fcm_fix
 from .const import CONF_LISTEN_CREDENTIALS, DOMAIN, PLATFORMS
 from .coordinator import (
     RingConfigEntry,
@@ -33,6 +34,8 @@ def get_auth_user_agent() -> str:
 
 async def async_setup_entry(hass: HomeAssistant, entry: RingConfigEntry) -> None:
     """Set up a config entry."""
+    # firebase-messaging 0.4.5 stops on unpadded or multi-parameter Web Push headers.
+    fcm_fix.apply()
 
     def token_updater(token: dict[str, Any]) -> None:
         """Handle from async context when token is updated."""
