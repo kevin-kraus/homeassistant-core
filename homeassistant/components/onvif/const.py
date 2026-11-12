@@ -1,7 +1,10 @@
 """Constants for the onvif component."""
+
+import asyncio
+from datetime import timedelta
 import logging
 
-from httpx import RequestError
+import aiohttp
 from onvif.exceptions import ONVIFError
 from zeep.exceptions import Fault, TransportError
 
@@ -16,7 +19,12 @@ CONF_DEVICE_ID = "deviceid"
 CONF_HARDWARE = "hardware"
 CONF_SNAPSHOT_AUTH = "snapshot_auth"
 CONF_ENABLE_WEBHOOKS = "enable_webhooks"
+CONF_MORE_OPTIONS = "more_options"
 DEFAULT_ENABLE_WEBHOOKS = True
+
+# Bounds each snapshot auth probe during setup, tighter than the library's
+# default so a camera whose snapshot never completes does not stall setup
+SNAPSHOT_TIMEOUT = timedelta(seconds=10)
 
 ATTR_PAN = "pan"
 ATTR_TILT = "tilt"
@@ -47,4 +55,10 @@ SERVICE_PTZ = "ptz"
 
 # Some cameras don't support the GetServiceCapabilities call
 # and will return a 404 error which is caught by TransportError
-GET_CAPABILITIES_EXCEPTIONS = (ONVIFError, Fault, RequestError, TransportError)
+GET_CAPABILITIES_EXCEPTIONS = (
+    ONVIFError,
+    Fault,
+    aiohttp.ClientError,
+    asyncio.TimeoutError,
+    TransportError,
+)

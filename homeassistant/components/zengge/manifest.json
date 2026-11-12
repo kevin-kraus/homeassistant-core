@@ -3,7 +3,8 @@
   "name": "Zengge",
   "codeowners": ["@emontnemery"],
   "documentation": "https://www.home-assistant.io/integrations/zengge",
+  "integration_type": "system",
   "iot_class": "local_polling",
   "loggers": ["zengge"],
-  "requirements": ["bluepy==1.3.0", "zengge==0.2"]
+  "quality_scale": "legacy"
 }

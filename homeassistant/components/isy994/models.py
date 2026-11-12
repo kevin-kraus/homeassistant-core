@@ -1,5 +1,4 @@
 """The ISY/IoX integration data models."""
-from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import cast
@@ -11,17 +10,22 @@ from pyisy.nodes import Group, Node
 from pyisy.programs import Program
 from pyisy.variables import Variable
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.helpers.device_registry import DeviceInfo
 
 from .const import (
     CONF_NETWORK,
     NODE_AUX_PROP_PLATFORMS,
+    NODE_PARALLEL_PLATFORMS,
     NODE_PLATFORMS,
     PROGRAM_PLATFORMS,
     ROOT_NODE_PLATFORMS,
     VARIABLE_PLATFORMS,
 )
+from .event import EVENT_BUTTON_UNIQUE_ID_SUFFIX
+
+type IsyConfigEntry = ConfigEntry[IsyData]
 
 
 @dataclass
@@ -39,7 +43,7 @@ class IsyData:
 
     def __init__(self) -> None:
         """Initialize an empty ISY data class."""
-        self.nodes = {p: [] for p in NODE_PLATFORMS}
+        self.nodes = {p: [] for p in (*NODE_PLATFORMS, *NODE_PARALLEL_PLATFORMS)}
         self.root_nodes = {p: [] for p in ROOT_NODE_PLATFORMS}
         self.aux_properties = {p: [] for p in NODE_AUX_PROP_PLATFORMS}
         self.programs = {p: [] for p in PROGRAM_PLATFORMS}
@@ -92,5 +96,15 @@ class IsyData:
 
         for node in self.net_resources:
             current_unique_ids.add((Platform.BUTTON, self.uid_base(node)))
+
+        # Separate from the NODE_PLATFORMS loop above: event unique ids carry
+        # a suffix, since the same node also has a primary-platform entity.
+        for node in self.nodes[Platform.EVENT]:
+            current_unique_ids.add(
+                (
+                    Platform.EVENT,
+                    f"{self.uid_base(node)}{EVENT_BUTTON_UNIQUE_ID_SUFFIX}",
+                )
+            )
 
         return current_unique_ids

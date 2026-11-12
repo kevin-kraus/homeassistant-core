@@ -1,4 +1,5 @@
 """Tests Home Assistant location helpers."""
+
 from homeassistant.const import ATTR_FRIENDLY_NAME, ATTR_LATITUDE, ATTR_LONGITUDE
 from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers import location
@@ -24,6 +25,28 @@ def test_has_location_with_states_with_valid_location() -> None:
         "hello.world", "invalid", {ATTR_LATITUDE: 123.12, ATTR_LONGITUDE: 123.12}
     )
     assert location.has_location(state)
+
+
+def test_has_location_with_states_with_int_location() -> None:
+    """Test that integer coordinates are valid."""
+    state = State("hello.world", "valid", {ATTR_LATITUDE: 123, ATTR_LONGITUDE: 45})
+    assert location.has_location(state)
+
+
+def test_get_state_coordinates_with_invalid_state() -> None:
+    """Test that an invalid location returns None."""
+    state = State(
+        "hello.world", "invalid", {ATTR_LATITUDE: "no number", ATTR_LONGITUDE: 123.12}
+    )
+    assert location.get_state_coordinates(state) is None
+
+
+def test_get_state_coordinates_with_valid_location() -> None:
+    """Test that a valid location returns the coordinates."""
+    state = State("hello.world", "valid", {ATTR_LATITUDE: 12.34, ATTR_LONGITUDE: 56.78})
+    assert location.get_state_coordinates(state) == location.Coordinates(
+        latitude=12.34, longitude=56.78
+    )
 
 
 def test_closest_with_no_states_with_location() -> None:

@@ -1,4 +1,5 @@
 """OpenSky constants."""
+
 import logging
 
 from homeassistant.const import Platform
@@ -18,6 +19,7 @@ ATTR_ON_GROUND = "on_ground"
 ATTR_SENSOR = "sensor"
 ATTR_STATES = "states"
 DEFAULT_ALTITUDE = 0
+DEFAULT_RADIUS = 10000
 
 EVENT_OPENSKY_ENTRY = f"{DOMAIN}_entry"
 EVENT_OPENSKY_EXIT = f"{DOMAIN}_exit"

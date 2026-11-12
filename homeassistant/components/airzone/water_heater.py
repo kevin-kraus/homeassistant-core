@@ -1,7 +1,6 @@
 """Support for the Airzone water heater."""
-from __future__ import annotations
 
-from typing import Any, Final
+from typing import Any, Final, override
 
 from aioairzone.common import HotWaterOperation
 from aioairzone.const import (
@@ -9,7 +8,6 @@ from aioairzone.const import (
     API_ACS_POWER_MODE,
     API_ACS_SET_POINT,
     AZD_HOT_WATER,
-    AZD_NAME,
     AZD_OPERATION,
     AZD_OPERATIONS,
     AZD_TEMP,
@@ -28,10 +26,10 @@ from homeassistant.components.water_heater import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import DOMAIN, TEMP_UNIT_LIB_TO_HASS
-from .coordinator import AirzoneUpdateCoordinator
+from .const import TEMP_UNIT_LIB_TO_HASS
+from .coordinator import AirzoneConfigEntry, AirzoneUpdateCoordinator
 from .entity import AirzoneHotWaterEntity
 
 OPERATION_LIB_TO_HASS: Final[dict[HotWaterOperation, str]] = {
@@ -56,10 +54,12 @@ OPERATION_MODE_TO_DHW_PARAMS: Final[dict[str, dict[str, Any]]] = {
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: AirzoneConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Add Airzone sensors from a config_entry."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    """Add Airzone Water Heater from a config_entry."""
+    coordinator = entry.runtime_data
     if AZD_HOT_WATER in coordinator.data:
         async_add_entities([AirzoneWaterHeater(coordinator, entry)])
 
@@ -67,6 +67,7 @@ async def async_setup_entry(
 class AirzoneWaterHeater(AirzoneHotWaterEntity, WaterHeaterEntity):
     """Define an Airzone Water Heater."""
 
+    _attr_name = None
     _attr_supported_features = (
         WaterHeaterEntityFeature.TARGET_TEMPERATURE
         | WaterHeaterEntityFeature.ON_OFF
@@ -81,31 +82,34 @@ class AirzoneWaterHeater(AirzoneHotWaterEntity, WaterHeaterEntity):
         """Initialize Airzone water heater entity."""
         super().__init__(coordinator, entry)
 
-        self._attr_name = self.get_airzone_value(AZD_NAME)
         self._attr_unique_id = f"{self._attr_unique_id}_dhw"
         self._attr_operation_list = [
             OPERATION_LIB_TO_HASS[operation]
             for operation in self.get_airzone_value(AZD_OPERATIONS)
         ]
-        self._attr_temperature_unit = TEMP_UNIT_LIB_TO_HASS[
+        self._attr_native_temperature_unit = TEMP_UNIT_LIB_TO_HASS[
             self.get_airzone_value(AZD_TEMP_UNIT)
         ]
 
         self._async_update_attrs()
 
+    @override
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the water heater off."""
         await self._async_update_dhw_params({API_ACS_ON: 0})
 
+    @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the water heater off."""
         await self._async_update_dhw_params({API_ACS_ON: 1})
 
+    @override
     async def async_set_operation_mode(self, operation_mode: str) -> None:
         """Set new target operation mode."""
         params = OPERATION_MODE_TO_DHW_PARAMS.get(operation_mode, {})
         await self._async_update_dhw_params(params)
 
+    @override
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
         params: dict[str, Any] = {}
@@ -114,6 +118,7 @@ class AirzoneWaterHeater(AirzoneHotWaterEntity, WaterHeaterEntity):
         await self._async_update_dhw_params(params)
 
     @callback
+    @override
     def _handle_coordinator_update(self) -> None:
         """Update attributes when the coordinator updates."""
         self._async_update_attrs()
@@ -122,10 +127,10 @@ class AirzoneWaterHeater(AirzoneHotWaterEntity, WaterHeaterEntity):
     @callback
     def _async_update_attrs(self) -> None:
         """Update water heater attributes."""
-        self._attr_current_temperature = self.get_airzone_value(AZD_TEMP)
+        self._attr_native_current_temperature = self.get_airzone_value(AZD_TEMP)
         self._attr_current_operation = OPERATION_LIB_TO_HASS[
             self.get_airzone_value(AZD_OPERATION)
         ]
         self._attr_max_temp = self.get_airzone_value(AZD_TEMP_MAX)
         self._attr_min_temp = self.get_airzone_value(AZD_TEMP_MIN)
-        self._attr_target_temperature = self.get_airzone_value(AZD_TEMP_SET)
+        self._attr_native_target_temperature = self.get_airzone_value(AZD_TEMP_SET)

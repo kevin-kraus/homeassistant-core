@@ -1,9 +1,11 @@
 """The tests for the demo sensor component."""
+
 from datetime import timedelta
 from unittest.mock import patch
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
+from pytest_homeassistant.common import mock_restore_cache_with_extra_data
 
 from homeassistant import core as ha
 from homeassistant.components.demo import DOMAIN
@@ -11,8 +13,6 @@ from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
-
-from tests.common import mock_restore_cache_with_extra_data
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +25,7 @@ async def sensor_only() -> None:
         yield
 
 
-@pytest.mark.parametrize(("entity_id", "delta"), (("sensor.total_energy_kwh", 0.5),))
+@pytest.mark.parametrize(("entity_id", "delta"), [("sensor.total_energy_kwh", 0.5)])
 async def test_energy_sensor(
     hass: HomeAssistant, entity_id, delta, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -46,7 +46,7 @@ async def test_energy_sensor(
     assert state.state == str(delta)
 
 
-@pytest.mark.parametrize(("entity_id", "delta"), (("sensor.total_energy_kwh", 0.5),))
+@pytest.mark.parametrize(("entity_id", "delta"), [("sensor.total_energy_kwh", 0.5)])
 async def test_restore_state(
     hass: HomeAssistant, entity_id, delta, freezer: FrozenDateTimeFactory
 ) -> None:

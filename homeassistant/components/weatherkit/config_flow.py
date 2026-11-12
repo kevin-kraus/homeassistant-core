@@ -1,8 +1,7 @@
 """Adds config flow for WeatherKit."""
-from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
 from apple_weatherkit.client import (
     WeatherKitApiClient,
@@ -10,9 +9,9 @@ from apple_weatherkit.client import (
     WeatherKitApiClientCommunicationError,
     WeatherKitApiClientError,
 )
-import voluptuous as vol
+import probatio
 
-from homeassistant import config_entries, data_entry_flow
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_LATITUDE, CONF_LOCATION, CONF_LONGITUDE
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
@@ -31,16 +30,16 @@ from .const import (
     LOGGER,
 )
 
-DATA_SCHEMA = vol.Schema(
+DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_LOCATION): LocationSelector(
+        probatio.Required(CONF_LOCATION): LocationSelector(
             LocationSelectorConfig(radius=False, icon="")
         ),
         # Auth
-        vol.Required(CONF_KEY_ID): str,
-        vol.Required(CONF_SERVICE_ID): str,
-        vol.Required(CONF_TEAM_ID): str,
-        vol.Required(CONF_KEY_PEM): TextSelector(
+        probatio.Required(CONF_KEY_ID): str,
+        probatio.Required(CONF_SERVICE_ID): str,
+        probatio.Required(CONF_TEAM_ID): str,
+        probatio.Required(CONF_KEY_PEM): TextSelector(
             TextSelectorConfig(
                 multiline=True,
             )
@@ -53,19 +52,21 @@ class WeatherKitUnsupportedLocationError(Exception):
     """Error to indicate a location is unsupported."""
 
 
-class WeatherKitFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
+class WeatherKitFlowHandler(ConfigFlow, domain=DOMAIN):
     """Config flow for WeatherKit."""
 
     VERSION = 1
 
+    @override
     async def async_step_user(
         self,
         user_input: dict[str, Any] | None = None,
-    ) -> data_entry_flow.FlowResult:
+    ) -> ConfigFlowResult:
         """Handle a flow initialized by the user."""
         errors = {}
         if user_input is not None:
             try:
+                user_input[CONF_KEY_PEM] = self._fix_key_input(user_input[CONF_KEY_PEM])
                 await self._test_config(user_input)
             except WeatherKitUnsupportedLocationError as exception:
                 LOGGER.error(exception)
@@ -103,6 +104,25 @@ class WeatherKitFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=data_schema,
             errors=errors,
         )
+
+    def _fix_key_input(self, key_input: str) -> str:
+        """Fix common user errors with the key input."""
+        # OSes may sometimes turn two hyphens (--) into an em dash (—)
+        key_input = key_input.replace("—", "--")
+
+        # Trim whitespace and line breaks
+        key_input = key_input.strip()
+
+        # Make sure header and footer are present
+        header = "-----BEGIN PRIVATE KEY-----"
+        if not key_input.startswith(header):
+            key_input = f"{header}\n{key_input}"
+
+        footer = "-----END PRIVATE KEY-----"
+        if not key_input.endswith(footer):
+            key_input += f"\n{footer}"
+
+        return key_input
 
     async def _test_config(self, user_input: dict[str, Any]) -> None:
         """Validate credentials."""

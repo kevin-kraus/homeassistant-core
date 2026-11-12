@@ -1,8 +1,8 @@
 """Config flow for World Air Quality Index (WAQI) integration."""
-from __future__ import annotations
 
+from collections.abc import Mapping
 import logging
-from typing import Any
+from typing import Any, override
 
 from aiowaqi import (
     WAQIAirQuality,
@@ -10,81 +10,196 @@ from aiowaqi import (
     WAQIClient,
     WAQIConnectionError,
 )
-import voluptuous as vol
+import probatio
 
-from homeassistant.config_entries import ConfigFlow
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    ConfigSubentryFlow,
+    SubentryFlowResult,
+)
 from homeassistant.const import (
     CONF_API_KEY,
     CONF_LATITUDE,
     CONF_LOCATION,
     CONF_LONGITUDE,
-    CONF_NAME,
 )
-from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN
-from homeassistant.data_entry_flow import AbortFlow, FlowResult
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
 from homeassistant.helpers.selector import LocationSelector
-from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_STATION_NUMBER, DOMAIN, ISSUE_PLACEHOLDER
+from .const import CONF_STATION_NUMBER, DOMAIN, SUBENTRY_TYPE_STATION
 
 _LOGGER = logging.getLogger(__name__)
+
+CONF_MAP = "map"
+
+API_KEY_SCHEMA = probatio.Schema(
+    {probatio.Required(probatio.Secret(CONF_API_KEY)): str}
+)
+
+
+async def get_by_station_number(
+    client: WAQIClient, station_number: int
+) -> tuple[WAQIAirQuality | None, dict[str, str]]:
+    """Get measuring station by station number."""
+    errors: dict[str, str] = {}
+    measuring_station: WAQIAirQuality | None = None
+    try:
+        measuring_station = await client.get_by_station_number(station_number)
+    except WAQIConnectionError:
+        errors["base"] = "cannot_connect"
+    except Exception:
+        _LOGGER.exception("Unexpected exception")
+        errors["base"] = "unknown"
+    return measuring_station, errors
 
 
 class WAQIConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for World Air Quality Index (WAQI)."""
 
-    VERSION = 1
+    VERSION = 2
 
+    @classmethod
+    @callback
+    @override
+    def async_get_supported_subentry_types(
+        cls, config_entry: ConfigEntry
+    ) -> dict[str, type[ConfigSubentryFlow]]:
+        """Return subentries supported by this handler."""
+        return {SUBENTRY_TYPE_STATION: StationFlowHandler}
+
+    async def _async_validate_api_key(self, api_key: str) -> dict[str, str]:
+        """Validate the API key."""
+        client = WAQIClient(session=async_get_clientsession(self.hass))
+        client.authenticate(api_key)
+        try:
+            await client.get_by_ip()
+        except WAQIAuthenticationError:
+            return {"base": "invalid_auth"}
+        except WAQIConnectionError:
+            return {"base": "cannot_connect"}
+        except Exception:
+            _LOGGER.exception("Unexpected exception")
+            return {"base": "unknown"}
+        return {}
+
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            async with WAQIClient(
-                session=async_get_clientsession(self.hass)
-            ) as waqi_client:
-                waqi_client.authenticate(user_input[CONF_API_KEY])
-                location = user_input[CONF_LOCATION]
-                try:
-                    measuring_station: WAQIAirQuality = (
-                        await waqi_client.get_by_coordinates(
-                            location[CONF_LATITUDE], location[CONF_LONGITUDE]
-                        )
-                    )
-                except WAQIAuthenticationError:
-                    errors["base"] = "invalid_auth"
-                except WAQIConnectionError:
-                    errors["base"] = "cannot_connect"
-                except Exception as exc:  # pylint: disable=broad-except
-                    _LOGGER.exception(exc)
-                    errors["base"] = "unknown"
-                else:
-                    await self.async_set_unique_id(str(measuring_station.station_id))
-                    self._abort_if_unique_id_configured()
-                    return self.async_create_entry(
-                        title=measuring_station.city.name,
-                        data={
-                            CONF_API_KEY: user_input[CONF_API_KEY],
-                            CONF_STATION_NUMBER: measuring_station.station_id,
-                        },
-                    )
+            self._async_abort_entries_match({CONF_API_KEY: user_input[CONF_API_KEY]})
+            if not (
+                errors := await self._async_validate_api_key(user_input[CONF_API_KEY])
+            ):
+                return self.async_create_entry(
+                    title="World Air Quality Index",
+                    data={
+                        CONF_API_KEY: user_input[CONF_API_KEY],
+                    },
+                )
 
         return self.async_show_form(
             step_id="user",
+            data_schema=API_KEY_SCHEMA,
+            errors=errors,
+        )
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle reauthentication."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm reauthentication with a new API key."""
+        return await self._async_step_update_api_key(
+            "reauth_confirm", self._get_reauth_entry(), user_input
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle reconfiguration with a new API key."""
+        return await self._async_step_update_api_key(
+            "reconfigure", self._get_reconfigure_entry(), user_input
+        )
+
+    async def _async_step_update_api_key(
+        self, step_id: str, entry: ConfigEntry, user_input: dict[str, Any] | None
+    ) -> ConfigFlowResult:
+        """Validate a new API key and store it in an existing entry."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            # Skips the entry being updated, so re-entering its key is allowed
+            self._async_abort_entries_match({CONF_API_KEY: user_input[CONF_API_KEY]})
+            if not (
+                errors := await self._async_validate_api_key(user_input[CONF_API_KEY])
+            ):
+                # A loaded entry is reloaded by its update listener when data changes
+                reload = (
+                    entry.data[CONF_API_KEY] == user_input[CONF_API_KEY]
+                    or not entry.update_listeners
+                )
+                result = self.async_update_and_abort(
+                    entry, data_updates={CONF_API_KEY: user_input[CONF_API_KEY]}
+                )
+                if reload:
+                    self.hass.config_entries.async_schedule_reload(entry.entry_id)
+                return result
+
+        return self.async_show_form(
+            step_id=step_id, data_schema=API_KEY_SCHEMA, errors=errors
+        )
+
+
+class StationFlowHandler(ConfigSubentryFlow):
+    """Handle subentry flow."""
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """User flow to create a sensor subentry."""
+        return self.async_show_menu(
+            step_id="user",
+            menu_options=["map", "station_number"],
+        )
+
+    async def async_step_map(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Add measuring station via map."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            client = WAQIClient(session=async_get_clientsession(self.hass))
+            client.authenticate(self._get_entry().data[CONF_API_KEY])
+            try:
+                measuring_station = await client.get_by_coordinates(
+                    user_input[CONF_LOCATION][CONF_LATITUDE],
+                    user_input[CONF_LOCATION][CONF_LONGITUDE],
+                )
+            except WAQIConnectionError:
+                errors["base"] = "cannot_connect"
+            except Exception:
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
+            else:
+                return await self._async_create_entry(measuring_station)
+        return self.async_show_form(
+            step_id=CONF_MAP,
             data_schema=self.add_suggested_values_to_schema(
-                vol.Schema(
+                probatio.Schema(
                     {
-                        vol.Required(CONF_API_KEY): str,
-                        vol.Required(
-                            CONF_LOCATION,
-                        ): LocationSelector(),
+                        probatio.Required(CONF_LOCATION): LocationSelector(),
                     }
                 ),
-                user_input
-                or {
+                {
                     CONF_LOCATION: {
                         CONF_LATITUDE: self.hass.config.latitude,
                         CONF_LONGITUDE: self.hass.config.longitude,
@@ -94,42 +209,43 @@ class WAQIConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_import(self, import_config: ConfigType) -> FlowResult:
-        """Handle importing from yaml."""
-        await self.async_set_unique_id(str(import_config[CONF_STATION_NUMBER]))
-        try:
-            self._abort_if_unique_id_configured()
-        except AbortFlow as exc:
-            async_create_issue(
-                self.hass,
-                DOMAIN,
-                "deprecated_yaml_import_issue_already_configured",
-                breaks_in_ha_version="2024.4.0",
-                is_fixable=False,
-                severity=IssueSeverity.ERROR,
-                translation_key="deprecated_yaml_import_issue_already_configured",
-                translation_placeholders=ISSUE_PLACEHOLDER,
+    async def async_step_station_number(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Add measuring station via station number."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            client = WAQIClient(session=async_get_clientsession(self.hass))
+            client.authenticate(self._get_entry().data[CONF_API_KEY])
+            station_number = user_input[CONF_STATION_NUMBER]
+            measuring_station, errors = await get_by_station_number(
+                client, abs(station_number)
             )
-            raise exc
-
-        async_create_issue(
-            self.hass,
-            HOMEASSISTANT_DOMAIN,
-            f"deprecated_yaml_{DOMAIN}",
-            breaks_in_ha_version="2024.4.0",
-            is_fixable=False,
-            issue_domain=DOMAIN,
-            severity=IssueSeverity.WARNING,
-            translation_key="deprecated_yaml",
-            translation_placeholders={
-                "domain": DOMAIN,
-                "integration_title": "World Air Quality Index",
-            },
+            if not measuring_station:
+                measuring_station, _ = await get_by_station_number(
+                    client,
+                    abs(station_number) - station_number - station_number,
+                )
+            if measuring_station:
+                return await self._async_create_entry(measuring_station)
+        return self.async_show_form(
+            step_id=CONF_STATION_NUMBER,
+            data_schema=probatio.Schema({probatio.Required(CONF_STATION_NUMBER): int}),
+            errors=errors,
         )
+
+    async def _async_create_entry(
+        self, measuring_station: WAQIAirQuality
+    ) -> SubentryFlowResult:
+        station_id = str(measuring_station.station_id)
+        for entry in self.hass.config_entries.async_entries(DOMAIN):
+            for subentry in entry.subentries.values():
+                if subentry.unique_id == station_id:
+                    return self.async_abort(reason="already_configured")
         return self.async_create_entry(
-            title=import_config[CONF_NAME],
+            title=measuring_station.city.name,
             data={
-                CONF_API_KEY: import_config[CONF_API_KEY],
-                CONF_STATION_NUMBER: import_config[CONF_STATION_NUMBER],
+                CONF_STATION_NUMBER: measuring_station.station_id,
             },
+            unique_id=station_id,
         )

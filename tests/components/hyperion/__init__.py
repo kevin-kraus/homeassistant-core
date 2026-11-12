@@ -1,11 +1,11 @@
-"""Tests for the Hyperion component."""
-from __future__ import annotations
+"""Tests for the Hyperion integration."""
 
 from types import TracebackType
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 from hyperion import const
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components.hyperion import get_hyperion_unique_id
 from homeassistant.components.hyperion.const import CONF_PRIORITY, DOMAIN
@@ -13,8 +13,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-
-from tests.common import MockConfigEntry
 
 TEST_HOST = "test"
 TEST_PORT = const.DEFAULT_PORT_JSON + 1
@@ -123,9 +121,9 @@ def add_test_config_entry(
     hass: HomeAssistant,
     data: dict[str, Any] | None = None,
     options: dict[str, Any] | None = None,
-) -> ConfigEntry:
+) -> MockConfigEntry:
     """Add a test config entry."""
-    config_entry: MockConfigEntry = MockConfigEntry(
+    config_entry = MockConfigEntry(
         entry_id=TEST_CONFIG_ENTRY_ID,
         domain=DOMAIN,
         data=data

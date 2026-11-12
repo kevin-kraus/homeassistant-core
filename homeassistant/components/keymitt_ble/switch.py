@@ -1,43 +1,22 @@
 """Switch platform for MicroBot."""
-from __future__ import annotations
 
-from typing import Any
-
-import voluptuous as vol
+from typing import Any, override
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.entity_platform import (
-    AddEntitiesCallback,
-    async_get_current_platform,
-)
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import DOMAIN
-from .coordinator import MicroBotDataUpdateCoordinator
+from .coordinator import MicroBotConfigEntry
 from .entity import MicroBotEntity
-
-CALIBRATE = "calibrate"
-CALIBRATE_SCHEMA = {
-    vol.Required("depth"): cv.positive_int,
-    vol.Required("duration"): cv.positive_int,
-    vol.Required("mode"): vol.In(["normal", "invert", "toggle"]),
-}
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: MicroBotConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up MicroBot based on a config entry."""
-    coordinator: MicroBotDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([MicroBotBinarySwitch(coordinator, entry)])
-    platform = async_get_current_platform()
-    platform.async_register_entity_service(
-        CALIBRATE,
-        CALIBRATE_SCHEMA,
-        "async_calibrate",
-    )
+    async_add_entities([MicroBotBinarySwitch(entry.runtime_data)])
 
 
 class MicroBotBinarySwitch(MicroBotEntity, SwitchEntity):
@@ -45,17 +24,20 @@ class MicroBotBinarySwitch(MicroBotEntity, SwitchEntity):
 
     _attr_translation_key = "push"
 
+    @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the switch."""
         await self.coordinator.api.push_on()
         self.async_write_ha_state()
 
+    @override
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the switch."""
         await self.coordinator.api.push_off()
         self.async_write_ha_state()
 
     @property
+    @override
     def is_on(self) -> bool:
         """Return true if the switch is on."""
         return self.coordinator.api.is_on

@@ -1,4 +1,5 @@
 """The tests for the Group Binary Sensor platform."""
+
 from homeassistant.components.binary_sensor import DOMAIN as BINARY_SENSOR_DOMAIN
 from homeassistant.components.group import DOMAIN
 from homeassistant.const import (
@@ -13,7 +14,9 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 
 
-async def test_default_state(hass: HomeAssistant) -> None:
+async def test_default_state(
+    hass: HomeAssistant, entity_registry: er.EntityRegistry
+) -> None:
     """Test binary_sensor group default state."""
     hass.states.async_set("binary_sensor.kitchen", "on")
     hass.states.async_set("binary_sensor.bedroom", "on")
@@ -42,7 +45,6 @@ async def test_default_state(hass: HomeAssistant) -> None:
         "binary_sensor.bedroom",
     ]
 
-    entity_registry = er.async_get(hass)
     entry = entity_registry.async_get("binary_sensor.bedroom_group")
     assert entry
     assert entry.unique_id == "unique_identifier"
@@ -54,8 +56,10 @@ async def test_state_reporting_all(hass: HomeAssistant) -> None:
     """Test the state reporting in 'all' mode.
 
     The group state is unavailable if all group members are unavailable.
-    Otherwise, the group state is unknown if at least one group member is unknown or unavailable.
-    Otherwise, the group state is off if at least one group member is off.
+    Otherwise, the group state is unknown if at least one group member
+    is unknown or unavailable.
+    Otherwise, the group state is off if at least one group member is
+    off.
     Otherwise, the group state is on.
     """
     await async_setup_component(
@@ -145,7 +149,9 @@ async def test_state_reporting_all(hass: HomeAssistant) -> None:
     )
 
 
-async def test_state_reporting_any(hass: HomeAssistant) -> None:
+async def test_state_reporting_any(
+    hass: HomeAssistant, entity_registry: er.EntityRegistry
+) -> None:
     """Test the state reporting in 'any' mode.
 
     The group state is unavailable if all group members are unavailable.
@@ -171,7 +177,6 @@ async def test_state_reporting_any(hass: HomeAssistant) -> None:
     await hass.async_start()
     await hass.async_block_till_done()
 
-    entity_registry = er.async_get(hass)
     entry = entity_registry.async_get("binary_sensor.binary_sensor_group")
     assert entry
     assert entry.unique_id == "unique_identifier"

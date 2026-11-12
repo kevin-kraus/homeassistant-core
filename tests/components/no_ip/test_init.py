@@ -1,15 +1,15 @@
 """Test the NO-IP component."""
+
 from datetime import timedelta
 
 import pytest
+from pytest_homeassistant.common import async_fire_time_changed
+from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from homeassistant.components import no_ip
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 from homeassistant.util.dt import utcnow
-
-from tests.common import async_fire_time_changed
-from tests.test_util.aiohttp import AiohttpClientMocker
 
 DOMAIN = "test.example.com"
 
@@ -21,22 +21,20 @@ USERNAME = "abc@123.com"
 
 
 @pytest.fixture
-def setup_no_ip(hass, aioclient_mock):
+async def setup_no_ip(hass: HomeAssistant, aioclient_mock: AiohttpClientMocker) -> None:
     """Fixture that sets up NO-IP."""
     aioclient_mock.get(UPDATE_URL, params={"hostname": DOMAIN}, text="good 0.0.0.0")
 
-    hass.loop.run_until_complete(
-        async_setup_component(
-            hass,
-            no_ip.DOMAIN,
-            {
-                no_ip.DOMAIN: {
-                    "domain": DOMAIN,
-                    "username": USERNAME,
-                    "password": PASSWORD,
-                }
-            },
-        )
+    await async_setup_component(
+        hass,
+        no_ip.DOMAIN,
+        {
+            no_ip.DOMAIN: {
+                "domain": DOMAIN,
+                "username": USERNAME,
+                "password": PASSWORD,
+            }
+        },
     )
 
 

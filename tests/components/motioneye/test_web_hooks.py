@@ -1,7 +1,10 @@
 """Test the motionEye camera web hooks."""
+
+from contextlib import asynccontextmanager
 import copy
 from http import HTTPStatus
-from unittest.mock import AsyncMock, Mock, call, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
 from motioneye_client.const import (
     KEY_CAMERAS,
@@ -15,6 +18,13 @@ from motioneye_client.const import (
     KEY_WEB_HOOK_STORAGE_URL,
 )
 import pytest
+from pytest_homeassistant.common import (
+    MockConfigEntry,
+    async_capture_events,
+    async_fire_time_changed,
+)
+from pytest_homeassistant.typing import ClientSessionGenerator
+from yarl import URL
 
 from homeassistant.components.motioneye.const import (
     ATTR_EVENT_TYPE,
@@ -30,7 +40,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.network import NoURLAvailableError
 from homeassistant.setup import async_setup_component
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util
 
 from . import (
     TEST_CAMERA,
@@ -46,9 +56,6 @@ from . import (
     setup_mock_motioneye_config_entry,
 )
 
-from tests.common import MockConfigEntry, async_capture_events, async_fire_time_changed
-from tests.typing import ClientSessionGenerator
-
 WEB_HOOK_MOTION_DETECTED_QUERY_STRING = (
     "camera_id=%t&changed_pixels=%D&despeckle_labels=%Q&event=%v&fps=%{fps}"
     "&frame_number=%q&height=%h&host=%{host}&motion_center_x=%K&motion_center_y=%L"
@@ -63,14 +70,15 @@ WEB_HOOK_FILE_STORED_QUERY_STRING = (
 )
 
 
-async def test_setup_camera_without_webhook(hass: HomeAssistant) -> None:
+async def test_setup_camera_without_webhook(
+    hass: HomeAssistant, device_registry: dr.DeviceRegistry
+) -> None:
     """Test a camera with no webhook."""
     client = create_mock_motioneye_client()
     config_entry = await setup_mock_motioneye_config_entry(hass, client=client)
 
-    device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(
-        identifiers={TEST_CAMERA_DEVICE_IDENTIFIER}
+    device = device_registry.async_get_device_by_identifier(
+        TEST_CAMERA_DEVICE_IDENTIFIER, config_entry.entry_id
     )
     assert device
 
@@ -95,6 +103,7 @@ async def test_setup_camera_without_webhook(hass: HomeAssistant) -> None:
 
 async def test_setup_camera_with_wrong_webhook(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
 ) -> None:
     """Test camera with wrong web hook."""
     wrong_url = "http://wrong-url"
@@ -113,7 +122,6 @@ async def test_setup_camera_with_wrong_webhook(
     )
     assert not client.async_set_camera.called
 
-    # Update the options, which will trigger a reload with the new behavior.
     with patch(
         "homeassistant.components.motioneye.MotionEyeClient",
         return_value=client,
@@ -121,11 +129,11 @@ async def test_setup_camera_with_wrong_webhook(
         hass.config_entries.async_update_entry(
             config_entry, options={CONF_WEBHOOK_SET_OVERWRITE: True}
         )
+        await hass.config_entries.async_reload(config_entry.entry_id)
         await hass.async_block_till_done()
 
-    device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(
-        identifiers={TEST_CAMERA_DEVICE_IDENTIFIER}
+    device = device_registry.async_get_device_by_identifier(
+        TEST_CAMERA_DEVICE_IDENTIFIER, config_entry.entry_id
     )
     assert device
 
@@ -151,6 +159,7 @@ async def test_setup_camera_with_wrong_webhook(
 
 async def test_setup_camera_with_old_webhook(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
 ) -> None:
     """Verify that webhooks are overwritten if they are from this integration.
 
@@ -176,9 +185,8 @@ async def test_setup_camera_with_old_webhook(
     )
     assert client.async_set_camera.called
 
-    device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(
-        identifiers={TEST_CAMERA_DEVICE_IDENTIFIER}
+    device = device_registry.async_get_device_by_identifier(
+        TEST_CAMERA_DEVICE_IDENTIFIER, config_entry.entry_id
     )
     assert device
 
@@ -204,6 +212,7 @@ async def test_setup_camera_with_old_webhook(
 
 async def test_setup_camera_with_correct_webhook(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
 ) -> None:
     """Verify that webhooks are not overwritten if they are already correct."""
 
@@ -212,7 +221,6 @@ async def test_setup_camera_with_correct_webhook(
         hass, data={CONF_URL: TEST_URL, CONF_WEBHOOK_ID: "webhook_secret_id"}
     )
 
-    device_registry = dr.async_get(hass)
     device = device_registry.async_get_or_create(
         config_entry_id=config_entry.entry_id,
         identifiers={TEST_CAMERA_DEVICE_IDENTIFIER},
@@ -220,18 +228,18 @@ async def test_setup_camera_with_correct_webhook(
 
     cameras = copy.deepcopy(TEST_CAMERAS)
     cameras[KEY_CAMERAS][0][KEY_WEB_HOOK_NOTIFICATIONS_ENABLED] = True
-    cameras[KEY_CAMERAS][0][
-        KEY_WEB_HOOK_NOTIFICATIONS_HTTP_METHOD
-    ] = KEY_HTTP_METHOD_POST_JSON
+    cameras[KEY_CAMERAS][0][KEY_WEB_HOOK_NOTIFICATIONS_HTTP_METHOD] = (
+        KEY_HTTP_METHOD_POST_JSON
+    )
     cameras[KEY_CAMERAS][0][KEY_WEB_HOOK_NOTIFICATIONS_URL] = (
         "https://internal.url"
         + URL_WEBHOOK_PATH.format(webhook_id=config_entry.data[CONF_WEBHOOK_ID])
         + f"?{WEB_HOOK_MOTION_DETECTED_QUERY_STRING}&device_id={device.id}"
     )
     cameras[KEY_CAMERAS][0][KEY_WEB_HOOK_STORAGE_ENABLED] = True
-    cameras[KEY_CAMERAS][0][
-        KEY_WEB_HOOK_STORAGE_HTTP_METHOD
-    ] = KEY_HTTP_METHOD_POST_JSON
+    cameras[KEY_CAMERAS][0][KEY_WEB_HOOK_STORAGE_HTTP_METHOD] = (
+        KEY_HTTP_METHOD_POST_JSON
+    )
     cameras[KEY_CAMERAS][0][KEY_WEB_HOOK_STORAGE_URL] = (
         "https://internal.url"
         + URL_WEBHOOK_PATH.format(webhook_id=config_entry.data[CONF_WEBHOOK_ID])
@@ -278,12 +286,13 @@ async def test_setup_camera_with_no_home_assistant_urls(
 
 
 async def test_good_query(
-    hass: HomeAssistant, hass_client_no_auth: ClientSessionGenerator
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    hass_client_no_auth: ClientSessionGenerator,
 ) -> None:
     """Test good callbacks."""
     await async_setup_component(hass, "http", {"http": {}})
 
-    device_registry = dr.async_get(hass)
     client = create_mock_motioneye_client()
     config_entry = await setup_mock_motioneye_config_entry(hass, client=client)
 
@@ -377,12 +386,13 @@ async def test_bad_query_cannot_decode(
 
 
 async def test_event_media_data(
-    hass: HomeAssistant, hass_client_no_auth: ClientSessionGenerator
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    hass_client_no_auth: ClientSessionGenerator,
 ) -> None:
     """Test an event with a file path generates media data."""
     await async_setup_component(hass, "http", {"http": {}})
 
-    device_registry = dr.async_get(hass)
     client = create_mock_motioneye_client()
     config_entry = await setup_mock_motioneye_config_entry(hass, client=client)
 
@@ -394,9 +404,6 @@ async def test_event_media_data(
     hass_client = await hass_client_no_auth()
 
     events = async_capture_events(hass, f"{DOMAIN}.{EVENT_FILE_STORED}")
-
-    client.get_movie_url = Mock(return_value="http://movie-url")
-    client.get_image_url = Mock(return_value="http://image-url")
 
     # Test: Movie storage.
     client.is_file_type_image = Mock(return_value=False)
@@ -411,12 +418,49 @@ async def test_event_media_data(
     )
     assert resp.status == HTTPStatus.OK
     assert len(events) == 1
-    assert events[-1].data["file_url"] == "http://movie-url"
+    assert (
+        events[-1]
+        .data["file_url"]
+        .startswith(
+            f"https://internal.url/api/motioneye/media/{TEST_CONFIG_ENTRY_ID}/"
+            f"{TEST_CAMERA_ID}/movies/0/"
+        )
+    )
+    assert "?authSig=" in events[-1].data["file_url"]
     assert (
         events[-1].data["media_content_id"]
         == f"media-source://motioneye/{TEST_CONFIG_ENTRY_ID}#{device.id}#movies#/dir/one"
     )
-    assert client.get_movie_url.call_args == call(TEST_CAMERA_ID, "/dir/one")
+
+    # Verify the signed event file URL works without loading the media source.
+    class MockStreamContent:
+        async def iter_chunked(self, size: int):
+            yield b"movie"
+
+    @asynccontextmanager
+    async def media_stream(*args, **kwargs):
+        yield SimpleNamespace(
+            status=HTTPStatus.OK,
+            headers={"Content-Type": "video/mp4"},
+            content=MockStreamContent(),
+        )
+
+    stream_mock = MagicMock(side_effect=media_stream)
+    client.async_get_media_stream = stream_mock
+
+    file_url = URL(events[-1].data["file_url"])
+    response = await hass_client.get(file_url.path_qs)
+
+    assert response.status == HTTPStatus.OK
+    assert response.content_type == "video/mp4"
+    assert await response.read() == b"movie"
+    stream_mock.assert_called_once_with(
+        TEST_CAMERA_ID,
+        "/dir/one",
+        image=False,
+        preview=False,
+        range_header=None,
+    )
 
     # Test: Image storage.
     client.is_file_type_image = Mock(return_value=True)
@@ -431,12 +475,42 @@ async def test_event_media_data(
     )
     assert resp.status == HTTPStatus.OK
     assert len(events) == 2
-    assert events[-1].data["file_url"] == "http://image-url"
+    assert (
+        events[-1]
+        .data["file_url"]
+        .startswith(
+            f"https://internal.url/api/motioneye/media/{TEST_CONFIG_ENTRY_ID}/"
+            f"{TEST_CAMERA_ID}/images/0/"
+        )
+    )
+    assert "?authSig=" in events[-1].data["file_url"]
     assert (
         events[-1].data["media_content_id"]
         == f"media-source://motioneye/{TEST_CONFIG_ENTRY_ID}#{device.id}#images#/dir/two"
     )
-    assert client.get_image_url.call_args == call(TEST_CAMERA_ID, "/dir/two")
+
+    # Test: No Home Assistant URL available.
+    client.is_file_type_image = Mock(return_value=False)
+    with patch(
+        "homeassistant.components.motioneye.get_url", side_effect=NoURLAvailableError
+    ):
+        resp = await hass_client.post(
+            URL_WEBHOOK_PATH.format(webhook_id=config_entry.data[CONF_WEBHOOK_ID]),
+            json={
+                ATTR_DEVICE_ID: device.id,
+                ATTR_EVENT_TYPE: EVENT_FILE_STORED,
+                "file_path": f"/var/lib/motioneye/{TEST_CAMERA_NAME}/dir/no-url",
+                "file_type": "8",
+            },
+        )
+
+    assert resp.status == HTTPStatus.OK
+    assert len(events) == 3
+    assert "file_url" not in events[-1].data
+    assert (
+        events[-1].data["media_content_id"]
+        == f"media-source://motioneye/{TEST_CONFIG_ENTRY_ID}#{device.id}#movies#/dir/no-url"
+    )
 
     # Test: Invalid file type.
     resp = await hass_client.post(
@@ -449,7 +523,7 @@ async def test_event_media_data(
         },
     )
     assert resp.status == HTTPStatus.OK
-    assert len(events) == 3
+    assert len(events) == 4
     assert "file_url" not in events[-1].data
     assert "media_content_id" not in events[-1].data
 
@@ -464,7 +538,26 @@ async def test_event_media_data(
         },
     )
     assert resp.status == HTTPStatus.OK
-    assert len(events) == 4
+    assert len(events) == 5
+    assert "file_url" not in events[-1].data
+    assert "media_content_id" not in events[-1].data
+
+    # Test: File path cannot be compared with the root directory.
+    with patch(
+        "homeassistant.components.motioneye.os.path.commonpath", side_effect=ValueError
+    ):
+        resp = await hass_client.post(
+            URL_WEBHOOK_PATH.format(webhook_id=config_entry.data[CONF_WEBHOOK_ID]),
+            json={
+                ATTR_DEVICE_ID: device.id,
+                ATTR_EVENT_TYPE: EVENT_FILE_STORED,
+                "file_path": f"/var/lib/motioneye/{TEST_CAMERA_NAME}/dir/four",
+                "file_type": "8",
+            },
+        )
+
+    assert resp.status == HTTPStatus.OK
+    assert len(events) == 6
     assert "file_url" not in events[-1].data
     assert "media_content_id" not in events[-1].data
 
@@ -484,7 +577,7 @@ async def test_event_media_data(
         },
     )
     assert resp.status == HTTPStatus.OK
-    assert len(events) == 5
+    assert len(events) == 7
     assert "file_url" not in events[-1].data
     assert "media_content_id" not in events[-1].data
 
@@ -505,7 +598,7 @@ async def test_event_media_data(
         },
     )
     assert resp.status == HTTPStatus.OK
-    assert len(events) == 6
+    assert len(events) == 8
     assert "file_url" not in events[-1].data
     assert "media_content_id" not in events[-1].data
 
@@ -523,6 +616,6 @@ async def test_event_media_data(
         },
     )
     assert resp.status == HTTPStatus.OK
-    assert len(events) == 7
+    assert len(events) == 9
     assert "file_url" not in events[-1].data
     assert "media_content_id" not in events[-1].data

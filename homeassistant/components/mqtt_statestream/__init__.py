@@ -1,14 +1,15 @@
 """Publish simple item state changes via MQTT."""
+
 import json
 import logging
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components import mqtt
 from homeassistant.components.mqtt import valid_publish_topic
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, EVENT_STATE_CHANGED
-from homeassistant.core import Event, HomeAssistant, State, callback
-import homeassistant.helpers.config_validation as cv
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entityfilter import (
     INCLUDE_EXCLUDE_BASE_FILTER_SCHEMA,
     convert_include_exclude_filter,
@@ -23,17 +24,17 @@ CONF_PUBLISH_TIMESTAMPS = "publish_timestamps"
 
 DOMAIN = "mqtt_statestream"
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
         DOMAIN: INCLUDE_EXCLUDE_BASE_FILTER_SCHEMA.extend(
             {
-                vol.Required(CONF_BASE_TOPIC): valid_publish_topic,
-                vol.Optional(CONF_PUBLISH_ATTRIBUTES, default=False): cv.boolean,
-                vol.Optional(CONF_PUBLISH_TIMESTAMPS, default=False): cv.boolean,
+                probatio.Required(CONF_BASE_TOPIC): valid_publish_topic,
+                probatio.Optional(CONF_PUBLISH_ATTRIBUTES, default=False): cv.boolean,
+                probatio.Optional(CONF_PUBLISH_TIMESTAMPS, default=False): cv.boolean,
             }
         ),
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -54,9 +55,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     if not base_topic.endswith("/"):
         base_topic = f"{base_topic}/"
 
-    async def _state_publisher(evt: Event) -> None:
-        entity_id: str = evt.data["entity_id"]
-        new_state: State = evt.data["new_state"]
+    async def _state_publisher(evt: Event[EventStateChangedData]) -> None:
+        entity_id = evt.data["entity_id"]
+        new_state = evt.data["new_state"]
+        assert new_state
 
         payload = new_state.state
 
@@ -89,9 +91,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     @callback
     def _ha_started(hass: HomeAssistant) -> None:
         @callback
-        def _event_filter(evt: Event) -> bool:
-            entity_id: str = evt.data["entity_id"]
-            new_state: State | None = evt.data["new_state"]
+        def _event_filter(event_data: EventStateChangedData) -> bool:
+            entity_id = event_data["entity_id"]
+            new_state = event_data["new_state"]
             if new_state is None:
                 return False
             if not publish_filter(entity_id):

@@ -34,6 +34,7 @@ Icon
 
 # GITHUB Proposed Python stuff:
 *.py[cod]
+__pycache__
 
 # C extensions
 *.so
@@ -68,6 +69,7 @@ test-reports/
 test-results.xml
 test-output.xml
 pytest-*.txt
+junit.xml
 
 # Translations
 *.mo
@@ -77,7 +79,7 @@ pytest-*.txt
 .project
 .pydevproject
 
-.python-version
+.tool-versions
 
 # emacs auto backups
 *~
@@ -90,6 +92,7 @@ pip-selfcheck.json
 venv
 .venv
 Pipfile*
+uv.lock
 share/*
 /Scripts/
 
@@ -109,10 +112,8 @@ virtualization/vagrant/config
 !.vscode/cSpell.json
 !.vscode/extensions.json
 !.vscode/tasks.json
+!.vscode/settings.default.jsonc
 .env
-
-# Built docs
-docs/build
 
 # Windows Explorer
 desktop.ini
@@ -123,6 +124,9 @@ desktop.ini
 # mypy
 /.mypy_cache/*
 /.dmypy.json
+
+# Local copy of HACS custom integrations, made by script/sync_custom_integrations.py
+/.custom_integration_sources/
 
 # Secrets
 .lokalise_token
@@ -135,3 +139,19 @@ tmp_cache
 
 # python-language-server / Rope
 .ropeproject
+
+# Will be created from script/split_tests.py
+pytest_buckets.txt
+
+# Will be created from script/gen_integration_paths.py
+.integration_paths.yaml
+
+# AI tooling
+.claude/settings.local.json
+.claude/worktrees/
+.serena/
+
+# Playwright e2e tests
+tests/e2e/node_modules/
+tests/e2e/playwright-report/
+tests/e2e/test-results/

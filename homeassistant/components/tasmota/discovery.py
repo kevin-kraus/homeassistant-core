@@ -1,5 +1,4 @@
 """Support for Tasmota device discovery."""
-from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 import logging
@@ -44,7 +43,7 @@ TASMOTA_DISCOVERY_INSTANCE = "tasmota_discovery_instance"
 
 MQTT_TOPIC_URL = "https://tasmota.github.io/docs/Home-Assistant/#tasmota-integration"
 
-SetupDeviceCallback = Callable[[TasmotaDeviceConfig, str], Awaitable[None]]
+type SetupDeviceCallback = Callable[[TasmotaDeviceConfig, str], Awaitable[None]]
 
 
 def clear_discovery_hash(
@@ -67,6 +66,7 @@ def warn_if_topic_duplicated(
     command_topic: str,
     own_mac: str | None,
     own_device_config: TasmotaDeviceConfig,
+    config_entry_id: str,
 ) -> bool:
     """Log and create repairs issue if several devices share the same topic."""
     duplicated = False
@@ -96,6 +96,7 @@ def warn_if_topic_duplicated(
             hass,
             DOMAIN,
             issue_id,
+            config_entry_id=config_entry_id,
             data={
                 "key": "topic_duplicated",
                 "mac": " ".join([mac for mac, _ in offenders]),
@@ -210,6 +211,7 @@ async def async_start(  # noqa: C901
                 hass,
                 DOMAIN,
                 issue_id,
+                config_entry_id=config_entry.entry_id,
                 data={"key": "topic_no_prefix"},
                 is_fixable=False,
                 learn_more_url=MQTT_TOPIC_URL,
@@ -241,15 +243,20 @@ async def async_start(  # noqa: C901
                     continue
                 if len(macs) > 2:
                     # This device is no longer duplicated, update the issue
-                    warn_if_topic_duplicated(hass, issue_data["topic"], None, {})
+                    warn_if_topic_duplicated(
+                        hass, issue_data["topic"], None, {}, config_entry.entry_id
+                    )
                     continue
                 ir.async_delete_issue(hass, DOMAIN, issue.issue_id)
 
         if not payload:
             return
+        assert isinstance(command_topic, str)
 
         # Warn and add issues if there are duplicated topics
-        if warn_if_topic_duplicated(hass, command_topic, mac, tasmota_device_config):
+        if warn_if_topic_duplicated(
+            hass, command_topic, mac, tasmota_device_config, config_entry.entry_id
+        ):
             add_entities = False
 
         if not add_entities:
@@ -301,8 +308,8 @@ async def async_start(  # noqa: C901
 
         device_registry = dr.async_get(hass)
         entity_registry = er.async_get(hass)
-        device = device_registry.async_get_device(
-            connections={(dr.CONNECTION_NETWORK_MAC, mac)}
+        device = device_registry.async_get_device_by_connection(
+            (dr.CONNECTION_NETWORK_MAC, mac), config_entry.entry_id
         )
 
         if device is None:

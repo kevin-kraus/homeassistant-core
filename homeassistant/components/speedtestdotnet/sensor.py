@@ -1,20 +1,19 @@
 """Support for Speedtest.net internet speed testing sensor."""
-from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, cast, override
 
 from homeassistant.components.sensor import (
+    SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfDataRate, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -27,12 +26,11 @@ from .const import (
     ATTRIBUTION,
     DEFAULT_NAME,
     DOMAIN,
-    ICON,
 )
-from .coordinator import SpeedTestDataCoordinator
+from .coordinator import SpeedTestConfigEntry, SpeedTestDataCoordinator
 
 
-@dataclass
+@dataclass(frozen=True)
 class SpeedtestSensorEntityDescription(SensorEntityDescription):
     """Class describing Speedtest sensor entities."""
 
@@ -45,12 +43,14 @@ SENSOR_TYPES: tuple[SpeedtestSensorEntityDescription, ...] = (
         translation_key="ping",
         native_unit_of_measurement=UnitOfTime.MILLISECONDS,
         state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.DURATION,
     ),
     SpeedtestSensorEntityDescription(
         key="download",
         translation_key="download",
         native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
         state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.DATA_RATE,
         value=lambda value: round(value / 10**6, 2),
     ),
     SpeedtestSensorEntityDescription(
@@ -58,6 +58,7 @@ SENSOR_TYPES: tuple[SpeedtestSensorEntityDescription, ...] = (
         translation_key="upload",
         native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
         state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.DATA_RATE,
         value=lambda value: round(value / 10**6, 2),
     ),
 )
@@ -65,11 +66,11 @@ SENSOR_TYPES: tuple[SpeedtestSensorEntityDescription, ...] = (
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    config_entry: SpeedTestConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Speedtestdotnet sensors."""
-    speedtest_coordinator = hass.data[DOMAIN]
+    speedtest_coordinator = config_entry.runtime_data
     async_add_entities(
         SpeedtestSensor(speedtest_coordinator, description)
         for description in SENSOR_TYPES
@@ -82,7 +83,6 @@ class SpeedtestSensor(CoordinatorEntity[SpeedTestDataCoordinator], SensorEntity)
     entity_description: SpeedtestSensorEntityDescription
     _attr_attribution = ATTRIBUTION
     _attr_has_entity_name = True
-    _attr_icon = ICON
 
     def __init__(
         self,
@@ -103,6 +103,7 @@ class SpeedtestSensor(CoordinatorEntity[SpeedTestDataCoordinator], SensorEntity)
         )
 
     @property
+    @override
     def native_value(self) -> StateType:
         """Return native value for entity."""
         if self.coordinator.data:
@@ -111,6 +112,7 @@ class SpeedtestSensor(CoordinatorEntity[SpeedTestDataCoordinator], SensorEntity)
         return self._state
 
     @property
+    @override
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes."""
         if self.coordinator.data:

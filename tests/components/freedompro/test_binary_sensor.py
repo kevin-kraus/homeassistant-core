@@ -1,8 +1,10 @@
 """Tests for the Freedompro binary sensor."""
+
 from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
+from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.core import HomeAssistant
@@ -10,8 +12,6 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util.dt import utcnow
 
 from .conftest import get_states_response_for_uid
-
-from tests.common import async_fire_time_changed
 
 
 @pytest.mark.parametrize(
@@ -45,18 +45,19 @@ from tests.common import async_fire_time_changed
 )
 async def test_binary_sensor_get_state(
     hass: HomeAssistant,
-    init_integration,
+    entity_registry: er.EntityRegistry,
+    device_registry: dr.DeviceRegistry,
+    init_integration: MockConfigEntry,
     entity_id: str,
     uid: str,
     name: str,
     model: str,
 ) -> None:
     """Test states of the binary_sensor."""
-    init_integration
-    registry = er.async_get(hass)
-    registry_device = dr.async_get(hass)
 
-    device = registry_device.async_get_device(identifiers={("freedompro", uid)})
+    device = device_registry.async_get_device_by_identifier(
+        ("freedompro", uid), init_integration.entry_id
+    )
     assert device is not None
     assert device.identifiers == {("freedompro", uid)}
     assert device.manufacturer == "Freedompro"
@@ -67,7 +68,7 @@ async def test_binary_sensor_get_state(
     assert state
     assert state.attributes.get("friendly_name") == name
 
-    entry = registry.async_get(entity_id)
+    entry = entity_registry.async_get(entity_id)
     assert entry
     assert entry.unique_id == uid
 
@@ -84,7 +85,7 @@ async def test_binary_sensor_get_state(
         assert state
         assert state.attributes.get("friendly_name") == name
 
-        entry = registry.async_get(entity_id)
+        entry = entity_registry.async_get(entity_id)
         assert entry
         assert entry.unique_id == uid
 
@@ -110,7 +111,7 @@ async def test_binary_sensor_get_state(
         assert state
         assert state.attributes.get("friendly_name") == name
 
-        entry = registry.async_get(entity_id)
+        entry = entity_registry.async_get(entity_id)
         assert entry
         assert entry.unique_id == uid
 

@@ -1,10 +1,12 @@
 """Tests for Sentry integration."""
+
 import logging
 from unittest.mock import Mock, patch
 
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
-from homeassistant.components.sentry import get_channel, process_before_send
+from homeassistant.components.sentry import process_before_send
 from homeassistant.components.sentry.const import (
     CONF_DSN,
     CONF_ENVIRONMENT,
@@ -18,8 +20,6 @@ from homeassistant.components.sentry.const import (
 from homeassistant.const import __version__ as current_version
 from homeassistant.core import HomeAssistant
 
-from tests.common import MockConfigEntry
-
 
 async def test_setup_entry(hass: HomeAssistant) -> None:
     """Test integration setup from entry."""
@@ -29,15 +29,18 @@ async def test_setup_entry(hass: HomeAssistant) -> None:
     )
     entry.add_to_hass(hass)
 
-    with patch(
-        "homeassistant.components.sentry.AioHttpIntegration"
-    ) as sentry_aiohttp_mock, patch(
-        "homeassistant.components.sentry.SqlalchemyIntegration"
-    ) as sentry_sqlalchemy_mock, patch(
-        "homeassistant.components.sentry.LoggingIntegration"
-    ) as sentry_logging_mock, patch(
-        "homeassistant.components.sentry.sentry_sdk"
-    ) as sentry_mock:
+    with (
+        patch(
+            "homeassistant.components.sentry.AioHttpIntegration"
+        ) as sentry_aiohttp_mock,
+        patch(
+            "homeassistant.components.sentry.SqlalchemyIntegration"
+        ) as sentry_sqlalchemy_mock,
+        patch(
+            "homeassistant.components.sentry.LoggingIntegration"
+        ) as sentry_logging_mock,
+        patch("homeassistant.components.sentry.sentry_sdk") as sentry_mock,
+    ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
@@ -83,11 +86,12 @@ async def test_setup_entry_with_tracing(hass: HomeAssistant) -> None:
     )
     entry.add_to_hass(hass)
 
-    with patch("homeassistant.components.sentry.AioHttpIntegration"), patch(
-        "homeassistant.components.sentry.SqlalchemyIntegration"
-    ), patch("homeassistant.components.sentry.LoggingIntegration"), patch(
-        "homeassistant.components.sentry.sentry_sdk"
-    ) as sentry_mock:
+    with (
+        patch("homeassistant.components.sentry.AioHttpIntegration"),
+        patch("homeassistant.components.sentry.SqlalchemyIntegration"),
+        patch("homeassistant.components.sentry.LoggingIntegration"),
+        patch("homeassistant.components.sentry.sentry_sdk") as sentry_mock,
+    ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
@@ -101,20 +105,6 @@ async def test_setup_entry_with_tracing(hass: HomeAssistant) -> None:
         "traces_sample_rate",
     }
     assert call_args["traces_sample_rate"] == 0.5
-
-
-@pytest.mark.parametrize(
-    ("version", "channel"),
-    [
-        ("0.115.0.dev20200815", "nightly"),
-        ("0.115.0", "stable"),
-        ("0.115.0b4", "beta"),
-        ("0.115.0dev0", "dev"),
-    ],
-)
-async def test_get_channel(version: str, channel: str) -> None:
-    """Test if channel detection works from Home Assistant version number."""
-    assert get_channel(version) == channel
 
 
 async def test_process_before_send(hass: HomeAssistant) -> None:

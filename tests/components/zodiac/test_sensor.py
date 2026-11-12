@@ -1,8 +1,10 @@
 """The test for the zodiac sensor platform."""
+
 from datetime import datetime
 from unittest.mock import patch
 
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components.sensor import ATTR_OPTIONS, SensorDeviceClass
 from homeassistant.components.zodiac.const import (
@@ -22,9 +24,7 @@ from homeassistant.const import ATTR_DEVICE_CLASS
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
-import homeassistant.util.dt as dt_util
-
-from tests.common import MockConfigEntry
+from homeassistant.util import dt as dt_util
 
 DAY1 = datetime(2020, 11, 15, tzinfo=dt_util.UTC)
 DAY2 = datetime(2020, 4, 20, tzinfo=dt_util.UTC)
@@ -40,10 +40,15 @@ DAY3 = datetime(2020, 4, 21, tzinfo=dt_util.UTC)
     ],
 )
 async def test_zodiac_day(
-    hass: HomeAssistant, now: datetime, sign: str, element: str, modality: str
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    now: datetime,
+    sign: str,
+    element: str,
+    modality: str,
 ) -> None:
     """Test the zodiac sensor."""
-    hass.config.set_time_zone("UTC")
+    await hass.config.async_set_time_zone("UTC")
     MockConfigEntry(
         domain=DOMAIN,
     ).add_to_hass(hass)
@@ -74,7 +79,6 @@ async def test_zodiac_day(
         "virgo",
     ]
 
-    entity_registry = er.async_get(hass)
     entry = entity_registry.async_get("sensor.zodiac")
     assert entry
     assert entry.unique_id == "zodiac"

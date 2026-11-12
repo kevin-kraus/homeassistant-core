@@ -1,15 +1,17 @@
-"""Base class for Supla channels."""
-from __future__ import annotations
+"""Base class for SUPLA channels."""
 
 import logging
+from typing import override
 
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .coordinator import SuplaCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class SuplaEntity(CoordinatorEntity):
-    """Base class of a Supla Channel (an equivalent of HA's Entity)."""
+class SuplaEntity(CoordinatorEntity[SuplaCoordinator]):
+    """Base class of a SUPLA Channel (an equivalent of HA's Entity)."""
 
     def __init__(self, config, server, coordinator):
         """Init from config, hookup[ server and coordinator."""
@@ -24,22 +26,25 @@ class SuplaEntity(CoordinatorEntity):
         return self.coordinator.data.get(self.channel_id)
 
     @property
+    @override
     def unique_id(self) -> str:
         """Return a unique ID."""
-        return "supla-{}-{}".format(
-            self.channel_data["iodevice"]["gUIDString"].lower(),
-            self.channel_data["channelNumber"],
-        )
+        uid = self.channel_data["iodevice"]["gUIDString"].lower()
+        channel_number = self.channel_data["channelNumber"]
+        # Legacy format, kept as migrating existing unique IDs is not worth the risk
+        return f"supla-{uid}-{channel_number}"  # pylint: disable=home-assistant-entity-unique-id-redundant-domain
 
     @property
+    @override
     def name(self) -> str | None:
         """Return the name of the device."""
         return self.channel_data["caption"]
 
     @property
+    @override
     def available(self) -> bool:
         """Return True if entity is available."""
-        if self.channel_data is None:
+        if not super().available or self.channel_data is None:
             return False
         if (state := self.channel_data.get("state")) is None:
             return False
@@ -49,7 +54,7 @@ class SuplaEntity(CoordinatorEntity):
         """Run server action.
 
         Actions are currently hardcoded in components.
-        Supla's API enables autodiscovery
+        SUPLA's API enables autodiscovery
         """
         _LOGGER.debug(
             "Executing action %s on channel %d, params: %s",

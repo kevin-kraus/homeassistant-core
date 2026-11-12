@@ -1,30 +1,27 @@
 """Tests for the sensors provided by the Tailscale integration."""
-from homeassistant.components.binary_sensor import (
-    STATE_OFF,
-    STATE_ON,
-    BinarySensorDeviceClass,
-)
+
+from pytest_homeassistant.common import MockConfigEntry
+
+from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from homeassistant.components.tailscale.const import DOMAIN
 from homeassistant.const import (
     ATTR_DEVICE_CLASS,
     ATTR_FRIENDLY_NAME,
-    ATTR_ICON,
+    STATE_OFF,
+    STATE_ON,
     EntityCategory,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-from tests.common import MockConfigEntry
-
 
 async def test_tailscale_binary_sensors(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
     init_integration: MockConfigEntry,
 ) -> None:
     """Test the Tailscale binary sensors."""
-    entity_registry = er.async_get(hass)
-    device_registry = dr.async_get(hass)
-
     state = hass.states.get("binary_sensor.frencks_iphone_client")
     entry = entity_registry.async_get("binary_sensor.frencks_iphone_client")
     assert entry
@@ -34,22 +31,53 @@ async def test_tailscale_binary_sensors(
     assert state.state == STATE_ON
     assert state.attributes.get(ATTR_FRIENDLY_NAME) == "frencks-iphone Client"
     assert state.attributes.get(ATTR_DEVICE_CLASS) == BinarySensorDeviceClass.UPDATE
-    assert ATTR_ICON not in state.attributes
 
-    state = hass.states.get("binary_sensor.frencks_iphone_supports_hairpinning")
+    state = hass.states.get("binary_sensor.frencks_iphone_connected_to_control")
     entry = entity_registry.async_get(
-        "binary_sensor.frencks_iphone_supports_hairpinning"
+        "binary_sensor.frencks_iphone_connected_to_control"
     )
     assert entry
     assert state
-    assert entry.unique_id == "123456_client_supports_hair_pinning"
+    assert entry.unique_id == "123456_connected_to_control"
+    assert entry.entity_category == EntityCategory.DIAGNOSTIC
+    assert state.state == STATE_ON
+    assert (
+        state.attributes.get(ATTR_FRIENDLY_NAME)
+        == "frencks-iphone Connected to control"
+    )
+    assert (
+        state.attributes.get(ATTR_DEVICE_CLASS) == BinarySensorDeviceClass.CONNECTIVITY
+    )
+
+    state = hass.states.get("binary_sensor.host_no_connectivity_connected_to_control")
+    entry = entity_registry.async_get(
+        "binary_sensor.host_no_connectivity_connected_to_control"
+    )
+    assert entry
+    assert state
+    assert entry.unique_id == "123458_connected_to_control"
     assert entry.entity_category == EntityCategory.DIAGNOSTIC
     assert state.state == STATE_OFF
     assert (
         state.attributes.get(ATTR_FRIENDLY_NAME)
-        == "frencks-iphone Supports hairpinning"
+        == "host-no-connectivity Connected to control"
     )
-    assert state.attributes.get(ATTR_ICON) == "mdi:wan"
+    assert (
+        state.attributes.get(ATTR_DEVICE_CLASS) == BinarySensorDeviceClass.CONNECTIVITY
+    )
+
+    state = hass.states.get("binary_sensor.frencks_iphone_key_expiry_disabled")
+    entry = entity_registry.async_get(
+        "binary_sensor.frencks_iphone_key_expiry_disabled"
+    )
+    assert entry
+    assert state
+    assert entry.unique_id == "123456_key_expiry_disabled"
+    assert entry.entity_category == EntityCategory.DIAGNOSTIC
+    assert state.state == STATE_OFF
+    assert (
+        state.attributes.get(ATTR_FRIENDLY_NAME) == "frencks-iphone Key expiry disabled"
+    )
     assert ATTR_DEVICE_CLASS not in state.attributes
 
     state = hass.states.get("binary_sensor.frencks_iphone_supports_ipv6")
@@ -60,7 +88,6 @@ async def test_tailscale_binary_sensors(
     assert entry.entity_category == EntityCategory.DIAGNOSTIC
     assert state.state == STATE_OFF
     assert state.attributes.get(ATTR_FRIENDLY_NAME) == "frencks-iphone Supports IPv6"
-    assert state.attributes.get(ATTR_ICON) == "mdi:wan"
     assert ATTR_DEVICE_CLASS not in state.attributes
 
     state = hass.states.get("binary_sensor.frencks_iphone_supports_pcp")
@@ -71,7 +98,6 @@ async def test_tailscale_binary_sensors(
     assert entry.entity_category == EntityCategory.DIAGNOSTIC
     assert state.state == STATE_OFF
     assert state.attributes.get(ATTR_FRIENDLY_NAME) == "frencks-iphone Supports PCP"
-    assert state.attributes.get(ATTR_ICON) == "mdi:wan"
     assert ATTR_DEVICE_CLASS not in state.attributes
 
     state = hass.states.get("binary_sensor.frencks_iphone_supports_nat_pmp")
@@ -82,7 +108,6 @@ async def test_tailscale_binary_sensors(
     assert entry.entity_category == EntityCategory.DIAGNOSTIC
     assert state.state == STATE_OFF
     assert state.attributes.get(ATTR_FRIENDLY_NAME) == "frencks-iphone Supports NAT-PMP"
-    assert state.attributes.get(ATTR_ICON) == "mdi:wan"
     assert ATTR_DEVICE_CLASS not in state.attributes
 
     state = hass.states.get("binary_sensor.frencks_iphone_supports_udp")
@@ -93,7 +118,6 @@ async def test_tailscale_binary_sensors(
     assert entry.entity_category == EntityCategory.DIAGNOSTIC
     assert state.state == STATE_ON
     assert state.attributes.get(ATTR_FRIENDLY_NAME) == "frencks-iphone Supports UDP"
-    assert state.attributes.get(ATTR_ICON) == "mdi:wan"
     assert ATTR_DEVICE_CLASS not in state.attributes
 
     state = hass.states.get("binary_sensor.frencks_iphone_supports_upnp")
@@ -104,7 +128,6 @@ async def test_tailscale_binary_sensors(
     assert entry.entity_category == EntityCategory.DIAGNOSTIC
     assert state.state == STATE_OFF
     assert state.attributes.get(ATTR_FRIENDLY_NAME) == "frencks-iphone Supports UPnP"
-    assert state.attributes.get(ATTR_ICON) == "mdi:wan"
     assert ATTR_DEVICE_CLASS not in state.attributes
 
     assert entry.device_id

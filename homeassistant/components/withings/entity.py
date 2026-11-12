@@ -1,99 +1,71 @@
 """Base entity for Withings."""
-from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from typing import Any, override
 
-from withings_api.common import GetSleepSummaryField, MeasureType, NotifyAppli
+from aiowithings import Device
 
-from homeassistant.core import callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity import Entity, EntityDescription
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .common import DataManager, UpdateType
-from .const import DOMAIN, Measurement
-
-
-@dataclass
-class WithingsEntityDescriptionMixin:
-    """Mixin for describing withings data."""
-
-    measurement: Measurement
-    measure_type: NotifyAppli | GetSleepSummaryField | MeasureType
-    update_type: UpdateType
+from .const import DOMAIN
+from .coordinator import (
+    WithingsDataUpdateCoordinator,
+    WithingsDeviceDataUpdateCoordinator,
+)
 
 
-@dataclass
-class WithingsEntityDescription(EntityDescription, WithingsEntityDescriptionMixin):
-    """Immutable class for describing withings data."""
+class WithingsEntity[_T: WithingsDataUpdateCoordinator[Any]](CoordinatorEntity[_T]):
+    """Base class for withings entities."""
 
-
-class BaseWithingsSensor(Entity):
-    """Base class for withings sensors."""
-
-    _attr_should_poll = False
-    entity_description: WithingsEntityDescription
     _attr_has_entity_name = True
 
     def __init__(
-        self, data_manager: DataManager, description: WithingsEntityDescription
+        self,
+        coordinator: _T,
+        key: str,
     ) -> None:
-        """Initialize the Withings sensor."""
-        self._data_manager = data_manager
-        self.entity_description = description
-        self._attr_unique_id = (
-            f"withings_{data_manager.user_id}_{description.measurement.value}"
-        )
-        self._state_data: Any | None = None
+        """Initialize the Withings entity."""
+        super().__init__(coordinator)
+        # Legacy format, kept as migrating existing unique IDs is not worth the risk
+        self._attr_unique_id = f"withings_{coordinator.config_entry.unique_id}_{key}"  # pylint: disable=home-assistant-entity-unique-id-redundant-domain
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, str(data_manager.user_id))}, manufacturer="Withings"
+            identifiers={(DOMAIN, str(coordinator.config_entry.unique_id))},
+        )
+
+
+class WithingsDeviceEntity(WithingsEntity[WithingsDeviceDataUpdateCoordinator]):
+    """Base class for withings device entities."""
+
+    def __init__(
+        self,
+        coordinator: WithingsDeviceDataUpdateCoordinator,
+        device_id: str,
+        key: str,
+    ) -> None:
+        """Initialize the Withings entity."""
+        super().__init__(coordinator, key)
+        self._attr_unique_id = f"{device_id}_{key}"
+        self.device_id = device_id
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device_id)},
+            manufacturer="Withings",
+            name=self.device.raw_model,
+            model=self.device.raw_model,
+            via_device_id=dr.async_get_device_id_by_identifier(
+                coordinator.hass,
+                (DOMAIN, str(coordinator.config_entry.unique_id)),
+                config_entry_id=coordinator.config_entry.entry_id,
+            ),
         )
 
     @property
+    @override
     def available(self) -> bool:
         """Return True if entity is available."""
-        if self.entity_description.update_type == UpdateType.POLL:
-            return self._data_manager.poll_data_update_coordinator.last_update_success
+        return super().available and self.device_id in self.coordinator.data
 
-        if self.entity_description.update_type == UpdateType.WEBHOOK:
-            return self._data_manager.webhook_config.enabled and (
-                self.entity_description.measurement
-                in self._data_manager.webhook_update_coordinator.data
-            )
-
-        return True
-
-    @callback
-    def _on_poll_data_updated(self) -> None:
-        self._update_state_data(
-            self._data_manager.poll_data_update_coordinator.data or {}
-        )
-
-    @callback
-    def _on_webhook_data_updated(self) -> None:
-        self._update_state_data(
-            self._data_manager.webhook_update_coordinator.data or {}
-        )
-
-    def _update_state_data(self, data: dict[Measurement, Any]) -> None:
-        """Update the state data."""
-        self._state_data = data.get(self.entity_description.measurement)
-        self.async_write_ha_state()
-
-    async def async_added_to_hass(self) -> None:
-        """Register update dispatcher."""
-        if self.entity_description.update_type == UpdateType.POLL:
-            self.async_on_remove(
-                self._data_manager.poll_data_update_coordinator.async_add_listener(
-                    self._on_poll_data_updated
-                )
-            )
-            self._on_poll_data_updated()
-
-        elif self.entity_description.update_type == UpdateType.WEBHOOK:
-            self.async_on_remove(
-                self._data_manager.webhook_update_coordinator.async_add_listener(
-                    self._on_webhook_data_updated
-                )
-            )
-            self._on_webhook_data_updated()
+    @property
+    def device(self) -> Device:
+        """Return the Withings device."""
+        return self.coordinator.data[self.device_id]

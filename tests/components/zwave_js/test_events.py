@@ -1,13 +1,22 @@
-"""Test Z-Wave JS (value notification) events."""
+"""Test Z-Wave JS events."""
+
 from unittest.mock import AsyncMock
 
 import pytest
+from pytest_homeassistant.common import async_capture_events
 from zwave_js_server.const import CommandClass
 from zwave_js_server.event import Event
 
+from homeassistant.components.zwave_js.helpers import get_device_id
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 
-from tests.common import async_capture_events
+
+@pytest.fixture
+def platforms() -> list[str]:
+    """Fixture to specify platforms to test."""
+    return []
 
 
 async def test_scenes(
@@ -156,6 +165,7 @@ async def test_notifications(
             "source": "node",
             "event": "notification",
             "nodeId": 32,
+            "endpointIndex": 0,
             "ccId": 113,
             "args": {
                 "type": 6,
@@ -172,6 +182,7 @@ async def test_notifications(
     assert len(events) == 1
     assert events[0].data["home_id"] == client.driver.controller.home_id
     assert events[0].data["node_id"] == 32
+    assert events[0].data["endpoint"] == 0
     assert events[0].data["type"] == 6
     assert events[0].data["event"] == 5
     assert events[0].data["label"] == "Access Control"
@@ -187,6 +198,7 @@ async def test_notifications(
             "source": "node",
             "event": "notification",
             "nodeId": 32,
+            "endpointIndex": 0,
             "ccId": 111,
             "args": {
                 "eventType": 5,
@@ -204,6 +216,7 @@ async def test_notifications(
     assert len(events) == 2
     assert events[1].data["home_id"] == client.driver.controller.home_id
     assert events[1].data["node_id"] == 32
+    assert events[0].data["endpoint"] == 0
     assert events[1].data["event_type"] == 5
     assert events[1].data["event_type_label"] == "test1"
     assert events[1].data["data_type"] == 2
@@ -219,6 +232,7 @@ async def test_notifications(
             "source": "node",
             "event": "notification",
             "nodeId": 32,
+            "endpointIndex": 0,
             "ccId": 38,
             "args": {"eventType": 4, "eventTypeLabel": "test1", "direction": "up"},
         },
@@ -230,15 +244,48 @@ async def test_notifications(
     assert len(events) == 3
     assert events[2].data["home_id"] == client.driver.controller.home_id
     assert events[2].data["node_id"] == 32
+    assert events[0].data["endpoint"] == 0
     assert events[2].data["event_type"] == 4
     assert events[2].data["event_type_label"] == "test1"
     assert events[2].data["direction"] == "up"
     assert events[2].data["command_class"] == CommandClass.SWITCH_MULTILEVEL
     assert events[2].data["command_class_name"] == "Multilevel Switch"
 
+    # Publish fake Battery CC notification
+    event = Event(
+        type="notification",
+        data={
+            "source": "node",
+            "event": "notification",
+            "nodeId": 32,
+            "endpointIndex": 0,
+            "ccId": 128,
+            "args": {
+                "eventType": "battery low",
+                "urgency": 1,
+            },
+        },
+    )
 
+    node.receive_event(event)
+    await hass.async_block_till_done()
+    assert len(events) == 4
+    assert events[3].data["home_id"] == client.driver.controller.home_id
+    assert events[3].data["node_id"] == 32
+    assert events[3].data["endpoint"] == 0
+    assert events[3].data["event_type"] == "battery low"
+    assert events[3].data["urgency"] == 1
+    assert events[3].data["command_class"] == CommandClass.BATTERY
+    assert events[3].data["command_class_name"] == "Battery"
+
+
+@pytest.mark.parametrize("platforms", [[Platform.SWITCH]])
 async def test_value_updated(
-    hass: HomeAssistant, vision_security_zl7432, integration, client
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    vision_security_zl7432,
+    integration,
+    client,
 ) -> None:
     """Test value updated events."""
     node = vision_security_zl7432
@@ -270,6 +317,13 @@ async def test_value_updated(
     assert len(events) == 1
     assert events[0].data["home_id"] == client.driver.controller.home_id
     assert events[0].data["node_id"] == 7
+    # The event always carries the node device_id for backward compatibility.
+    node_device = device_registry.async_get_device_by_identifier(
+        get_device_id(client.driver, vision_security_zl7432),
+        integration.entry_id,
+    )
+    assert node_device
+    assert events[0].data["device_id"] == node_device.id
     assert events[0].data["entity_id"] == "switch.in_wall_dual_relay_switch"
     assert events[0].data["command_class"] == CommandClass.SWITCH_BINARY
     assert events[0].data["command_class_name"] == "Switch Binary"
@@ -320,6 +374,7 @@ async def test_power_level_notification(
             "source": "node",
             "event": "notification",
             "nodeId": 7,
+            "endpointIndex": 0,
             "ccId": 115,
             "args": {
                 "commandClassName": "Powerlevel",
@@ -341,7 +396,11 @@ async def test_power_level_notification(
 
 
 async def test_unknown_notification(
-    hass: HomeAssistant, hank_binary_switch, integration, client
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+    hank_binary_switch,
+    integration,
+    client,
 ) -> None:
     """Test behavior of unknown notification type events."""
     # just pick a random node to fake the notification event
@@ -351,8 +410,9 @@ async def test_unknown_notification(
     # by the lib. We will use a class that is guaranteed not to be recognized
     notification_obj = AsyncMock()
     notification_obj.node = node
-    with pytest.raises(TypeError):
-        node.emit("notification", {"notification": notification_obj})
+    node.emit("notification", {"notification": notification_obj})
+
+    assert f"Unhandled notification type: {notification_obj}" in caplog.text
 
     notification_events = async_capture_events(hass, "zwave_js_notification")
 
@@ -363,6 +423,7 @@ async def test_unknown_notification(
             "source": "node",
             "event": "notification",
             "nodeId": node.node_id,
+            "endpointIndex": 0,
             "ccId": 0,
             "args": {
                 "commandClassName": "No Operation",

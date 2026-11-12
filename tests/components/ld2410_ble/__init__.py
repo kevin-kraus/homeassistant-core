@@ -1,8 +1,11 @@
 """Tests for the LD2410 BLE Bluetooth integration."""
 
-from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
+from pytest_homeassistant.components.bluetooth import (
+    generate_advertisement_data,
+    generate_ble_device,
+)
 
-from tests.components.bluetooth import generate_advertisement_data, generate_ble_device
+from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 
 LD2410_BLE_DISCOVERY_INFO = BluetoothServiceInfoBleak(
     name="HLK-LD2410B_EEFF",
@@ -16,6 +19,7 @@ LD2410_BLE_DISCOVERY_INFO = BluetoothServiceInfoBleak(
     advertisement=generate_advertisement_data(),
     time=0,
     connectable=True,
+    tx_power=-127,
 )
 
 NOT_LD2410_BLE_DISCOVERY_INFO = BluetoothServiceInfoBleak(
@@ -33,4 +37,5 @@ NOT_LD2410_BLE_DISCOVERY_INFO = BluetoothServiceInfoBleak(
     advertisement=generate_advertisement_data(),
     time=0,
     connectable=True,
+    tx_power=-127,
 )

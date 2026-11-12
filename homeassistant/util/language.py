@@ -1,5 +1,4 @@
 """Helper methods for language selection in Home Assistant."""
-from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -50,6 +49,11 @@ def preferred_regions(
 
 def is_region(language: str, region: str | None) -> bool:
     """Return true if region is not known to be a script/code instead."""
+    language = language.casefold()
+    if region is not None:
+        # Script subtags are case-insensitive
+        region = region.title()
+
     if language == "es":
         return region != "419"
 
@@ -91,6 +95,10 @@ class Dialect:
             # Regions are upper-cased
             self.region = self.region.upper()
 
+        if self.code is not None:
+            # Scripts are title-cased
+            self.code = self.code.title()
+
     def score(
         self, dialect: Dialect, country: str | None = None
     ) -> tuple[float, float]:
@@ -103,20 +111,30 @@ class Dialect:
             return (-1, 0)
 
         is_exact_language = self.language == dialect.language
+        is_exact_language_and_code = is_exact_language and (self.code == dialect.code)
 
         if (self.region is None) and (dialect.region is None):
             # Weak match with no region constraint
             # Prefer exact language match
-            return (2 if is_exact_language else 1, 0)
+            if is_exact_language_and_code:
+                return (3, 0)
+
+            if is_exact_language:
+                return (2, 0)
+
+            return (1, 0)
 
         if (self.region is not None) and (dialect.region is not None):
             if self.region == dialect.region:
                 # Same language + region match
                 # Prefer exact language match
-                return (
-                    math.inf,
-                    1 if is_exact_language else 0,
-                )
+                if is_exact_language_and_code:
+                    return (math.inf, 2)
+
+                if is_exact_language:
+                    return (math.inf, 1)
+
+                return (math.inf, 0)
 
             # Regions are both set, but don't match
             return (0, 0)
@@ -136,13 +154,14 @@ class Dialect:
                 region_idx = pref_regions.index(self.region)
             elif dialect.region is not None:
                 region_idx = pref_regions.index(dialect.region)
-            else:
-                # Can't happen, but mypy is not smart enough
-                raise ValueError()
 
             # More preferred regions are at the front.
-            # Add 1 to boost above a weak match where no regions are set.
-            return (1 + (len(pref_regions) - region_idx), 0)
+            # Add 2 to boost above a weak match where no regions are set.
+            # Prefer the same script/code (sr-RS over sr-Latn-RS for sr).
+            return (
+                2 + (len(pref_regions) - region_idx),
+                int(is_exact_language_and_code),
+            )
         except ValueError:
             # Region was not in preferred list
             pass
@@ -160,12 +179,15 @@ class Dialect:
 
         if len(parts) > 1:
             region_or_code = parts[1]
-            if is_region(language, region_or_code):
+            subtags = SEPARATOR_RE.split(region_or_code, maxsplit=1)
+            if is_region(language, subtags[0]):
                 # US, GB, etc.
                 region = region_or_code
             else:
-                # Hant, 419, etc.
-                code = region_or_code
+                # Hant, 419, etc., optionally followed by a region (zh-Hant-TW)
+                code = subtags[0]
+                if len(subtags) > 1:
+                    region = subtags[1]
 
         return Dialect(
             language=language,
@@ -177,7 +199,10 @@ class Dialect:
 def matches(
     target: str, supported: Iterable[str], country: str | None = None
 ) -> list[str]:
-    """Return a sorted list of matching language tags based on a target tag and country hint."""
+    """Return a sorted list of matching language tags.
+
+    Based on a target tag and country hint.
+    """
     if target == MATCH_ALL:
         return list(supported)
 

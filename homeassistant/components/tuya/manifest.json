@@ -1,8 +1,10 @@
 {
   "domain": "tuya",
   "name": "Tuya",
-  "codeowners": ["@Tuya", "@zlinoliver", "@frenck"],
+  "categories": ["hubs_protocols.smart_home_hubs"],
+  "codeowners": ["@Tuya", "@zlinoliver"],
   "config_flow": true,
+  "connectivity": ["cloud"],
   "dependencies": ["ffmpeg"],
   "dhcp": [
     {
@@ -42,6 +44,9 @@
   "documentation": "https://www.home-assistant.io/integrations/tuya",
   "integration_type": "hub",
   "iot_class": "cloud_push",
-  "loggers": ["tuya_iot"],
-  "requirements": ["tuya-iot-py-sdk==0.6.6"]
+  "loggers": ["tuya_sharing"],
+  "requirements": [
+    "tuya-device-handlers==0.0.34",
+    "tuya-device-sharing-sdk==0.2.15"
+  ]
 }

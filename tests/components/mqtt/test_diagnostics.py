@@ -1,35 +1,27 @@
 """Test MQTT diagnostics."""
+
 import json
-from unittest.mock import ANY, patch
+from unittest.mock import ANY
 
 import pytest
-
-from homeassistant.components import mqtt
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
-
-from tests.common import async_fire_mqtt_message
-from tests.components.diagnostics import (
+from pytest_homeassistant.common import async_fire_mqtt_message
+from pytest_homeassistant.components.diagnostics import (
     get_diagnostics_for_config_entry,
     get_diagnostics_for_device,
 )
-from tests.typing import ClientSessionGenerator, MqttMockHAClientGenerator
+from pytest_homeassistant.typing import (
+    ClientSessionGenerator,
+    MqttMockHAClientGenerator,
+)
 
-default_config = {
-    "birth_message": {},
-    "broker": "mock-broker",
-}
+from homeassistant.components import mqtt
+from homeassistant.components.mqtt.const import DOMAIN
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-
-@pytest.fixture(autouse=True)
-def device_tracker_sensor_only():
-    """Only setup the device_tracker and sensor platforms to speed up tests."""
-    with patch(
-        "homeassistant.components.mqtt.PLATFORMS",
-        [Platform.DEVICE_TRACKER, Platform.SENSOR],
-    ):
-        yield
+default_entry_data = {"broker": "mock-broker", "protocol": "5"}
+default_entry_options = {"birth_message": {}}
 
 
 async def test_entry_diagnostics(
@@ -40,14 +32,14 @@ async def test_entry_diagnostics(
 ) -> None:
     """Test config entry diagnostics."""
     mqtt_mock = await mqtt_mock_entry()
-    config_entry = hass.config_entries.async_entries(mqtt.DOMAIN)[0]
+    config_entry = hass.config_entries.async_entries(DOMAIN)[0]
     mqtt_mock.connected = True
 
     await get_diagnostics_for_config_entry(hass, hass_client, config_entry)
     assert await get_diagnostics_for_config_entry(hass, hass_client, config_entry) == {
         "connected": True,
         "devices": [],
-        "mqtt_config": default_config,
+        "mqtt_config": {"data": default_entry_data, "options": default_entry_options},
         "mqtt_debug_info": {"entities": [], "triggers": []},
     }
 
@@ -75,12 +67,14 @@ async def test_entry_diagnostics(
     )
     await hass.async_block_till_done()
 
-    device_entry = device_registry.async_get_device(identifiers={("mqtt", "0AFFD2")})
+    device_entry = device_registry.async_get_device_by_identifier(
+        ("mqtt", "0AFFD2"), config_entry.entry_id
+    )
 
     expected_debug_info = {
         "entities": [
             {
-                "entity_id": "sensor.none_mqtt_sensor",
+                "entity_id": "sensor.mqtt_mqtt_sensor",
                 "subscriptions": [{"topic": "foobar/sensor", "messages": []}],
                 "discovery_data": {
                     "payload": config_sensor,
@@ -109,14 +103,15 @@ async def test_entry_diagnostics(
                 "disabled": False,
                 "disabled_by": None,
                 "entity_category": None,
-                "entity_id": "sensor.none_mqtt_sensor",
+                "entity_id": "sensor.mqtt_mqtt_sensor",
                 "icon": None,
                 "original_device_class": None,
                 "original_icon": None,
                 "state": {
-                    "attributes": {"friendly_name": "MQTT Sensor"},
-                    "entity_id": "sensor.none_mqtt_sensor",
+                    "attributes": {"friendly_name": "MQTT MQTT Sensor"},
+                    "entity_id": "sensor.mqtt_mqtt_sensor",
                     "last_changed": ANY,
+                    "last_reported": ANY,
                     "last_updated": ANY,
                     "state": "unknown",
                 },
@@ -124,14 +119,14 @@ async def test_entry_diagnostics(
             }
         ],
         "id": device_entry.id,
-        "name": None,
+        "name": "MQTT",
         "name_by_user": None,
     }
 
     assert await get_diagnostics_for_config_entry(hass, hass_client, config_entry) == {
         "connected": True,
         "devices": [expected_device],
-        "mqtt_config": default_config,
+        "mqtt_config": {"data": default_entry_data, "options": default_entry_options},
         "mqtt_debug_info": expected_debug_info,
     }
 
@@ -140,35 +135,44 @@ async def test_entry_diagnostics(
     ) == {
         "connected": True,
         "device": expected_device,
-        "mqtt_config": default_config,
+        "mqtt_config": {"data": default_entry_data, "options": default_entry_options},
         "mqtt_debug_info": expected_debug_info,
     }
 
 
 @pytest.mark.parametrize(
-    "mqtt_config_entry_data",
+    ("mqtt_config_entry_data", "mqtt_config_entry_options"),
     [
-        {
-            mqtt.CONF_BROKER: "mock-broker",
-            mqtt.CONF_BIRTH_MESSAGE: {},
-            mqtt.CONF_PASSWORD: "hunter2",
-            mqtt.CONF_USERNAME: "my_user",
-        }
+        (
+            {
+                mqtt.CONF_BROKER: "mock-broker",
+                mqtt.CONF_PROTOCOL: "5",
+                CONF_PASSWORD: "hunter2",
+                CONF_USERNAME: "my_user",
+            },
+            {
+                mqtt.CONF_BIRTH_MESSAGE: {},
+            },
+        )
     ],
 )
 async def test_redact_diagnostics(
     hass: HomeAssistant,
     device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
     hass_client: ClientSessionGenerator,
     mqtt_mock_entry: MqttMockHAClientGenerator,
 ) -> None:
     """Test redacting diagnostics."""
     mqtt_mock = await mqtt_mock_entry()
-    expected_config = dict(default_config)
-    expected_config["password"] = "**REDACTED**"
-    expected_config["username"] = "**REDACTED**"
+    expected_config = {
+        "data": dict(default_entry_data),
+        "options": dict(default_entry_options),
+    }
+    expected_config["data"]["password"] = "**REDACTED**"
+    expected_config["data"]["username"] = "**REDACTED**"
 
-    config_entry = hass.config_entries.async_entries(mqtt.DOMAIN)[0]
+    config_entry = hass.config_entries.async_entries(DOMAIN)[0]
     mqtt_mock.connected = True
 
     # Discover a device with a device tracker
@@ -190,12 +194,14 @@ async def test_redact_diagnostics(
     async_fire_mqtt_message(hass, "attributes-topic", location_data)
     await hass.async_block_till_done()
 
-    device_entry = device_registry.async_get_device(identifiers={("mqtt", "0AFFD2")})
+    device_entry = device_registry.async_get_device_by_identifier(
+        ("mqtt", "0AFFD2"), config_entry.entry_id
+    )
 
     expected_debug_info = {
         "entities": [
             {
-                "entity_id": "device_tracker.mqtt_unique",
+                "entity_id": "device_tracker.mqtt",
                 "subscriptions": [
                     {
                         "topic": "attributes-topic",
@@ -230,19 +236,23 @@ async def test_redact_diagnostics(
                 "disabled": False,
                 "disabled_by": None,
                 "entity_category": None,
-                "entity_id": "device_tracker.mqtt_unique",
+                "entity_id": "device_tracker.mqtt",
                 "icon": None,
                 "original_device_class": None,
                 "original_icon": None,
                 "state": {
                     "attributes": {
+                        "friendly_name": "MQTT",
                         "gps_accuracy": 1.5,
+                        "in_zones": ["zone.home"],
                         "latitude": "**REDACTED**",
                         "longitude": "**REDACTED**",
                         "source_type": "gps",
+                        "tracking_type": "position",
                     },
-                    "entity_id": "device_tracker.mqtt_unique",
+                    "entity_id": "device_tracker.mqtt",
                     "last_changed": ANY,
+                    "last_reported": ANY,
                     "last_updated": ANY,
                     "state": "home",
                 },
@@ -250,7 +260,7 @@ async def test_redact_diagnostics(
             }
         ],
         "id": device_entry.id,
-        "name": None,
+        "name": "MQTT",
         "name_by_user": None,
     }
 
@@ -269,4 +279,30 @@ async def test_redact_diagnostics(
         "device": expected_device,
         "mqtt_config": expected_config,
         "mqtt_debug_info": expected_debug_info,
+    }
+
+    # Disable the entity and remove the state
+    device_tracker_entry = er.async_entries_for_device(
+        entity_registry, device_entry.id
+    )[0]
+    entity_registry.async_update_entity(
+        device_tracker_entry.entity_id, disabled_by=er.RegistryEntryDisabler.USER
+    )
+    hass.states.async_remove(device_tracker_entry.entity_id)
+
+    # Assert disabled entries are filtered
+    assert await get_diagnostics_for_device(
+        hass, hass_client, config_entry, device_entry
+    ) == {
+        "connected": True,
+        "device": {
+            "id": device_entry.id,
+            "name": "MQTT",
+            "name_by_user": None,
+            "disabled": False,
+            "disabled_by": None,
+            "entities": [],
+        },
+        "mqtt_config": expected_config,
+        "mqtt_debug_info": {"entities": [], "triggers": []},
     }

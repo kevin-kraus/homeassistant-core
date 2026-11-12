@@ -1,28 +1,29 @@
 """The File Upload integration."""
-from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from queue import SimpleQueue
 import shutil
 import tempfile
 
 from aiohttp import BodyPartReader, web
-import janus
-import voluptuous as vol
+import probatio
 
-from homeassistant.components.http import HomeAssistantView
+from homeassistant.components.http import KEY_HASS, HomeAssistantView
 from homeassistant.components.http.data_validator import RequestDataValidator
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import raise_if_invalid_filename
+from homeassistant.util.hass_dict import HassKey
 from homeassistant.util.ulid import ulid_hex
 
 DOMAIN = "file_upload"
+_DATA: HassKey[FileUploadData] = HassKey(DOMAIN)
 
 ONE_MEGABYTE = 1024 * 1024
 MAX_SIZE = 100 * ONE_MEGABYTE
@@ -32,15 +33,19 @@ CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
 
 @contextmanager
-def process_uploaded_file(hass: HomeAssistant, file_id: str) -> Iterator[Path]:
+def process_uploaded_file(hass: HomeAssistant, file_id: str) -> Generator[Path]:
     """Get an uploaded file.
 
-    File is removed at the end of the context.
+    File is removed at the end of the context. Should be run on the executor thread pool.
+    Create a wrapper function and call that wrapper function using
+    hass.async_add_executor_job. Running this function directly by scheduling an executor
+    job will result in loop blocking teardown code not running on the executor but
+    rather in the loop.
     """
     if DOMAIN not in hass.data:
         raise ValueError("File does not exist")
 
-    file_upload_data: FileUploadData = hass.data[DOMAIN]
+    file_upload_data = hass.data[_DATA]
 
     if not file_upload_data.has_file(file_id):
         raise ValueError("File does not exist")
@@ -73,7 +78,8 @@ class FileUploadData:
             """Create temporary directory."""
             temp_dir = Path(tempfile.gettempdir()) / TEMP_DIR_NAME
 
-            # If it exists, it's an old one and Home Assistant didn't shut down correctly.
+            # If it exists, it's an old one and Home Assistant
+            # didn't shut down correctly.
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
 
@@ -103,6 +109,71 @@ class FileUploadData:
         return self.file_dir(file_id) / self.files[file_id]
 
 
+async def _receive_file_field(
+    hass: HomeAssistant,
+    file_field_reader: BodyPartReader,
+    file_path: Path,
+) -> None:
+    """Stream a multipart file field to file_path using an executor writer."""
+    queue: SimpleQueue[tuple[bytes, asyncio.Future[None] | None] | None] = SimpleQueue()
+
+    def _sync_queue_consumer() -> None:
+        file_path.parent.mkdir()
+        with file_path.open("wb") as file_handle:
+            while True:
+                if (_chunk_future := queue.get()) is None:
+                    break
+                _chunk, _future = _chunk_future
+                if _future is not None:
+                    hass.loop.call_soon_threadsafe(_future.set_result, None)
+                file_handle.write(_chunk)
+
+    fut: asyncio.Future[None] | None = None
+    cancelled: asyncio.CancelledError | None = None
+    try:
+        fut = hass.async_add_executor_job(_sync_queue_consumer)
+        chunks_sent = 0
+        while chunk := await file_field_reader.read_chunk(ONE_MEGABYTE):
+            chunks_sent += 1
+            if chunks_sent % 5 != 0:
+                queue.put_nowait((chunk, None))
+                continue
+
+            chunk_future = hass.loop.create_future()
+            queue.put_nowait((chunk, chunk_future))
+            await asyncio.wait((fut, chunk_future), return_when=asyncio.FIRST_COMPLETED)
+            if fut.done():
+                # The executor job failed
+                break
+    except asyncio.CancelledError as err:
+        # Remember a cancellation from the streaming loop so the join below re-raises
+        # it instead of a later writer error.
+        cancelled = err
+        raise
+    finally:
+        # Always terminate the queue consumer, also if the stream raised or the task
+        # was cancelled, otherwise awaiting the consumer future deadlocks.
+        queue.put_nowait(None)
+        if fut is not None:
+            # The executor thread can't be cancelled and is guaranteed to finish once
+            # it reads the sentinel queued above. Wait for it even if this task is
+            # cancelled: asyncio.wait neither cancels the future nor raises its
+            # exception, so the thread is fully done (file written and closed) before
+            # the caller cleans up. The loop re-waits through repeated cancellations.
+            while not fut.done():
+                try:
+                    await asyncio.wait({fut})
+                except asyncio.CancelledError as err:
+                    cancelled = err
+            if cancelled is not None:
+                # A cancellation takes precedence over a writer error; retrieve the
+                # writer result so its exception isn't flagged as never-retrieved.
+                if not fut.cancelled():
+                    fut.exception()
+                raise cancelled
+            fut.result()
+
+
 class FileUploadView(HomeAssistantView):
     """HTTP View to upload files."""
 
@@ -127,80 +198,62 @@ class FileUploadView(HomeAssistantView):
     async def _upload_file(self, request: web.Request) -> web.Response:
         """Handle uploaded file."""
         # Increase max payload
-        request._client_max_size = MAX_SIZE  # pylint: disable=protected-access
+        request._client_max_size = MAX_SIZE  # noqa: SLF001
 
         reader = await request.multipart()
         file_field_reader = await reader.next()
+        filename: str | None
 
         if (
             not isinstance(file_field_reader, BodyPartReader)
             or file_field_reader.name != "file"
-            or file_field_reader.filename is None
+            or (filename := file_field_reader.filename) is None
         ):
-            raise vol.Invalid("Expected a file")
+            raise probatio.Invalid("Expected a file")
 
         try:
-            raise_if_invalid_filename(file_field_reader.filename)
+            raise_if_invalid_filename(filename)
         except ValueError as err:
             raise web.HTTPBadRequest from err
 
-        hass: HomeAssistant = request.app["hass"]
+        hass = request.app[KEY_HASS]
         file_id = ulid_hex()
 
-        if DOMAIN not in hass.data:
-            hass.data[DOMAIN] = await FileUploadData.create(hass)
+        if _DATA not in hass.data:
+            hass.data[_DATA] = await FileUploadData.create(hass)
 
-        file_upload_data: FileUploadData = hass.data[DOMAIN]
+        file_upload_data = hass.data[_DATA]
         file_dir = file_upload_data.file_dir(file_id)
-        queue: janus.Queue[bytes | None] = janus.Queue()
 
-        def _sync_queue_consumer(
-            sync_q: janus.SyncQueue[bytes | None], _file_name: str
-        ) -> None:
-            file_dir.mkdir()
-            with (file_dir / _file_name).open("wb") as file_handle:
-                while True:
-                    _chunk = sync_q.get()
-                    if _chunk is None:
-                        break
-
-                    file_handle.write(_chunk)
-                    sync_q.task_done()
-
-        fut: asyncio.Future[None] | None = None
         try:
-            fut = hass.async_add_executor_job(
-                _sync_queue_consumer,
-                queue.sync_q,
-                file_field_reader.filename,
+            await _receive_file_field(hass, file_field_reader, file_dir / filename)
+        except Exception, asyncio.CancelledError:
+            # Upload failed: _receive_file_field has joined the writer, which created
+            # the directory and closed the file, so removing the directory now cannot
+            # race the writer. ignore_errors covers a failure that happened before the
+            # directory was created.
+            await hass.async_add_executor_job(
+                lambda: shutil.rmtree(file_dir, ignore_errors=True)
             )
+            raise
 
-            while chunk := await file_field_reader.read_chunk(ONE_MEGABYTE):
-                queue.async_q.put_nowait(chunk)
-                if queue.async_q.qsize() > 5:  # Allow up to 5 MB buffer size
-                    await queue.async_q.join()
-            queue.async_q.put_nowait(None)  # terminate queue consumer
-        finally:
-            if fut is not None:
-                await fut
-
-        file_upload_data.files[file_id] = file_field_reader.filename
+        file_upload_data.files[file_id] = filename
 
         return self.json({"file_id": file_id})
 
-    @RequestDataValidator({vol.Required("file_id"): str})
+    @RequestDataValidator({probatio.Required("file_id"): str})
     async def delete(self, request: web.Request, data: dict[str, str]) -> web.Response:
         """Delete a file."""
-        hass: HomeAssistant = request.app["hass"]
+        hass = request.app[KEY_HASS]
 
         if DOMAIN not in hass.data:
-            raise web.HTTPNotFound()
+            raise web.HTTPNotFound
 
         file_id = data["file_id"]
-        file_upload_data: FileUploadData = hass.data[DOMAIN]
+        file_upload_data = hass.data[_DATA]
 
         if file_upload_data.files.pop(file_id, None) is None:
-            raise web.HTTPNotFound()
+            raise web.HTTPNotFound
 
         await hass.async_add_executor_job(
             lambda: shutil.rmtree(file_upload_data.file_dir(file_id))

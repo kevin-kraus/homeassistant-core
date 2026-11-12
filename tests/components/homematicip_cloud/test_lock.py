@@ -1,34 +1,21 @@
 """Tests for HomematicIP Cloud locks."""
+
 from unittest.mock import patch
 
-from homematicip.base.enums import LockState, MotorState
+from homematicip.base.enums import LockState as HomematicLockState, MotorState
+from homematicip.connection.rest_connection import RestResult
 import pytest
 
-from homeassistant.components.homematicip_cloud import DOMAIN as HMIPC_DOMAIN
-from homeassistant.components.lock import (
-    DOMAIN,
-    STATE_LOCKING,
-    STATE_UNLOCKING,
-    LockEntityFeature,
-)
+from homeassistant.components.lock import LockEntityFeature, LockState
 from homeassistant.const import ATTR_SUPPORTED_FEATURES
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.setup import async_setup_component
 
-from .helper import async_manipulate_test_data, get_and_check_entity_basics
-
-
-async def test_manually_configured_platform(hass: HomeAssistant) -> None:
-    """Test that we do not set up an access point."""
-    assert await async_setup_component(
-        hass, DOMAIN, {DOMAIN: {"platform": HMIPC_DOMAIN}}
-    )
-    assert not hass.data.get(HMIPC_DOMAIN)
+from .helper import HomeFactory, async_manipulate_test_data, get_and_check_entity_basics
 
 
 async def test_hmip_doorlockdrive(
-    hass: HomeAssistant, default_mock_hap_factory
+    hass: HomeAssistant, default_mock_hap_factory: HomeFactory
 ) -> None:
     """Test HomematicipDoorLockDrive."""
     entity_id = "lock.haustuer"
@@ -50,8 +37,8 @@ async def test_hmip_doorlockdrive(
         {"entity_id": entity_id},
         blocking=True,
     )
-    assert hmip_device.mock_calls[-1][0] == "set_lock_state"
-    assert hmip_device.mock_calls[-1][1] == (LockState.OPEN,)
+    assert hmip_device.mock_calls[-1][0] == "set_lock_state_async"
+    assert hmip_device.mock_calls[-1][1] == (HomematicLockState.OPEN,)
 
     await hass.services.async_call(
         "lock",
@@ -59,8 +46,8 @@ async def test_hmip_doorlockdrive(
         {"entity_id": entity_id},
         blocking=True,
     )
-    assert hmip_device.mock_calls[-1][0] == "set_lock_state"
-    assert hmip_device.mock_calls[-1][1] == (LockState.LOCKED,)
+    assert hmip_device.mock_calls[-1][0] == "set_lock_state_async"
+    assert hmip_device.mock_calls[-1][1] == (HomematicLockState.LOCKED,)
 
     await hass.services.async_call(
         "lock",
@@ -69,24 +56,26 @@ async def test_hmip_doorlockdrive(
         blocking=True,
     )
 
-    assert hmip_device.mock_calls[-1][0] == "set_lock_state"
-    assert hmip_device.mock_calls[-1][1] == (LockState.UNLOCKED,)
+    assert hmip_device.mock_calls[-1][0] == "set_lock_state_async"
+    assert hmip_device.mock_calls[-1][1] == (HomematicLockState.UNLOCKED,)
 
     await async_manipulate_test_data(
         hass, hmip_device, "motorState", MotorState.CLOSING
     )
     ha_state = hass.states.get(entity_id)
-    assert ha_state.state == STATE_LOCKING
+    assert ha_state.state == LockState.LOCKING
 
     await async_manipulate_test_data(
         hass, hmip_device, "motorState", MotorState.OPENING
     )
     ha_state = hass.states.get(entity_id)
-    assert ha_state.state == STATE_UNLOCKING
+    assert ha_state.state == LockState.UNLOCKING
 
 
 async def test_hmip_doorlockdrive_handle_errors(
-    hass: HomeAssistant, default_mock_hap_factory
+    hass: HomeAssistant,
+    default_mock_hap_factory: HomeFactory,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Test HomematicipDoorLockDrive."""
     entity_id = "lock.haustuer"
@@ -96,18 +85,16 @@ async def test_hmip_doorlockdrive_handle_errors(
         test_devices=[entity_name]
     )
     with patch(
-        "homematicip.aio.device.AsyncDoorLockDrive.set_lock_state",
-        return_value={
-            "errorCode": "INVALID_NUMBER_PARAMETER_VALUE",
-            "minValue": 0.0,
-            "maxValue": 1.01,
-        },
+        "homematicip.device.DoorLockDrive.set_lock_state_async",
+        return_value=RestResult(
+            status=400, text='{"errorCode": "CLIENT_ACCESS_DENIED"}'
+        ),
     ):
         get_and_check_entity_basics(
             hass, mock_hap, entity_id, entity_name, device_model
         )
 
-        with pytest.raises(HomeAssistantError):
+        with pytest.raises(HomeAssistantError, match="CLIENT_ACCESS_DENIED"):
             await hass.services.async_call(
                 "lock",
                 "open",
@@ -115,7 +102,7 @@ async def test_hmip_doorlockdrive_handle_errors(
                 blocking=True,
             )
 
-        with pytest.raises(HomeAssistantError):
+        with pytest.raises(HomeAssistantError, match="CLIENT_ACCESS_DENIED"):
             await hass.services.async_call(
                 "lock",
                 "lock",
@@ -123,10 +110,12 @@ async def test_hmip_doorlockdrive_handle_errors(
                 blocking=True,
             )
 
-        with pytest.raises(HomeAssistantError):
+        with pytest.raises(HomeAssistantError, match="CLIENT_ACCESS_DENIED"):
             await hass.services.async_call(
                 "lock",
                 "unlock",
                 {"entity_id": entity_id},
                 blocking=True,
             )
+
+    assert '{"errorCode": "CLIENT_ACCESS_DENIED"}' in caplog.text

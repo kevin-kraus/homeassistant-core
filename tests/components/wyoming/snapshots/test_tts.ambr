@@ -10,7 +10,7 @@
     }),
   ])
 # ---
-# name: test_get_tts_audio_raw
+# name: test_get_tts_audio_different_formats
   list([
     dict({
       'data': dict({
@@ -18,6 +18,54 @@
       }),
       'payload': None,
       'type': 'synthesize',
+    }),
+  ])
+# ---
+# name: test_get_tts_audio_different_formats.1
+  list([
+    dict({
+      'data': dict({
+        'text': 'Hello world',
+      }),
+      'payload': None,
+      'type': 'synthesize',
+    }),
+  ])
+# ---
+# name: test_get_tts_audio_streaming
+  list([
+    dict({
+      'data': dict({
+      }),
+      'payload': None,
+      'type': 'synthesize-start',
+    }),
+    dict({
+      'data': dict({
+        'text': 'Hello ',
+      }),
+      'payload': None,
+      'type': 'synthesize-chunk',
+    }),
+    dict({
+      'data': dict({
+        'text': 'Word.',
+      }),
+      'payload': None,
+      'type': 'synthesize-chunk',
+    }),
+    dict({
+      'data': dict({
+        'text': 'Hello Word.',
+      }),
+      'payload': None,
+      'type': 'synthesize',
+    }),
+    dict({
+      'data': dict({
+      }),
+      'payload': None,
+      'type': 'synthesize-stop',
     }),
   ])
 # ---

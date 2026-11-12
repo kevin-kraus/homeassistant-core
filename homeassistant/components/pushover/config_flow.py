@@ -1,24 +1,24 @@
 """Config flow for pushover integration."""
-from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
+import probatio
 from pushover_complete import BadAPIRequestError, PushoverAPI
-import voluptuous as vol
 
-from homeassistant import config_entries
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_API_KEY, CONF_NAME
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResult
 
 from .const import CONF_USER_KEY, DEFAULT_NAME, DOMAIN
 
-USER_SCHEMA = vol.Schema(
+USER_SCHEMA = probatio.Schema(
     {
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): str,
-        vol.Required(CONF_API_KEY): str,
-        vol.Required(CONF_USER_KEY): str,
+        # Name field is no longer allowed in config flow schemas
+        # pylint: disable-next=home-assistant-config-flow-name-field
+        probatio.Optional(CONF_NAME, default=DEFAULT_NAME): str,
+        probatio.Required(probatio.Secret(CONF_API_KEY)): str,
+        probatio.Required(CONF_USER_KEY): str,
     }
 )
 
@@ -39,12 +39,14 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     return errors
 
 
-class PushBulletConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class PushBulletConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for pushover integration."""
 
-    _reauth_entry: config_entries.ConfigEntry | None
+    _reauth_entry: ConfigEntry | None
 
-    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> FlowResult:
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
         """Perform reauth upon an API authentication error."""
         self._reauth_entry = self.hass.config_entries.async_get_entry(
             self.context["entry_id"]
@@ -53,7 +55,7 @@ class PushBulletConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, str] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Confirm reauth dialog."""
         errors = {}
         if user_input is not None and self._reauth_entry:
@@ -74,17 +76,18 @@ class PushBulletConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_API_KEY): str,
+                    probatio.Required(probatio.Secret(CONF_API_KEY)): str,
                 }
             ),
             errors=errors,
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         errors = {}
 

@@ -1,29 +1,36 @@
 """Adds config flow for Trafikverket Weather integration."""
-from __future__ import annotations
 
+from collections.abc import Mapping
+import logging
+from typing import Any, override
+
+import probatio
 from pytrafikverket.exceptions import (
     InvalidAuthentication,
     MultipleWeatherStationsFound,
     NoWeatherStationFound,
 )
 from pytrafikverket.trafikverket_weather import TrafikverketWeather
-import voluptuous as vol
 
-from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_API_KEY
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import CONF_STATION, DOMAIN
 
+_LOGGER = logging.getLogger(__name__)
 
-class TVWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+
+class TVWeatherConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Trafikverket Weatherstation integration."""
 
     VERSION = 1
-
-    entry: config_entries.ConfigEntry
 
     async def validate_input(self, sensor_api: str, station: str) -> None:
         """Validate input from user input."""
@@ -31,9 +38,10 @@ class TVWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         weather_api = TrafikverketWeather(web_session, sensor_api)
         await weather_api.async_get_weather(station)
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, str] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         errors = {}
 
@@ -41,6 +49,7 @@ class TVWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             name = user_input[CONF_STATION]
             api_key = user_input[CONF_API_KEY]
             station = user_input[CONF_STATION]
+            self._async_abort_entries_match({CONF_STATION: station})
 
             try:
                 await self.validate_input(api_key, station)
@@ -50,7 +59,8 @@ class TVWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_station"
             except MultipleWeatherStationsFound:
                 errors["base"] = "more_stations"
-            except Exception:  # pylint: disable=broad-exception-caught
+            except Exception:
+                _LOGGER.exception("Unexpected error")
                 errors["base"] = "cannot_connect"
             else:
                 return self.async_create_entry(
@@ -63,11 +73,101 @@ class TVWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_API_KEY): cv.string,
-                    vol.Required(CONF_STATION): cv.string,
+                    probatio.Required(probatio.Secret(CONF_API_KEY)): cv.string,
+                    probatio.Required(CONF_STATION): cv.string,
                 }
             ),
+            errors=errors,
+        )
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle re-authentication with Trafikverket."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm re-authentication with Trafikverket."""
+        errors: dict[str, str] = {}
+        reauth_entry = self._get_reauth_entry()
+
+        if user_input:
+            api_key = user_input[CONF_API_KEY]
+
+            try:
+                await self.validate_input(api_key, reauth_entry.data[CONF_STATION])
+            except InvalidAuthentication:
+                errors["base"] = "invalid_auth"
+            except NoWeatherStationFound:
+                errors["base"] = "invalid_station"
+            except MultipleWeatherStationsFound:
+                errors["base"] = "more_stations"
+            except Exception:
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "cannot_connect"
+            else:
+                return self.async_update_reload_and_abort(
+                    reauth_entry, data_updates={CONF_API_KEY: api_key}
+                )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=probatio.Schema(
+                {probatio.Required(probatio.Secret(CONF_API_KEY)): cv.string}
+            ),
+            errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle re-configuration with Trafikverket."""
+        errors: dict[str, str] = {}
+        reconfigure_entry = self._get_reconfigure_entry()
+
+        if user_input:
+            if user_input[CONF_STATION] != reconfigure_entry.data[CONF_STATION]:
+                self._async_abort_entries_match(
+                    {CONF_STATION: user_input[CONF_STATION]}
+                )
+            try:
+                await self.validate_input(
+                    user_input[CONF_API_KEY], user_input[CONF_STATION]
+                )
+            except InvalidAuthentication:
+                errors["base"] = "invalid_auth"
+            except NoWeatherStationFound:
+                errors["base"] = "invalid_station"
+            except MultipleWeatherStationsFound:
+                errors["base"] = "more_stations"
+            except Exception:
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "cannot_connect"
+            else:
+                return self.async_update_reload_and_abort(
+                    reconfigure_entry,
+                    title=user_input[CONF_STATION],
+                    data=user_input,
+                )
+
+        schema = self.add_suggested_values_to_schema(
+            probatio.Schema(
+                {
+                    probatio.Required(probatio.Secret(CONF_API_KEY)): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
+                    probatio.Required(CONF_STATION): TextSelector(),
+                }
+            ),
+            {**reconfigure_entry.data, **(user_input or {})},
+        )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=schema,
             errors=errors,
         )

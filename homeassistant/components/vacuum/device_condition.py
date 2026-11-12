@@ -1,7 +1,6 @@
 """Provide the device automations for Vacuum."""
-from __future__ import annotations
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.const import (
     CONF_CONDITION,
@@ -19,14 +18,14 @@ from homeassistant.helpers import (
 from homeassistant.helpers.config_validation import DEVICE_CONDITION_BASE_SCHEMA
 from homeassistant.helpers.typing import ConfigType, TemplateVarsType
 
-from . import DOMAIN, STATE_CLEANING, STATE_DOCKED, STATE_RETURNING
+from . import DOMAIN, VacuumActivity
 
 CONDITION_TYPES = {"is_cleaning", "is_docked"}
 
 CONDITION_SCHEMA = DEVICE_CONDITION_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_ENTITY_ID): cv.entity_id_or_uuid,
-        vol.Required(CONF_TYPE): vol.In(CONDITION_TYPES),
+        probatio.Required(CONF_ENTITY_ID): cv.entity_id_or_uuid,
+        probatio.Required(CONF_TYPE): probatio.In(CONDITION_TYPES),
     }
 )
 
@@ -61,9 +60,9 @@ def async_condition_from_config(
 ) -> condition.ConditionCheckerType:
     """Create a function to test a device condition."""
     if config[CONF_TYPE] == "is_docked":
-        test_states = [STATE_DOCKED]
+        test_states = [VacuumActivity.DOCKED]
     else:
-        test_states = [STATE_CLEANING, STATE_RETURNING]
+        test_states = [VacuumActivity.CLEANING, VacuumActivity.RETURNING]
 
     registry = er.async_get(hass)
     entity_id = er.async_resolve_entity_id(registry, config[CONF_ENTITY_ID])

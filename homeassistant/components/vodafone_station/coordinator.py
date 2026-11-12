@@ -1,19 +1,43 @@
 """Support for Vodafone Station."""
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from json.decoder import JSONDecodeError
+from typing import Any, cast, override
 
-from aiovodafone import VodafoneStationApi, VodafoneStationDevice, exceptions
+from aiohttp import ClientSession
+from aiovodafone import exceptions
+from aiovodafone.api import VodafoneStationCommonApi, VodafoneStationDevice
+from aiovodafone.models import init_device_class
+from yarl import URL
 
-from homeassistant.components.device_tracker import DEFAULT_CONSIDER_HOME
+from homeassistant.components.device_tracker import (
+    DEFAULT_CONSIDER_HOME,
+    DOMAIN as DEVICE_TRACKER_DOMAIN,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .const import _LOGGER, DOMAIN
+from .const import (
+    CONF_DEVICE_DETAILS,
+    DEVICE_TYPE,
+    DEVICE_URL,
+    DOMAIN,
+    LOGGER,
+    SCAN_INTERVAL,
+)
+from .helpers import cleanup_device_tracker
+from .utils import async_client_session
 
 CONSIDER_HOME_SECONDS = DEFAULT_CONSIDER_HOME.total_seconds()
+
+type VodafoneConfigEntry = ConfigEntry[VodafoneStationRouter]
 
 
 @dataclass(slots=True)
@@ -31,33 +55,42 @@ class UpdateCoordinatorDataType:
 
     devices: dict[str, VodafoneStationDeviceInfo]
     sensors: dict[str, Any]
+    wifi: dict[str, Any]
 
 
 class VodafoneStationRouter(DataUpdateCoordinator[UpdateCoordinatorDataType]):
     """Queries router running Vodafone Station firmware."""
 
+    config_entry: VodafoneConfigEntry
+    api: VodafoneStationCommonApi
+    _session: ClientSession
+
     def __init__(
         self,
         hass: HomeAssistant,
-        host: str,
-        username: str,
-        password: str,
-        config_entry_unique_id: str | None,
+        config_entry: VodafoneConfigEntry,
     ) -> None:
         """Initialize the scanner."""
 
-        self._host = host
-        self.api = VodafoneStationApi(host, username, password)
-
         # Last resort as no MAC or S/N can be retrieved via API
-        self._id = config_entry_unique_id
+        self._id = config_entry.unique_id
 
         super().__init__(
             hass=hass,
-            logger=_LOGGER,
-            name=f"{DOMAIN}-{host}-coordinator",
-            update_interval=timedelta(seconds=30),
+            logger=LOGGER,
+            name=f"{DOMAIN}-{config_entry.data[CONF_HOST]}-coordinator",
+            update_interval=timedelta(seconds=SCAN_INTERVAL),
+            config_entry=config_entry,
         )
+
+        entity_reg = er.async_get(hass)
+        self.previous_devices = {
+            entry.unique_id
+            for entry in er.async_entries_for_config_entry(
+                entity_reg, config_entry.entry_id
+            )
+            if entry.domain == DEVICE_TRACKER_DOMAIN
+        }
 
     def _calculate_update_time_and_consider_home(
         self, device: VodafoneStationDevice, utc_point_in_time: datetime
@@ -90,19 +123,42 @@ class VodafoneStationRouter(DataUpdateCoordinator[UpdateCoordinatorDataType]):
 
         return None, False
 
+    @override
     async def _async_update_data(self) -> UpdateCoordinatorDataType:
         """Update router data."""
-        _LOGGER.debug("Polling Vodafone Station host: %s", self._host)
-        try:
-            logged = await self.api.login()
-        except exceptions.CannotConnect as err:
-            _LOGGER.warning("Connection error for %s", self._host)
-            raise UpdateFailed(f"Error fetching data: {repr(err)}") from err
-        except exceptions.CannotAuthenticate as err:
-            raise ConfigEntryAuthFailed from err
+        LOGGER.debug("Polling Vodafone Station host: %s", self.api.base_url.host)
 
-        if not logged:
-            raise ConfigEntryAuthFailed
+        try:
+            if not self._session.cookie_jar.filter_cookies(self.api.base_url):
+                LOGGER.debug(
+                    "Session cookies missing for host %s, re-login",
+                    self.api.base_url.host,
+                )
+                await self.api.login()
+            raw_data_devices = await self.api.get_devices_data()
+            data_sensors = await self.api.get_sensor_data()
+            data_wifi = await self.api.get_wifi_data()
+        except exceptions.CannotAuthenticate as err:
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="cannot_authenticate",
+                translation_placeholders={"error": repr(err)},
+            ) from err
+        except (
+            exceptions.VodafoneError,
+            JSONDecodeError,
+        ) as err:
+            if isinstance(err, JSONDecodeError):
+                # Plain html response (usually occurs after
+                # a firmware update), requiring session
+                # reinitialization
+                LOGGER.info("Stale session detected, reinitializing API session")
+                await self.initialize_api()
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+                translation_placeholders={"error": repr(err)},
+            ) from err
 
         utc_point_in_time = dt_util.utcnow()
         data_devices = {
@@ -112,13 +168,55 @@ class VodafoneStationRouter(DataUpdateCoordinator[UpdateCoordinatorDataType]):
                     dev_info, utc_point_in_time
                 ),
             )
-            for dev_info in (await self.api.get_devices_data()).values()
+            for dev_info in (raw_data_devices).values()
         }
-        data_sensors = await self.api.get_sensor_data()
-        await self.api.logout()
-        return UpdateCoordinatorDataType(data_devices, data_sensors)
+        current_devices = set(data_devices)
+        LOGGER.debug(
+            "Loaded current %s devices: %s", len(current_devices), current_devices
+        )
+        if stale_devices := self.previous_devices - current_devices:
+            LOGGER.debug(
+                "Found %s stale devices: %s", len(stale_devices), stale_devices
+            )
+            await cleanup_device_tracker(self.hass, self.config_entry, data_devices)
+
+        self.previous_devices = current_devices
+
+        return UpdateCoordinatorDataType(data_devices, data_sensors, data_wifi)
 
     @property
     def signal_device_new(self) -> str:
         """Event specific per Vodafone Station entry to signal new device."""
         return f"{DOMAIN}-device-new-{self._id}"
+
+    @property
+    def serial_number(self) -> str:
+        """Device serial number."""
+        return cast(str, self.data.sensors["sys_serial_number"])
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Set device info."""
+        sensors_data = self.data.sensors
+        return DeviceInfo(
+            configuration_url=self.api.base_url,
+            identifiers={(DOMAIN, self.serial_number)},
+            name=f"Vodafone Station ({self.serial_number})",
+            manufacturer="Vodafone",
+            model=sensors_data.get("sys_model_name"),
+            hw_version=sensors_data["sys_hardware_version"],
+            sw_version=sensors_data["sys_firmware_version"],
+            serial_number=self.serial_number,
+        )
+
+    async def initialize_api(self) -> None:
+        """Init API session."""
+        data = self.config_entry.data
+        session = await async_client_session(self.hass)
+        self.api = init_device_class(
+            URL(data[CONF_DEVICE_DETAILS][DEVICE_URL]),
+            data[CONF_DEVICE_DETAILS][DEVICE_TYPE],
+            data,
+            session,
+        )
+        self._session = session

@@ -1,8 +1,10 @@
 {
   "domain": "goalzero",
   "name": "Goal Zero Yeti",
+  "categories": ["energy.backup_power"],
   "codeowners": ["@tkdrob"],
   "config_flow": true,
+  "connectivity": ["network"],
   "dhcp": [
     {
       "registered_devices": true
@@ -15,6 +17,5 @@
   "integration_type": "device",
   "iot_class": "local_polling",
   "loggers": ["goalzero"],
-  "quality_scale": "silver",
   "requirements": ["goalzero==0.2.2"]
 }

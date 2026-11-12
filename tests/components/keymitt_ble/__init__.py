@@ -1,10 +1,14 @@
 """Tests for the MicroBot integration."""
+
 from unittest.mock import patch
+
+from pytest_homeassistant.components.bluetooth import (
+    generate_advertisement_data,
+    generate_ble_device,
+)
 
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.const import CONF_ADDRESS
-
-from tests.components.bluetooth import generate_advertisement_data, generate_ble_device
 
 DOMAIN = "keymitt_ble"
 
@@ -21,8 +25,8 @@ USER_INPUT_INVALID = {
 }
 
 
-def patch_async_setup_entry(return_value=True):
-    """Patch async setup entry to return True."""
+def patch_async_setup_entry(return_value=None):
+    """Patch async setup entry to return None."""
     return patch(
         "homeassistant.components.keymitt_ble.async_setup_entry",
         return_value=return_value,
@@ -45,13 +49,14 @@ SERVICE_INFO = BluetoothServiceInfoBleak(
     device=generate_ble_device("aa:bb:cc:dd:ee:ff", "mibp"),
     time=0,
     connectable=True,
+    tx_power=-127,
 )
 
 
 class MockMicroBotApiClient:
     """Mock MicroBotApiClient."""
 
-    def __init__(self, device, token):
+    def __init__(self, device, token) -> None:
         """Mock init."""
 
     async def connect(self, init):
@@ -68,7 +73,7 @@ class MockMicroBotApiClient:
 class MockMicroBotApiClientFail:
     """Mock MicroBotApiClient."""
 
-    def __init__(self, device, token):
+    def __init__(self, device, token) -> None:
         """Mock init."""
 
     async def connect(self, init):

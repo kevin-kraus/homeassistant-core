@@ -1,5 +1,7 @@
 """Tests for the sensors provided by the Pure Energie integration."""
 
+from pytest_homeassistant.common import MockConfigEntry
+
 from homeassistant.components.pure_energie.const import DOMAIN
 from homeassistant.components.sensor import (
     ATTR_STATE_CLASS,
@@ -17,17 +19,14 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-from tests.common import MockConfigEntry
-
 
 async def test_sensors(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
     init_integration: MockConfigEntry,
 ) -> None:
     """Test the Pure Energie - SmartBridge sensors."""
-    entity_registry = er.async_get(hass)
-    device_registry = dr.async_get(hass)
-
     state = hass.states.get("sensor.pem_energy_consumption_total")
     entry = entity_registry.async_get("sensor.pem_energy_consumption_total")
     assert entry

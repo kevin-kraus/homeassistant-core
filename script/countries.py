@@ -3,11 +3,11 @@
 ISO does not publish a machine readable list free of charge, so the list is generated
 with help of the pycountry package.
 """
+
 from pathlib import Path
 
+from hassfest.serializer import format_python_namespace
 import pycountry
-
-from .hassfest.serializer import format_python_namespace
 
 countries = {x.alpha_2 for x in pycountry.countries}
 
@@ -23,5 +23,6 @@ Path("homeassistant/generated/countries.py").write_text(
             "COUNTRIES": countries,
         },
         generator=generator_string,
+        annotations={"COUNTRIES": "Final[set[str]]"},
     )
 )

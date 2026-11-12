@@ -7,10 +7,13 @@
       "manufacturer_id": 13
     }
   ],
+  "categories": ["garden_plants"],
   "codeowners": ["@vanstinator"],
   "config_flow": true,
+  "connectivity": ["bluetooth"],
   "dependencies": ["bluetooth_adapters"],
   "documentation": "https://www.home-assistant.io/integrations/melnor",
+  "integration_type": "device",
   "iot_class": "local_polling",
   "requirements": ["melnor-bluetooth==0.0.25"]
 }

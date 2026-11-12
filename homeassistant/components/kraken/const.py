@@ -1,5 +1,4 @@
 """Constants for the kraken integration."""
-from __future__ import annotations
 
 from typing import TypedDict
 
@@ -18,10 +17,10 @@ class KrakenResponseEntry(TypedDict):
     opening_price: float
 
 
-KrakenResponse = dict[str, KrakenResponseEntry]
+type KrakenResponse = dict[str, KrakenResponseEntry]
 
 
-DEFAULT_SCAN_INTERVAL = 60
+SCAN_INTERVAL = 60
 DEFAULT_TRACKED_ASSET_PAIR = "XBT/USD"
 DISPATCH_CONFIG_UPDATED = "kraken_config_updated"
 

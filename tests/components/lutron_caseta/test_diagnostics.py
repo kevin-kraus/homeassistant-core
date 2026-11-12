@@ -1,5 +1,10 @@
 """Test the Lutron Caseta diagnostics."""
-from unittest.mock import ANY, patch
+
+from unittest.mock import ANY
+
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.components.diagnostics import get_diagnostics_for_config_entry
+from pytest_homeassistant.typing import ClientSessionGenerator
 
 from homeassistant.components.lutron_caseta import DOMAIN
 from homeassistant.components.lutron_caseta.const import (
@@ -10,11 +15,7 @@ from homeassistant.components.lutron_caseta.const import (
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 
-from . import MockBridge
-
-from tests.common import MockConfigEntry
-from tests.components.diagnostics import get_diagnostics_for_config_entry
-from tests.typing import ClientSessionGenerator
+from . import MockBridge, async_setup_integration
 
 
 async def test_diagnostics(
@@ -33,12 +34,7 @@ async def test_diagnostics(
     )
     config_entry.add_to_hass(hass)
 
-    with patch(
-        "homeassistant.components.lutron_caseta.Smartbridge.create_tls",
-        return_value=MockBridge(can_connect=True),
-    ):
-        await hass.config_entries.async_setup(config_entry.entry_id)
-        await hass.async_block_till_done()
+    await async_setup_integration(hass, MockBridge, config_entry.entry_id)
 
     diag = await get_diagnostics_for_config_entry(hass, hass_client, config_entry)
     assert diag == {
@@ -152,6 +148,19 @@ async def test_diagnostics(
                     "tilt": None,
                     "area": "1025",
                 },
+                "902": {
+                    "device_id": "902",
+                    "current_state": 0,
+                    "fan_speed": None,
+                    "zone": "901",
+                    "name": "Kitchen_Other Lights",
+                    "button_groups": None,
+                    "type": "WallDimmer",
+                    "model": None,
+                    "serial": 5442322,
+                    "tilt": None,
+                    "area": "1025",
+                },
                 "9": {
                     "device_id": "9",
                     "current_state": -1,
@@ -184,6 +193,7 @@ async def test_diagnostics(
             },
             "occupancy_groups": {},
             "scenes": {},
+            "smart_away_state": "",
         },
         "entry": {
             "data": {"ca_certs": "", "certfile": "", "host": "1.1.1.1", "keyfile": ""},
@@ -221,7 +231,7 @@ async def test_diagnostics(
                         "model": "RRST-W3RL-XX (SunnataKeypad)",
                         "name": "Hallway Main Stairs Position 1 Keypad",
                         "suggested_area": "Hallway",
-                        "via_device": ["lutron_caseta", 1234],
+                        "via_device_id": ANY,
                     },
                     "dr_device_id": ANY,
                     "lutron_device_id": "1355",
@@ -240,7 +250,7 @@ async def test_diagnostics(
                         "model": "PJ2-3BRL-GXX-X01 (Pico3ButtonRaiseLower)",
                         "name": "Dining Room Pico",
                         "suggested_area": "Dining Room",
-                        "via_device": ["lutron_caseta", 1234],
+                        "via_device_id": ANY,
                     },
                     "dr_device_id": ANY,
                     "lutron_device_id": "9",

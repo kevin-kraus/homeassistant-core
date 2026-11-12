@@ -1,7 +1,6 @@
 """The imap integration."""
-from __future__ import annotations
 
-import asyncio
+import logging
 
 from aioimaplib import IMAP4_SSL, AioImapException
 
@@ -13,19 +12,38 @@ from homeassistant.exceptions import (
     ConfigEntryError,
     ConfigEntryNotReady,
 )
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 
 from .const import CONF_ENABLE_PUSH, DOMAIN
 from .coordinator import (
+    ImapDataUpdateCoordinator,
     ImapPollingDataUpdateCoordinator,
     ImapPushDataUpdateCoordinator,
     connect_to_server,
 )
 from .errors import InvalidAuth, InvalidFolder
+from .services import async_setup_services
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+_LOGGER = logging.getLogger(__name__)
+
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+type ImapConfigEntry = ConfigEntry[ImapDataUpdateCoordinator]
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Set up imap services."""
+    async_setup_services(hass)
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ImapConfigEntry) -> None:
     """Set up imap from a config entry."""
     try:
         imap_client: IMAP4_SSL = await connect_to_server(dict(entry.data))
@@ -33,7 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryAuthFailed from err
     except InvalidFolder as err:
         raise ConfigEntryError("Selected mailbox folder is invalid.") from err
-    except (asyncio.TimeoutError, AioImapException) as err:
+    except (OSError, AioImapException) as err:
         raise ConfigEntryNotReady from err
 
     coordinator_class: type[
@@ -45,12 +63,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     else:
         coordinator_class = ImapPollingDataUpdateCoordinator
 
-    coordinator: ImapPushDataUpdateCoordinator | ImapPollingDataUpdateCoordinator = (
-        coordinator_class(hass, imap_client, entry)
-    )
+    coordinator: ImapDataUpdateCoordinator = coordinator_class(hass, imap_client, entry)
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    entry.runtime_data = coordinator
 
     entry.async_on_unload(
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, coordinator.shutdown)
@@ -58,16 +74,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    return True
 
-
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ImapConfigEntry) -> None:
     """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        coordinator: ImapPushDataUpdateCoordinator | ImapPollingDataUpdateCoordinator = hass.data[
-            DOMAIN
-        ].pop(
-            entry.entry_id
-        )
-        await coordinator.shutdown()
-    return unload_ok
+    await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
+    coordinator = entry.runtime_data
+    await coordinator.shutdown()

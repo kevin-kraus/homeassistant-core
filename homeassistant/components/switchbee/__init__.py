@@ -1,7 +1,5 @@
 """The SwitchBee Smart Home integration."""
 
-from __future__ import annotations
-
 import logging
 import re
 
@@ -9,16 +7,14 @@ from aiohttp import ClientSession
 from switchbee.api import CentralUnitPolling, CentralUnitWsRPC, is_wsrpc_api
 from switchbee.api.central_unit import SwitchBeeError
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-import homeassistant.helpers.device_registry as dr
-import homeassistant.helpers.entity_registry as er
 
 from .const import DOMAIN
-from .coordinator import SwitchBeeCoordinator
+from .coordinator import SwitchBeeConfigEntry, SwitchBeeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,44 +50,39 @@ async def get_api_object(
     return api
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: SwitchBeeConfigEntry) -> None:
     """Set up SwitchBee Smart Home from a config entry."""
 
-    hass.data.setdefault(DOMAIN, {})
     central_unit = entry.data[CONF_HOST]
     user = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]
     websession = async_get_clientsession(hass, verify_ssl=False)
     api = await get_api_object(central_unit, user, password, websession)
 
-    coordinator = SwitchBeeCoordinator(
-        hass,
-        api,
-    )
+    coordinator = SwitchBeeCoordinator(hass, entry, api)
 
     await coordinator.async_config_entry_first_refresh()
     entry.async_on_unload(entry.add_update_listener(update_listener))
-    hass.data[DOMAIN][entry.entry_id] = coordinator
+    entry.runtime_data = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    return True
 
-
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: SwitchBeeConfigEntry) -> None:
     """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        hass.data[DOMAIN].pop(entry.entry_id)
-
-    return unload_ok
+    await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
 
 
-async def update_listener(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
+async def update_listener(
+    hass: HomeAssistant, config_entry: SwitchBeeConfigEntry
+) -> None:
     """Update listener."""
     await hass.config_entries.async_reload(config_entry.entry_id)
 
 
-async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+async def async_migrate_entry(
+    hass: HomeAssistant, config_entry: SwitchBeeConfigEntry
+) -> None:
     """Migrate old entry."""
     _LOGGER.debug("Migrating from version %s", config_entry.version)
 
@@ -114,8 +105,8 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             if match := re.match(
                 rf"(?:{old_unique_id})-(?P<id>\d+)", entity_entry.unique_id
             ):
-                entity_new_unique_id = f'{new_unique_id}-{match.group("id")}'
-                _LOGGER.info(
+                entity_new_unique_id = f"{new_unique_id}-{match.group('id')}"
+                _LOGGER.debug(
                     "Migrating entity %s from %s to new id %s",
                     entity_entry.entity_id,
                     entity_entry.unique_id,
@@ -130,7 +121,6 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             for device_entry in dr.async_entries_for_config_entry(
                 dev_reg, config_entry.entry_id
             ):
-                assert isinstance(device_entry, dr.DeviceEntry)
                 for identifier in device_entry.identifiers:
                     if match := re.match(
                         rf"(?P<id>.+)-{old_unique_id}$", identifier[1]
@@ -141,7 +131,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
                                 f"{match.group('id')}-{new_unique_id}",
                             )
                         }
-                        _LOGGER.info(
+                        _LOGGER.debug(
                             "Migrating device %s identifiers from %s to %s",
                             device_entry.name,
                             device_entry.identifiers,
@@ -156,8 +146,6 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
                 hass, config_entry.entry_id, update_unique_id
             )
 
-            config_entry.version = 2
+            hass.config_entries.async_update_entry(config_entry, version=2)
 
-        _LOGGER.info("Migration to version %s successful", config_entry.version)
-
-    return True
+        _LOGGER.debug("Migration to version %s successful", config_entry.version)

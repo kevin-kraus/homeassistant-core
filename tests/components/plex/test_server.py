@@ -1,4 +1,5 @@
 """Tests for Plex server."""
+
 import copy
 from unittest.mock import patch
 
@@ -11,8 +12,6 @@ from homeassistant.components.plex.const import (
     CONF_IGNORE_PLEX_WEB_CLIENTS,
     CONF_MONITORED_USERS,
     CONF_SERVER,
-    DOMAIN,
-    SERVERS,
 )
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -28,13 +27,12 @@ async def test_new_users_available(
     MONITORED_USERS = {"User 1": {"enabled": True}}
     OPTIONS_WITH_USERS = copy.deepcopy(DEFAULT_OPTIONS)
     OPTIONS_WITH_USERS[Platform.MEDIA_PLAYER][CONF_MONITORED_USERS] = MONITORED_USERS
-    entry.options = OPTIONS_WITH_USERS
+    entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(entry, options=OPTIONS_WITH_USERS)
 
     mock_plex_server = await setup_plex_server(config_entry=entry)
 
-    server_id = mock_plex_server.machine_identifier
-
-    monitored_users = hass.data[DOMAIN][SERVERS][server_id].option_monitored_users
+    monitored_users = mock_plex_server.option_monitored_users
 
     ignored_users = [x for x in monitored_users if not monitored_users[x]["enabled"]]
     assert len(monitored_users) == 1
@@ -55,7 +53,8 @@ async def test_new_ignored_users_available(
     OPTIONS_WITH_USERS = copy.deepcopy(DEFAULT_OPTIONS)
     OPTIONS_WITH_USERS[Platform.MEDIA_PLAYER][CONF_MONITORED_USERS] = MONITORED_USERS
     OPTIONS_WITH_USERS[Platform.MEDIA_PLAYER][CONF_IGNORE_NEW_SHARED_USERS] = True
-    entry.options = OPTIONS_WITH_USERS
+    entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(entry, options=OPTIONS_WITH_USERS)
 
     mock_plex_server = await setup_plex_server(config_entry=entry)
 
@@ -65,11 +64,10 @@ async def test_new_ignored_users_available(
     )
     trigger_plex_update(mock_websocket)
     await wait_for_debouncer(hass)
-
-    server_id = mock_plex_server.machine_identifier
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     active_sessions = mock_plex_server._plex_server.sessions()
-    monitored_users = hass.data[DOMAIN][SERVERS][server_id].option_monitored_users
+    monitored_users = mock_plex_server.option_monitored_users
     ignored_users = [x for x in mock_plex_server.accounts if x not in monitored_users]
 
     assert len(monitored_users) == 1
@@ -86,8 +84,9 @@ async def test_new_ignored_users_available(
             )
 
     await wait_for_debouncer(hass)
+    await hass.async_block_till_done(wait_background_tasks=True)
 
-    sensor = hass.states.get("sensor.plex_plex_server_1")
+    sensor = hass.states.get("sensor.plex_server_1")
     assert sensor.state == str(len(active_sessions))
 
 
@@ -95,17 +94,15 @@ async def test_network_error_during_refresh(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture, mock_plex_server
 ) -> None:
     """Test network failures during refreshes."""
-    server_id = mock_plex_server.machine_identifier
-    loaded_server = hass.data[DOMAIN][SERVERS][server_id]
     active_sessions = mock_plex_server._plex_server.sessions()
 
     await wait_for_debouncer(hass)
 
-    sensor = hass.states.get("sensor.plex_plex_server_1")
+    sensor = hass.states.get("sensor.plex_server_1")
     assert sensor.state == str(len(active_sessions))
 
     with patch("plexapi.server.PlexServer.clients", side_effect=RequestException):
-        await loaded_server._async_update_platforms()
+        await mock_plex_server._async_update_platforms()
         await hass.async_block_till_done()
 
     assert (
@@ -126,7 +123,7 @@ async def test_gdm_client_failure(
     active_sessions = mock_plex_server._plex_server.sessions()
     await wait_for_debouncer(hass)
 
-    sensor = hass.states.get("sensor.plex_plex_server_1")
+    sensor = hass.states.get("sensor.plex_server_1")
     assert sensor.state == str(len(active_sessions))
 
     with patch("plexapi.server.PlexServer.clients", side_effect=RequestException):
@@ -146,7 +143,7 @@ async def test_mark_sessions_idle(
 
     active_sessions = mock_plex_server._plex_server.sessions()
 
-    sensor = hass.states.get("sensor.plex_plex_server_1")
+    sensor = hass.states.get("sensor.plex_server_1")
     assert sensor.state == str(len(active_sessions))
 
     url = mock_plex_server.url_in_use
@@ -157,7 +154,7 @@ async def test_mark_sessions_idle(
     await hass.async_block_till_done()
     await wait_for_debouncer(hass)
 
-    sensor = hass.states.get("sensor.plex_plex_server_1")
+    sensor = hass.states.get("sensor.plex_server_1")
     assert sensor.state == "0"
 
 
@@ -167,7 +164,8 @@ async def test_ignore_plex_web_client(
     """Test option to ignore Plex Web clients."""
     OPTIONS = copy.deepcopy(DEFAULT_OPTIONS)
     OPTIONS[Platform.MEDIA_PLAYER][CONF_IGNORE_PLEX_WEB_CLIENTS] = True
-    entry.options = OPTIONS
+    entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(entry, options=OPTIONS)
 
     mock_plex_server = await setup_plex_server(
         config_entry=entry, client_type="plexweb", disable_clients=True
@@ -175,7 +173,7 @@ async def test_ignore_plex_web_client(
     await wait_for_debouncer(hass)
 
     active_sessions = mock_plex_server._plex_server.sessions()
-    sensor = hass.states.get("sensor.plex_plex_server_1")
+    sensor = hass.states.get("sensor.plex_server_1")
     assert sensor.state == str(len(active_sessions))
 
     media_players = hass.states.async_entity_ids("media_player")

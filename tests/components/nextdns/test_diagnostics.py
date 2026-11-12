@@ -1,21 +1,28 @@
 """Test NextDNS diagnostics."""
 
-from syrupy import SnapshotAssertion
+from unittest.mock import AsyncMock
+
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.components.diagnostics import get_diagnostics_for_config_entry
+from pytest_homeassistant.typing import ClientSessionGenerator
+from syrupy.assertion import SnapshotAssertion
+from syrupy.filters import props
 
 from homeassistant.core import HomeAssistant
 
 from . import init_integration
-
-from tests.components.diagnostics import get_diagnostics_for_config_entry
-from tests.typing import ClientSessionGenerator
 
 
 async def test_entry_diagnostics(
     hass: HomeAssistant,
     hass_client: ClientSessionGenerator,
     snapshot: SnapshotAssertion,
+    mock_config_entry: MockConfigEntry,
+    mock_nextdns_client: AsyncMock,
 ) -> None:
     """Test config entry diagnostics."""
-    entry = await init_integration(hass)
+    await init_integration(hass, mock_config_entry)
 
-    assert await get_diagnostics_for_config_entry(hass, hass_client, entry) == snapshot
+    assert await get_diagnostics_for_config_entry(
+        hass, hass_client, mock_config_entry
+    ) == snapshot(exclude=props("created_at", "modified_at", "entry_id", "subentry_id"))

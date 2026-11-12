@@ -1,21 +1,27 @@
 """Test Tile diagnostics."""
-from syrupy import SnapshotAssertion
+
+from unittest.mock import AsyncMock
+
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.components.diagnostics import get_diagnostics_for_config_entry
+from pytest_homeassistant.typing import ClientSessionGenerator
+from syrupy.assertion import SnapshotAssertion
 
 from homeassistant.core import HomeAssistant
 
-from tests.components.diagnostics import get_diagnostics_for_config_entry
-from tests.typing import ClientSessionGenerator
+from . import setup_integration
 
 
 async def test_entry_diagnostics(
     hass: HomeAssistant,
-    config_entry,
     hass_client: ClientSessionGenerator,
-    setup_config_entry,
     snapshot: SnapshotAssertion,
+    mock_config_entry: MockConfigEntry,
+    mock_pytile: AsyncMock,
 ) -> None:
     """Test config entry diagnostics."""
+    await setup_integration(hass, mock_config_entry)
     assert (
-        await get_diagnostics_for_config_entry(hass, hass_client, config_entry)
+        await get_diagnostics_for_config_entry(hass, hass_client, mock_config_entry)
         == snapshot
     )

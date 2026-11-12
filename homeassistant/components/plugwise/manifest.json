@@ -1,12 +1,15 @@
 {
   "domain": "plugwise",
   "name": "Plugwise",
-  "codeowners": ["@CoMPaTech", "@bouwew", "@frenck"],
+  "categories": ["climate.thermostats_heating", "energy.meters_monitoring"],
+  "codeowners": ["@CoMPaTech", "@bouwew"],
   "config_flow": true,
+  "connectivity": ["network"],
   "documentation": "https://www.home-assistant.io/integrations/plugwise",
   "integration_type": "hub",
   "iot_class": "local_polling",
-  "loggers": ["crcmod", "plugwise"],
-  "requirements": ["plugwise==0.32.2"],
+  "loggers": ["plugwise"],
+  "quality_scale": "platinum",
+  "requirements": ["plugwise==1.14.8"],
   "zeroconf": ["_plugwise._tcp.local."]
 }

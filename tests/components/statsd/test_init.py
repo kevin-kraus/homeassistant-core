@@ -1,11 +1,12 @@
 """The tests for the StatsD feeder."""
+
 from unittest import mock
 from unittest.mock import patch
 
+import probatio
 import pytest
-import voluptuous as vol
 
-import homeassistant.components.statsd as statsd
+from homeassistant.components import statsd
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
@@ -22,9 +23,9 @@ def test_invalid_config() -> None:
     """Test configuration with defaults."""
     config = {"statsd": {"host1": "host1"}}
 
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         statsd.CONFIG_SCHEMA(None)
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         statsd.CONFIG_SCHEMA(config)
 
 

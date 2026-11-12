@@ -1,10 +1,12 @@
 {
   "domain": "tellduslive",
   "name": "Telldus Live",
+  "categories": ["hubs_protocols.smart_home_hubs"],
   "codeowners": ["@fredrike"],
   "config_flow": true,
+  "connectivity": ["cloud", "network", "rf", "zwave"],
   "documentation": "https://www.home-assistant.io/integrations/tellduslive",
+  "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "quality_scale": "gold",
-  "requirements": ["tellduslive==0.10.11"]
+  "requirements": ["tellduslive==0.10.12"]
 }

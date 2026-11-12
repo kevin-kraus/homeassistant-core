@@ -1,25 +1,28 @@
 """Support for Yardian integration."""
-from __future__ import annotations
 
-from typing import Any
+import asyncio
+from typing import Any, override
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import DEFAULT_WATERING_DURATION, DOMAIN
-from .coordinator import YardianUpdateCoordinator
+from .const import (
+    DEFAULT_WATERING_DURATION,
+    SWITCH_OFF_REFRESH_DELAY,
+    SWITCH_ON_REFRESH_DELAY,
+)
+from .coordinator import YardianConfigEntry, YardianUpdateCoordinator
+from .entity import YardianZoneEntity
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    config_entry: YardianConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up entry for a Yardian irrigation switches."""
-    coordinator = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator = config_entry.runtime_data
     async_add_entities(
         YardianSwitch(
             coordinator,
@@ -29,43 +32,52 @@ async def async_setup_entry(
     )
 
 
-class YardianSwitch(CoordinatorEntity[YardianUpdateCoordinator], SwitchEntity):
+class YardianSwitch(YardianZoneEntity, SwitchEntity):
     """Representation of a Yardian switch."""
 
-    _attr_icon = "mdi:water"
-    _attr_has_entity_name = True
+    _attr_translation_key = "switch"
 
-    def __init__(self, coordinator: YardianUpdateCoordinator, zone_id) -> None:
+    def __init__(self, coordinator: YardianUpdateCoordinator, zone_id: int) -> None:
         """Initialize a Yardian Switch Device."""
-        super().__init__(coordinator)
-        self._zone_id = zone_id
+        super().__init__(coordinator, zone_id)
         self._attr_unique_id = f"{coordinator.yid}-{zone_id}"
-        self._attr_device_info = coordinator.device_info
 
     @property
-    def name(self) -> str:
-        """Return the zone name."""
-        return self.coordinator.data.zones[self._zone_id][0]
-
-    @property
+    @override
     def is_on(self) -> bool:
         """Return true if switch is on."""
         return self._zone_id in self.coordinator.data.active_zones
 
     @property
+    @override
     def available(self) -> bool:
         """Return the switch is available or not."""
-        return self.coordinator.data.zones[self._zone_id][1] == 1
+        return (
+            super().available and self.coordinator.data.zones[self._zone_id].is_enabled
+        )
 
+    @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the switch on."""
-        await self.coordinator.controller.start_irrigation(
-            self._zone_id,
-            kwargs.get("duration", DEFAULT_WATERING_DURATION),
-        )
+        # Optimistic UI update
+        self.coordinator.data.active_zones.add(self._zone_id)
+        self.async_write_ha_state()
+
+        duration = kwargs.get("duration", DEFAULT_WATERING_DURATION)
+
+        await self.coordinator.controller.start_irrigation(self._zone_id, duration)
+        await asyncio.sleep(SWITCH_ON_REFRESH_DELAY)
+
         await self.coordinator.async_request_refresh()
 
+    @override
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the switch off."""
-        await self.coordinator.controller.stop_irrigation()
+        # Optimistic UI update
+        self.coordinator.data.active_zones.discard(self._zone_id)
+        self.async_write_ha_state()
+
+        await self.coordinator.controller.stop_zone(self._zone_id)
+        await asyncio.sleep(SWITCH_OFF_REFRESH_DELAY)
+
         await self.coordinator.async_request_refresh()

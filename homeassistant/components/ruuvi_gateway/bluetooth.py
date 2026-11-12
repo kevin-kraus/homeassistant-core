@@ -1,22 +1,18 @@
 """Bluetooth support for Ruuvi Gateway."""
-from __future__ import annotations
 
-from collections.abc import Callable
 import logging
 import time
-
-from home_assistant_bluetooth import BluetoothServiceInfoBleak
 
 from homeassistant.components.bluetooth import (
     FALLBACK_MAXIMUM_STALE_ADVERTISEMENT_SECONDS,
     MONOTONIC_TIME,
     BaseHaRemoteScanner,
-    async_get_advertisement_callback,
     async_register_scanner,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 
+from .const import DOMAIN
 from .coordinator import RuuviGatewayUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,19 +23,15 @@ class RuuviGatewayScanner(BaseHaRemoteScanner):
 
     def __init__(
         self,
-        hass: HomeAssistant,
         scanner_id: str,
         name: str,
-        new_info_callback: Callable[[BluetoothServiceInfoBleak], None],
         *,
         coordinator: RuuviGatewayUpdateCoordinator,
     ) -> None:
         """Initialize the scanner, using the given update coordinator as data source."""
         super().__init__(
-            hass,
             scanner_id,
             name,
-            new_info_callback,
             connector=None,
             connectable=False,
         )
@@ -80,21 +72,26 @@ def async_connect_scanner(
 ) -> tuple[RuuviGatewayScanner, CALLBACK_TYPE]:
     """Connect scanner and start polling."""
     assert entry.unique_id is not None
-    source = str(entry.unique_id)
+    # Scanner sources are upper case MAC addresses everywhere else in core, and
+    # the device registry does not normalise CONNECTION_BLUETOOTH values.
+    source = str(entry.unique_id).upper()
     _LOGGER.debug(
         "%s [%s]: Connecting scanner",
         entry.title,
         source,
     )
     scanner = RuuviGatewayScanner(
-        hass=hass,
         scanner_id=source,
         name=entry.title,
-        new_info_callback=async_get_advertisement_callback(hass),
         coordinator=coordinator,
     )
     unload_callbacks = [
-        async_register_scanner(hass, scanner, connectable=False),
+        async_register_scanner(
+            hass,
+            scanner,
+            source_domain=DOMAIN,
+            source_config_entry_id=entry.entry_id,
+        ),
         scanner.async_setup(),
         scanner.start_polling(),
     ]

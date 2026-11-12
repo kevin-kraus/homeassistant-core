@@ -1,7 +1,6 @@
 """Representation of ISYEntity Types."""
-from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, cast, override
 
 from pyisy.constants import (
     ATTR_ACTION,
@@ -26,7 +25,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity, EntityDescription
 
-from .const import DOMAIN
+from .const import DOMAIN, EVENT_ISY994_CONTROL
 
 
 class ISYEntity(Entity):
@@ -52,14 +51,23 @@ class ISYEntity(Entity):
         self._change_handler: EventListener | None = None
         self._control_handler: EventListener | None = None
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Subscribe to the node change events."""
+        await super().async_added_to_hass()
+        self._async_subscribe_to_events()
+
+    @callback
+    def _async_subscribe_to_events(self) -> None:
+        """Subscribe to the node change events."""
         self._change_handler = self._node.status_events.subscribe(self.async_on_update)
+        self.async_on_remove(self._change_handler.unsubscribe)
 
         if hasattr(self._node, "control_events"):
             self._control_handler = self._node.control_events.subscribe(
                 self.async_on_control
             )
+            self.async_on_remove(self._control_handler.unsubscribe)
 
     @callback
     def async_on_update(self, event: NodeProperty) -> None:
@@ -82,7 +90,7 @@ class ISYEntity(Entity):
             # New state attributes may be available, update the state.
             self.async_write_ha_state()
 
-        self.hass.bus.async_fire("isy994_control", event_data)
+        self.hass.bus.async_fire(EVENT_ISY994_CONTROL, event_data)
 
 
 class ISYNodeEntity(ISYEntity):
@@ -100,31 +108,33 @@ class ISYNodeEntity(ISYEntity):
             self._attr_name = None
 
     @property
+    @override
     def available(self) -> bool:
         """Return entity availability."""
         return getattr(self._node, TAG_ENABLED, True)
 
     @property
-    def extra_state_attributes(self) -> dict:
+    @override
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Get the state attributes for the device.
 
         The 'aux_properties' in the pyisy Node class are combined with the
         other attributes which have been picked up from the event stream and
         the combined result are returned as the device state attributes.
         """
-        attr = {}
+        attrs = self._attrs
         node = self._node
         # Insteon aux_properties are now their own sensors
-        if hasattr(self._node, "aux_properties") and node.protocol != PROTO_INSTEON:
+        # so we no longer need to add them to the attributes
+        if node.protocol != PROTO_INSTEON and hasattr(node, "aux_properties"):
             for name, value in self._node.aux_properties.items():
                 attr_name = COMMAND_FRIENDLY_NAME.get(name, name)
-                attr[attr_name] = str(value.formatted).lower()
+                attrs[attr_name] = str(value.formatted).lower()
 
         # If a Group/Scene, set a property if the entire scene is on/off
-        if hasattr(self._node, "group_all_on"):
-            attr["group_all_on"] = STATE_ON if self._node.group_all_on else STATE_OFF
+        if hasattr(node, "group_all_on"):
+            attrs["group_all_on"] = STATE_ON if node.group_all_on else STATE_OFF
 
-        self._attrs.update(attr)
         return self._attrs
 
     async def async_send_node_command(self, command: str) -> None:
@@ -150,7 +160,7 @@ class ISYNodeEntity(ISYEntity):
         await self._node.send_cmd(command, value, unit_of_measurement, parameters)
 
     async def async_get_zwave_parameter(self, parameter: Any) -> None:
-        """Respond to an entity service command to request a Z-Wave device parameter from the ISY."""
+        """Respond to a service command to request a Z-Wave parameter."""
         if self._node.protocol != PROTO_ZWAVE:
             raise HomeAssistantError(
                 "Invalid service call: cannot request Z-Wave Parameter for non-Z-Wave"
@@ -161,7 +171,7 @@ class ISYNodeEntity(ISYEntity):
     async def async_set_zwave_parameter(
         self, parameter: Any, value: Any | None, size: int | None
     ) -> None:
-        """Respond to an entity service command to set a Z-Wave device parameter via the ISY."""
+        """Respond to a service command to set a Z-Wave parameter."""
         if self._node.protocol != PROTO_ZWAVE:
             raise HomeAssistantError(
                 "Invalid service call: cannot set Z-Wave Parameter for non-Z-Wave"
@@ -180,6 +190,7 @@ class ISYProgramEntity(ISYEntity):
 
     _actions: Program
     _status: Program
+    _node: Program
 
     def __init__(self, name: str, status: Program, actions: Program = None) -> None:
         """Initialize the ISY program-based entity."""
@@ -188,7 +199,8 @@ class ISYProgramEntity(ISYEntity):
         self._actions = actions
 
     @property
-    def extra_state_attributes(self) -> dict:
+    @override
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Get the state attributes for the device."""
         attr = {}
         if self._actions:
@@ -240,13 +252,21 @@ class ISYAuxControlEntity(Entity):
         self._change_handler: EventListener = None
         self._availability_handler: EventListener = None
 
+    @override
     async def async_added_to_hass(self) -> None:
+        """Subscribe to the node control change events."""
+        await super().async_added_to_hass()
+        self._async_subscribe_to_events()
+
+    @callback
+    def _async_subscribe_to_events(self) -> None:
         """Subscribe to the node control change events."""
         self._change_handler = self._node.control_events.subscribe(
             self.async_on_update,
             event_filter={ATTR_CONTROL: self._control},
             key=self.unique_id,
         )
+        self.async_on_remove(self._change_handler.unsubscribe)
         self._availability_handler = self._node.isy.nodes.status_events.subscribe(
             self.async_on_update,
             event_filter={
@@ -255,6 +275,7 @@ class ISYAuxControlEntity(Entity):
             },
             key=self.unique_id,
         )
+        self.async_on_remove(self._availability_handler.unsubscribe)
 
     @callback
     def async_on_update(self, event: NodeProperty | NodeChangedEvent, key: str) -> None:
@@ -262,6 +283,7 @@ class ISYAuxControlEntity(Entity):
         self.async_write_ha_state()
 
     @property
+    @override
     def available(self) -> bool:
         """Return entity availability."""
         return cast(bool, self._node.enabled)

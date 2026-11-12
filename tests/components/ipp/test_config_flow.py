@@ -1,5 +1,7 @@
 """Tests for the IPP config flow."""
+
 import dataclasses
+from ipaddress import ip_address
 import json
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +14,7 @@ from pyipp import (
     Printer,
 )
 import pytest
+from pytest_homeassistant.common import MockConfigEntry, load_fixture
 
 from homeassistant.components.ipp.const import CONF_BASE_PATH, DOMAIN
 from homeassistant.config_entries import SOURCE_USER, SOURCE_ZEROCONF
@@ -25,8 +28,6 @@ from . import (
     MOCK_ZEROCONF_IPPS_SERVICE_INFO,
 )
 
-from tests.common import MockConfigEntry, load_fixture
-
 pytestmark = pytest.mark.usefixtures("mock_setup_entry")
 
 
@@ -38,7 +39,7 @@ async def test_show_user_form(hass: HomeAssistant) -> None:
     )
 
     assert result["step_id"] == "user"
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
 
 
 async def test_show_zeroconf_form(
@@ -54,7 +55,7 @@ async def test_show_zeroconf_form(
     )
 
     assert result["step_id"] == "zeroconf_confirm"
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["description_placeholders"] == {CONF_NAME: "EPSON XP-6000 Series"}
 
 
@@ -67,14 +68,22 @@ async def test_connection_error(
 
     user_input = MOCK_USER_INPUT.copy()
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=user_input,
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=user_input
     )
 
     assert result["step_id"] == "user"
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "cannot_connect"}
+
+    mock_ipp_config_flow.printer.side_effect = None
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=user_input
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_zeroconf_connection_error(
@@ -91,7 +100,7 @@ async def test_zeroconf_connection_error(
         data=discovery_info,
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "cannot_connect"
 
 
@@ -107,7 +116,7 @@ async def test_zeroconf_confirm_connection_error(
         DOMAIN, context={"source": SOURCE_ZEROCONF}, data=discovery_info
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "cannot_connect"
 
 
@@ -120,14 +129,22 @@ async def test_user_connection_upgrade_required(
 
     user_input = MOCK_USER_INPUT.copy()
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=user_input,
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=user_input
     )
 
     assert result["step_id"] == "user"
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "connection_upgrade"}
+
+    mock_ipp_config_flow.printer.side_effect = None
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=user_input
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_zeroconf_connection_upgrade_required(
@@ -144,7 +161,7 @@ async def test_zeroconf_connection_upgrade_required(
         data=discovery_info,
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "connection_upgrade"
 
 
@@ -157,12 +174,14 @@ async def test_user_parse_error(
 
     user_input = MOCK_USER_INPUT.copy()
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=user_input,
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=user_input
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "parse_error"
 
 
@@ -180,7 +199,7 @@ async def test_zeroconf_parse_error(
         data=discovery_info,
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "parse_error"
 
 
@@ -193,12 +212,14 @@ async def test_user_ipp_error(
 
     user_input = MOCK_USER_INPUT.copy()
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=user_input,
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=user_input
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "ipp_error"
 
 
@@ -216,7 +237,7 @@ async def test_zeroconf_ipp_error(
         data=discovery_info,
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "ipp_error"
 
 
@@ -229,12 +250,14 @@ async def test_user_ipp_version_error(
 
     user_input = {**MOCK_USER_INPUT}
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=user_input,
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=user_input
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "ipp_version_error"
 
 
@@ -252,7 +275,7 @@ async def test_zeroconf_ipp_version_error(
         data=discovery_info,
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "ipp_version_error"
 
 
@@ -266,12 +289,14 @@ async def test_user_device_exists_abort(
 
     user_input = MOCK_USER_INPUT.copy()
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=user_input,
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=user_input
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
 
 
@@ -290,7 +315,7 @@ async def test_zeroconf_device_exists_abort(
         data=discovery_info,
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
 
 
@@ -314,7 +339,7 @@ async def test_zeroconf_with_uuid_device_exists_abort(
         data=discovery_info,
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
 
 
@@ -326,7 +351,9 @@ async def test_zeroconf_with_uuid_device_exists_abort_new_host(
     """Test we abort zeroconf flow if printer already configured."""
     mock_config_entry.add_to_hass(hass)
 
-    discovery_info = dataclasses.replace(MOCK_ZEROCONF_IPP_SERVICE_INFO, host="1.2.3.9")
+    discovery_info = dataclasses.replace(
+        MOCK_ZEROCONF_IPP_SERVICE_INFO, ip_address=ip_address("1.2.3.9")
+    )
     discovery_info.properties = {
         **MOCK_ZEROCONF_IPP_SERVICE_INFO.properties,
         "UUID": "cfe92100-67c4-11d4-a45f-f8d027761251",
@@ -338,7 +365,7 @@ async def test_zeroconf_with_uuid_device_exists_abort_new_host(
         data=discovery_info,
     )
 
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
     assert mock_config_entry.data[CONF_HOST] == "1.2.3.9"
 
@@ -362,14 +389,14 @@ async def test_zeroconf_empty_unique_id(
         data=discovery_info,
     )
 
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={CONF_HOST: "192.168.1.31", CONF_BASE_PATH: "/ipp/print"},
     )
 
-    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "EPSON XP-6000 Series"
 
     assert result["data"]
@@ -395,14 +422,14 @@ async def test_zeroconf_no_unique_id(
         data=discovery_info,
     )
 
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={CONF_HOST: "192.168.1.31", CONF_BASE_PATH: "/ipp/print"},
     )
 
-    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "EPSON XP-6000 Series"
 
     assert result["data"]
@@ -424,14 +451,14 @@ async def test_full_user_flow_implementation(
     )
 
     assert result["step_id"] == "user"
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         user_input={CONF_HOST: "192.168.1.31", CONF_BASE_PATH: "/ipp/print"},
     )
 
-    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "192.168.1.31"
 
     assert result["data"]
@@ -455,13 +482,13 @@ async def test_full_zeroconf_flow_implementation(
     )
 
     assert result["step_id"] == "zeroconf_confirm"
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={}
     )
 
-    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "EPSON XP-6000 Series"
 
     assert result["data"]
@@ -487,14 +514,14 @@ async def test_full_zeroconf_tls_flow_implementation(
     )
 
     assert result["step_id"] == "zeroconf_confirm"
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["description_placeholders"] == {CONF_NAME: "EPSON XP-6000 Series"}
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={}
     )
 
-    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "EPSON XP-6000 Series"
 
     assert result["data"]
@@ -508,7 +535,7 @@ async def test_full_zeroconf_tls_flow_implementation(
 
 
 async def test_zeroconf_empty_unique_id_uses_serial(hass: HomeAssistant) -> None:
-    """Test zeroconf flow if printer lacks (empty) unique identification with serial fallback."""
+    """Test zeroconf flow with empty unique ID uses serial fallback."""
     fixture = await hass.async_add_executor_job(
         load_fixture, "ipp/printer_without_uuid.json"
     )
@@ -531,14 +558,14 @@ async def test_zeroconf_empty_unique_id_uses_serial(hass: HomeAssistant) -> None
             data=discovery_info,
         )
 
-        assert result["type"] == FlowResultType.FORM
+        assert result["type"] is FlowResultType.FORM
 
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             user_input={CONF_HOST: "192.168.1.31", CONF_BASE_PATH: "/ipp/print"},
         )
 
-    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "EPSON XP-6000 Series"
 
     assert result["data"]

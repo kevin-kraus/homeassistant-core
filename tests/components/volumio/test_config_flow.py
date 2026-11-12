@@ -1,13 +1,16 @@
 """Test the Volumio config flow."""
+
+from ipaddress import ip_address
 from unittest.mock import patch
 
+from pytest_homeassistant.common import MockConfigEntry
+
 from homeassistant import config_entries
-from homeassistant.components import zeroconf
 from homeassistant.components.volumio.config_flow import CannotConnectError
 from homeassistant.components.volumio.const import DOMAIN
 from homeassistant.core import HomeAssistant
-
-from tests.common import MockConfigEntry
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 TEST_SYSTEM_INFO = {"id": "1111-1111-1111-1111", "name": "TestVolumio"}
 
@@ -18,9 +21,9 @@ TEST_CONNECTION = {
 }
 
 
-TEST_DISCOVERY = zeroconf.ZeroconfServiceInfo(
-    host="1.1.1.1",
-    addresses=["1.1.1.1"],
+TEST_DISCOVERY = ZeroconfServiceInfo(
+    ip_address=ip_address("1.1.1.1"),
+    ip_addresses=[ip_address("1.1.1.1")],
     hostname="mock_hostname",
     name="mock_name",
     port=3000,
@@ -41,25 +44,29 @@ async def test_form(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {}
 
-    with patch(
-        "homeassistant.components.volumio.config_flow.Volumio.get_system_info",
-        return_value=TEST_SYSTEM_INFO,
-    ), patch(
-        "homeassistant.components.volumio.async_setup_entry",
-        return_value=True,
-    ) as mock_setup_entry:
+    with (
+        patch(
+            "homeassistant.components.volumio.config_flow.Volumio.get_system_info",
+            return_value=TEST_SYSTEM_INFO,
+        ),
+        patch(
+            "homeassistant.components.volumio.async_setup_entry",
+            return_value=None,
+        ) as mock_setup_entry,
+    ):
         result2 = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             TEST_CONNECTION,
         )
         await hass.async_block_till_done()
 
-    assert result2["type"] == "create_entry"
+    assert result2["type"] is FlowResultType.CREATE_ENTRY
     assert result2["title"] == "TestVolumio"
     assert result2["data"] == {**TEST_SYSTEM_INFO, **TEST_CONNECTION}
+    assert result2["result"].unique_id == TEST_SYSTEM_INFO["id"]
 
     assert len(mock_setup_entry.mock_calls) == 1
 
@@ -82,12 +89,15 @@ async def test_form_updates_unique_id(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
-    with patch(
-        "homeassistant.components.volumio.config_flow.Volumio.get_system_info",
-        return_value=TEST_SYSTEM_INFO,
-    ), patch(
-        "homeassistant.components.volumio.async_setup_entry",
-        return_value=True,
+    with (
+        patch(
+            "homeassistant.components.volumio.config_flow.Volumio.get_system_info",
+            return_value=TEST_SYSTEM_INFO,
+        ),
+        patch(
+            "homeassistant.components.volumio.async_setup_entry",
+            return_value=None,
+        ),
     ):
         result2 = await hass.config_entries.flow.async_configure(
             result["flow_id"],
@@ -95,7 +105,7 @@ async def test_form_updates_unique_id(hass: HomeAssistant) -> None:
         )
         await hass.async_block_till_done()
 
-    assert result2["type"] == "abort"
+    assert result2["type"] is FlowResultType.ABORT
     assert result2["reason"] == "already_configured"
 
     assert entry.data == {**TEST_SYSTEM_INFO, **TEST_CONNECTION}
@@ -106,23 +116,27 @@ async def test_empty_system_info(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {}
 
-    with patch(
-        "homeassistant.components.volumio.config_flow.Volumio.get_system_info",
-        return_value={},
-    ), patch(
-        "homeassistant.components.volumio.async_setup_entry",
-        return_value=True,
-    ) as mock_setup_entry:
+    with (
+        patch(
+            "homeassistant.components.volumio.config_flow.Volumio.get_system_info",
+            return_value={},
+        ),
+        patch(
+            "homeassistant.components.volumio.async_setup_entry",
+            return_value=None,
+        ) as mock_setup_entry,
+    ):
         result2 = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             TEST_CONNECTION,
         )
         await hass.async_block_till_done()
 
-    assert result2["type"] == "create_entry"
+    # pylint: disable-next=home-assistant-tests-config-flow-unique-id
+    assert result2["type"] is FlowResultType.CREATE_ENTRY
     assert result2["title"] == TEST_CONNECTION["host"]
     assert result2["data"] == {
         "host": TEST_CONNECTION["host"],
@@ -149,8 +163,26 @@ async def test_form_cannot_connect(hass: HomeAssistant) -> None:
             TEST_CONNECTION,
         )
 
-    assert result2["type"] == "form"
+    assert result2["type"] is FlowResultType.FORM
     assert result2["errors"] == {"base": "cannot_connect"}
+
+    with (
+        patch(
+            "homeassistant.components.volumio.config_flow.Volumio.get_system_info",
+            return_value=TEST_SYSTEM_INFO,
+        ),
+        patch(
+            "homeassistant.components.volumio.async_setup_entry",
+            return_value=None,
+        ),
+    ):
+        result3 = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            TEST_CONNECTION,
+        )
+        await hass.async_block_till_done()
+
+    assert result3["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_form_exception(hass: HomeAssistant) -> None:
@@ -168,8 +200,26 @@ async def test_form_exception(hass: HomeAssistant) -> None:
             TEST_CONNECTION,
         )
 
-    assert result2["type"] == "form"
+    assert result2["type"] is FlowResultType.FORM
     assert result2["errors"] == {"base": "unknown"}
+
+    with (
+        patch(
+            "homeassistant.components.volumio.config_flow.Volumio.get_system_info",
+            return_value=TEST_SYSTEM_INFO,
+        ),
+        patch(
+            "homeassistant.components.volumio.async_setup_entry",
+            return_value=None,
+        ),
+    ):
+        result3 = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            TEST_CONNECTION,
+        )
+        await hass.async_block_till_done()
+
+    assert result3["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_discovery(hass: HomeAssistant) -> None:
@@ -179,20 +229,23 @@ async def test_discovery(hass: HomeAssistant) -> None:
         DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=TEST_DISCOVERY
     )
 
-    with patch(
-        "homeassistant.components.volumio.config_flow.Volumio.get_system_info",
-        return_value=TEST_SYSTEM_INFO,
-    ), patch(
-        "homeassistant.components.volumio.async_setup_entry",
-        return_value=True,
-    ) as mock_setup_entry:
+    with (
+        patch(
+            "homeassistant.components.volumio.config_flow.Volumio.get_system_info",
+            return_value=TEST_SYSTEM_INFO,
+        ),
+        patch(
+            "homeassistant.components.volumio.async_setup_entry",
+            return_value=None,
+        ) as mock_setup_entry,
+    ):
         result2 = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             user_input={},
         )
         await hass.async_block_till_done()
 
-    assert result2["type"] == "create_entry"
+    assert result2["type"] is FlowResultType.CREATE_ENTRY
     assert result2["title"] == TEST_DISCOVERY_RESULT["name"]
     assert result2["data"] == TEST_DISCOVERY_RESULT
 
@@ -218,7 +271,7 @@ async def test_discovery_cannot_connect(hass: HomeAssistant) -> None:
             user_input={},
         )
 
-    assert result2["type"] == "abort"
+    assert result2["type"] is FlowResultType.ABORT
     assert result2["reason"] == "cannot_connect"
 
 
@@ -227,13 +280,13 @@ async def test_discovery_duplicate_data(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=TEST_DISCOVERY
     )
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "discovery_confirm"
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_ZEROCONF}, data=TEST_DISCOVERY
     )
-    assert result["type"] == "abort"
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_in_progress"
 
 
@@ -255,7 +308,7 @@ async def test_discovery_updates_unique_id(hass: HomeAssistant) -> None:
 
     with patch(
         "homeassistant.components.volumio.async_setup_entry",
-        return_value=True,
+        return_value=None,
     ) as mock_setup_entry:
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
@@ -264,7 +317,7 @@ async def test_discovery_updates_unique_id(hass: HomeAssistant) -> None:
         )
         await hass.async_block_till_done()
 
-    assert result["type"] == "abort"
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
 
     assert entry.data == TEST_DISCOVERY_RESULT

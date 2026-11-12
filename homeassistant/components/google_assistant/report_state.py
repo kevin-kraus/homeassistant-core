@@ -1,13 +1,20 @@
 """Google Report State implementation."""
-from __future__ import annotations
 
 from collections import deque
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
-from homeassistant.const import MATCH_ALL
-from homeassistant.core import CALLBACK_TYPE, HassJob, HomeAssistant, State, callback
-from homeassistant.helpers.event import async_call_later, async_track_state_change
+from homeassistant.const import EVENT_STATE_CHANGED
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    Event,
+    EventStateChangedData,
+    HassJob,
+    HomeAssistant,
+    callback,
+)
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.significant_change import create_checker
 
 from .const import DOMAIN
@@ -29,10 +36,13 @@ _LOGGER = logging.getLogger(__name__)
 
 
 @callback
-def async_enable_report_state(hass: HomeAssistant, google_config: AbstractConfig):
-    """Enable state reporting."""
+def async_enable_report_state(
+    hass: HomeAssistant, google_config: AbstractConfig
+) -> CALLBACK_TYPE:
+    """Enable state and notification reporting."""
     checker = None
     unsub_pending: CALLBACK_TYPE | None = None
+    stopped = False
     pending: deque[dict[str, Any]] = deque([{}])
 
     async def report_states(now=None):
@@ -48,7 +58,8 @@ def async_enable_report_state(hass: HomeAssistant, google_config: AbstractConfig
                 {"devices": {"states": pending.popleft()}}
             )
 
-        # If things got queued up in last batch while we were reporting, schedule ourselves again
+        # If things got queued up in last batch while we were
+        # reporting, schedule ourselves again
         if pending[0]:
             unsub_pending = async_call_later(
                 hass, REPORT_STATE_WINDOW, report_states_job
@@ -58,27 +69,56 @@ def async_enable_report_state(hass: HomeAssistant, google_config: AbstractConfig
 
     report_states_job = HassJob(report_states)
 
-    async def async_entity_state_listener(
-        changed_entity: str, old_state: State | None, new_state: State | None
-    ) -> None:
-        nonlocal unsub_pending, checker
-
-        if not hass.is_running:
-            return
-
-        if not new_state:
-            return
-
-        if not google_config.should_expose(new_state):
-            return
-
-        if not (
-            entity := async_get_google_entity_if_supported_cached(
+    @callback
+    def _async_entity_state_filter(data: EventStateChangedData) -> bool:
+        return bool(
+            hass.is_running
+            and (new_state := data["new_state"])
+            and google_config.should_expose(new_state.entity_id)
+            and async_get_google_entity_if_supported_cached(
                 hass, google_config, new_state
             )
-        ):
-            return
+        )
 
+    async def _async_entity_state_listener(event: Event[EventStateChangedData]) -> None:
+        """Handle state changes."""
+        nonlocal unsub_pending, checker
+        data = event.data
+        new_state = data["new_state"]
+        if TYPE_CHECKING:
+            assert new_state is not None  # verified in filter
+        entity = async_get_google_entity_if_supported_cached(
+            hass, google_config, new_state
+        )
+        if TYPE_CHECKING:
+            assert entity is not None  # verified in filter
+
+        # We only trigger notifications on changes in the state value, not attributes.
+        # This is mainly designed for our event entity types
+        # We need to synchronize notifications using a `SYNC` response,
+        # together with other state changes.
+        if (
+            (old_state := data["old_state"])
+            and old_state.state != new_state.state
+            and (notifications := entity.notifications_serialize()) is not None
+        ):
+            event_id = uuid4().hex
+            payload = {
+                "devices": {"notifications": {entity.state.entity_id: notifications}}
+            }
+            _LOGGER.info(
+                "Sending event notification for entity %s",
+                entity.state.entity_id,
+            )
+            result = await google_config.async_sync_notification_all(event_id, payload)
+            if result != 200:
+                _LOGGER.error(
+                    "Unable to send notification with result"
+                    " code: %s, check log for more info",
+                    result,
+                )
+
+        changed_entity = data["entity_id"]
         try:
             entity_data = entity.query_serialize()
         except SmartHomeError as err:
@@ -91,7 +131,8 @@ def async_enable_report_state(hass: HomeAssistant, google_config: AbstractConfig
 
         _LOGGER.debug("Scheduling report state for %s: %s", changed_entity, entity_data)
 
-        # If a significant change is already scheduled and we have another significant one,
+        # If a significant change is already scheduled and we
+        # have another significant one,
         # let's create a new batch of changes
         if changed_entity in pending[-1]:
             pending.append({})
@@ -146,7 +187,15 @@ def async_enable_report_state(hass: HomeAssistant, google_config: AbstractConfig
 
         await google_config.async_report_state_all({"devices": {"states": entities}})
 
-        unsub = async_track_state_change(hass, MATCH_ALL, async_entity_state_listener)
+        # Reporting may have been disabled while awaiting the initial report
+        if stopped:
+            return
+
+        unsub = hass.bus.async_listen(
+            EVENT_STATE_CHANGED,
+            _async_entity_state_listener,
+            event_filter=_async_entity_state_filter,
+        )
 
     unsub = async_call_later(
         hass, INITIAL_REPORT_DELAY, HassJob(initial_report, cancel_on_shutdown=True)
@@ -154,6 +203,8 @@ def async_enable_report_state(hass: HomeAssistant, google_config: AbstractConfig
 
     @callback
     def unsub_all():
+        nonlocal stopped
+        stopped = True
         unsub()
         if unsub_pending:
             unsub_pending()

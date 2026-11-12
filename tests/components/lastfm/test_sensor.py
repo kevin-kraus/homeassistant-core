@@ -1,38 +1,18 @@
 """Tests for the lastfm sensor."""
+
+from datetime import timedelta
 from unittest.mock import patch
 
+from freezegun.api import FrozenDateTimeFactory
 import pytest
+from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 from syrupy.assertion import SnapshotAssertion
 
-from homeassistant.components.lastfm.const import CONF_USERS, DOMAIN
-from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_API_KEY, CONF_PLATFORM, Platform
+from homeassistant.components.lastfm.const import ATTR_LAST_PLAYED, STATE_NOT_SCROBBLING
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import issue_registry as ir
-from homeassistant.setup import async_setup_component
 
-from . import API_KEY, USERNAME_1, MockUser
+from . import MockUser
 from .conftest import ComponentSetup
-
-from tests.common import MockConfigEntry
-
-LEGACY_CONFIG = {
-    Platform.SENSOR: [
-        {CONF_PLATFORM: DOMAIN, CONF_API_KEY: API_KEY, CONF_USERS: [USERNAME_1]}
-    ]
-}
-
-
-async def test_legacy_migration(hass: HomeAssistant) -> None:
-    """Test migration from yaml to config flow."""
-    with patch("pylast.User", return_value=MockUser()):
-        assert await async_setup_component(hass, Platform.SENSOR, LEGACY_CONFIG)
-        await hass.async_block_till_done()
-    entries = hass.config_entries.async_entries(DOMAIN)
-    assert len(entries) == 1
-    assert entries[0].state is ConfigEntryState.LOADED
-    issue_registry = ir.async_get(hass)
-    assert len(issue_registry.issues) == 1
 
 
 @pytest.mark.parametrize(
@@ -41,6 +21,8 @@ async def test_legacy_migration(hass: HomeAssistant) -> None:
         ("not_found_user"),
         ("first_time_user"),
         ("default_user"),
+        ("hidden_user"),
+        ("recent_tracks_error_user"),
     ],
 )
 async def test_sensors(
@@ -60,3 +42,32 @@ async def test_sensors(
     state = hass.states.get(entity_id)
 
     assert state == snapshot
+
+
+async def test_sensor_hidden_listening_information(
+    hass: HomeAssistant,
+    setup_integration: ComponentSetup,
+    config_entry: MockConfigEntry,
+    hidden_user: MockUser,
+    caplog: pytest.LogCaptureFixture,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Test sensor stays available when the user hides recent listening info."""
+    await setup_integration(config_entry, hidden_user)
+
+    state = hass.states.get("sensor.lastfm_testaccount1")
+    assert state.state == STATE_NOT_SCROBBLING
+    assert state.attributes[ATTR_LAST_PLAYED] is None
+    warnings = caplog.text.count("has hidden their recent listening information")
+    assert warnings > 0
+
+    with patch("pylast.User", return_value=hidden_user) as mock_user:
+        freezer.tick(timedelta(seconds=30))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    mock_user.assert_called()
+    assert config_entry.runtime_data.last_update_success
+    assert (
+        caplog.text.count("has hidden their recent listening information") == warnings
+    )

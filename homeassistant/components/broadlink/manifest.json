@@ -1,8 +1,10 @@
 {
   "domain": "broadlink",
   "name": "Broadlink",
-  "codeowners": ["@danielhiversen", "@felipediel", "@L-I-Am"],
+  "categories": ["buttons_remotes", "plugs_switches"],
+  "codeowners": ["@danielhiversen", "@felipediel", "@L-I-Am", "@DAB-LABS"],
   "config_flow": true,
+  "connectivity": ["infrared", "network", "rf"],
   "dhcp": [
     {
       "registered_devices": true
@@ -30,10 +32,14 @@
     },
     {
       "macaddress": "EC0BAE*"
+    },
+    {
+      "macaddress": "780F77*"
     }
   ],
   "documentation": "https://www.home-assistant.io/integrations/broadlink",
+  "integration_type": "device",
   "iot_class": "local_polling",
-  "loggers": ["broadlink"],
-  "requirements": ["broadlink==0.18.3"]
+  "loggers": ["broadlink_async"],
+  "requirements": ["broadlink-async==1.2.1"]
 }

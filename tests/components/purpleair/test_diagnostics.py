@@ -1,9 +1,11 @@
 """Test PurpleAir diagnostics."""
+
+from pytest_homeassistant.common import ANY
+from pytest_homeassistant.components.diagnostics import get_diagnostics_for_config_entry
+from pytest_homeassistant.typing import ClientSessionGenerator
+
 from homeassistant.components.diagnostics import REDACTED
 from homeassistant.core import HomeAssistant
-
-from tests.components.diagnostics import get_diagnostics_for_config_entry
-from tests.typing import ClientSessionGenerator
 
 
 async def test_entry_diagnostics(
@@ -17,6 +19,7 @@ async def test_entry_diagnostics(
         "entry": {
             "entry_id": config_entry.entry_id,
             "version": 1,
+            "minor_version": 1,
             "domain": "purpleair",
             "title": REDACTED,
             "data": {
@@ -32,6 +35,10 @@ async def test_entry_diagnostics(
             "source": "user",
             "unique_id": REDACTED,
             "disabled_by": None,
+            "created_at": ANY,
+            "modified_at": ANY,
+            "discovery_keys": {},
+            "subentries": [],
         },
         "data": {
             "fields": [

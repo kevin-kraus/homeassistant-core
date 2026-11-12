@@ -1,121 +1,113 @@
 """Tests for the WLED update platform."""
-from unittest.mock import MagicMock
 
+from collections.abc import Generator
+from unittest.mock import MagicMock, patch
+
+from freezegun.api import FrozenDateTimeFactory
 import pytest
-from wled import WLEDError
+from pytest_homeassistant.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+    async_load_json_object_fixture,
+    snapshot_platform,
+)
+from syrupy.assertion import SnapshotAssertion
+from wled import Releases, WLEDError, WLEDUpgradeError
 
+from homeassistant.components.homeassistant import (
+    DOMAIN as HOME_ASSISTANT_DOMAIN,
+    SERVICE_UPDATE_ENTITY,
+)
 from homeassistant.components.update import (
     ATTR_INSTALLED_VERSION,
     ATTR_LATEST_VERSION,
-    ATTR_RELEASE_SUMMARY,
     ATTR_RELEASE_URL,
-    ATTR_TITLE,
     DOMAIN as UPDATE_DOMAIN,
     SERVICE_INSTALL,
-    UpdateDeviceClass,
-    UpdateEntityFeature,
 )
+from homeassistant.components.wled import WLED_KEY
+from homeassistant.components.wled.const import (
+    DOMAIN,
+    RELEASES_SCAN_INTERVAL,
+    SCAN_INTERVAL,
+)
+from homeassistant.components.wled.coordinator import WLEDReleasesDataUpdateCoordinator
 from homeassistant.const import (
-    ATTR_DEVICE_CLASS,
     ATTR_ENTITY_ID,
-    ATTR_ENTITY_PICTURE,
-    ATTR_ICON,
-    ATTR_SUPPORTED_FEATURES,
     STATE_OFF,
     STATE_ON,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
-    EntityCategory,
+    Platform,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.update_coordinator import REQUEST_REFRESH_DEFAULT_COOLDOWN
+from homeassistant.setup import async_setup_component
 
 pytestmark = pytest.mark.usefixtures("init_integration")
 
 
+@pytest.fixture(autouse=True)
+def override_platforms() -> Generator[None]:
+    """Override PLATFORMS."""
+    with patch("homeassistant.components.wled.PLATFORMS", [Platform.UPDATE]):
+        yield
+
+
 async def test_update_available(
-    hass: HomeAssistant, entity_registry: er.EntityRegistry
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    snapshot: SnapshotAssertion,
+    mock_config_entry: MockConfigEntry,
 ) -> None:
-    """Test the firmware update available."""
+    """Test states of the update."""
+    await snapshot_platform(hass, entity_registry, snapshot, mock_config_entry.entry_id)
+
     assert (state := hass.states.get("update.wled_rgb_light_firmware"))
-    assert state.attributes.get(ATTR_DEVICE_CLASS) == UpdateDeviceClass.FIRMWARE
     assert state.state == STATE_ON
-    assert (
-        state.attributes[ATTR_ENTITY_PICTURE]
-        == "https://brands.home-assistant.io/_/wled/icon.png"
-    )
-    assert state.attributes[ATTR_INSTALLED_VERSION] == "0.8.5"
-    assert state.attributes[ATTR_LATEST_VERSION] == "0.12.0"
-    assert state.attributes[ATTR_RELEASE_SUMMARY] is None
-    assert (
-        state.attributes[ATTR_RELEASE_URL]
-        == "https://github.com/Aircoookie/WLED/releases/tag/v0.12.0"
-    )
-    assert (
-        state.attributes[ATTR_SUPPORTED_FEATURES]
-        == UpdateEntityFeature.INSTALL | UpdateEntityFeature.SPECIFIC_VERSION
-    )
-    assert state.attributes[ATTR_TITLE] == "WLED"
-    assert ATTR_ICON not in state.attributes
 
-    assert (entry := entity_registry.async_get("update.wled_rgb_light_firmware"))
-    assert entry.unique_id == "aabbccddeeff"
-    assert entry.entity_category is EntityCategory.CONFIG
+    assert snapshot == state
 
 
-@pytest.mark.parametrize("device_fixture", ["rgb_no_update"])
 async def test_update_information_available(
-    hass: HomeAssistant, entity_registry: er.EntityRegistry
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    entity_registry: er.EntityRegistry,
+    mock_wled_releases: MagicMock,
+    snapshot: SnapshotAssertion,
 ) -> None:
     """Test having no update information available at all."""
-    assert (state := hass.states.get("update.wled_rgb_light_firmware"))
-    assert state.attributes.get(ATTR_DEVICE_CLASS) == UpdateDeviceClass.FIRMWARE
-    assert state.state == STATE_UNKNOWN
-    assert state.attributes[ATTR_INSTALLED_VERSION] is None
-    assert state.attributes[ATTR_LATEST_VERSION] is None
-    assert state.attributes[ATTR_RELEASE_SUMMARY] is None
-    assert state.attributes[ATTR_RELEASE_URL] is None
-    assert (
-        state.attributes[ATTR_SUPPORTED_FEATURES]
-        == UpdateEntityFeature.INSTALL | UpdateEntityFeature.SPECIFIC_VERSION
+    mock_wled_releases.releases.return_value = Releases(
+        beta=None,
+        nightly=None,
+        repo="https://github.com/wled/WLED",
+        stable=None,
     )
-    assert state.attributes[ATTR_TITLE] == "WLED"
-    assert ATTR_ICON not in state.attributes
 
-    entry = entity_registry.async_get("update.wled_rgb_light_firmware")
-    assert entry
-    assert entry.unique_id == "aabbccddeeff"
-    assert entry.entity_category is EntityCategory.CONFIG
+    freezer.tick(RELEASES_SCAN_INTERVAL)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+
+    assert (state := hass.states.get("update.wled_rgb_light_firmware"))
+    assert state.state == STATE_UNKNOWN
+
+    assert snapshot == state
 
 
 @pytest.mark.usefixtures("entity_registry_enabled_by_default")
 @pytest.mark.parametrize("device_fixture", ["rgb_websocket"])
 async def test_no_update_available(
-    hass: HomeAssistant, entity_registry: er.EntityRegistry
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    snapshot: SnapshotAssertion,
 ) -> None:
     """Test there is no update available."""
     assert (state := hass.states.get("update.wled_websocket_firmware"))
     assert state.state == STATE_OFF
-    assert state.attributes.get(ATTR_DEVICE_CLASS) == UpdateDeviceClass.FIRMWARE
-    assert state.attributes[ATTR_INSTALLED_VERSION] == "0.12.0-b2"
-    assert state.attributes[ATTR_LATEST_VERSION] == "0.12.0-b2"
-    assert state.attributes[ATTR_RELEASE_SUMMARY] is None
-    assert (
-        state.attributes[ATTR_RELEASE_URL]
-        == "https://github.com/Aircoookie/WLED/releases/tag/v0.12.0-b2"
-    )
-    assert (
-        state.attributes[ATTR_SUPPORTED_FEATURES]
-        == UpdateEntityFeature.INSTALL | UpdateEntityFeature.SPECIFIC_VERSION
-    )
-    assert state.attributes[ATTR_TITLE] == "WLED"
-    assert ATTR_ICON not in state.attributes
 
-    assert ATTR_ICON not in state.attributes
-
-    assert (entry := entity_registry.async_get("update.wled_websocket_firmware"))
-    assert entry.unique_id == "aabbccddeeff"
-    assert entry.entity_category is EntityCategory.CONFIG
+    assert snapshot == state
 
 
 async def test_update_error(
@@ -135,7 +127,7 @@ async def test_update_error(
 
     assert (state := hass.states.get("update.wled_rgb_light_firmware"))
     assert state.state == STATE_UNAVAILABLE
-    assert "Invalid response from API" in caplog.text
+    assert "Invalid response from WLED API" in caplog.text
 
 
 async def test_update_stay_stable(
@@ -150,8 +142,8 @@ async def test_update_stay_stable(
     """
     assert (state := hass.states.get("update.wled_rgb_light_firmware"))
     assert state.state == STATE_ON
-    assert state.attributes[ATTR_INSTALLED_VERSION] == "0.8.5"
-    assert state.attributes[ATTR_LATEST_VERSION] == "0.12.0"
+    assert state.attributes[ATTR_INSTALLED_VERSION] == "0.14.4"
+    assert state.attributes[ATTR_LATEST_VERSION] == "0.99.0"
 
     await hass.services.async_call(
         UPDATE_DOMAIN,
@@ -160,7 +152,7 @@ async def test_update_stay_stable(
         blocking=True,
     )
     assert mock_wled.upgrade.call_count == 1
-    mock_wled.upgrade.assert_called_with(version="0.12.0")
+    mock_wled.upgrade.assert_called_with(version="0.99.0")
 
 
 @pytest.mark.parametrize("device_fixture", ["rgbw"])
@@ -176,8 +168,8 @@ async def test_update_beta_to_stable(
     """
     assert (state := hass.states.get("update.wled_rgbw_light_firmware"))
     assert state.state == STATE_ON
-    assert state.attributes[ATTR_INSTALLED_VERSION] == "0.8.6b4"
-    assert state.attributes[ATTR_LATEST_VERSION] == "0.8.6"
+    assert state.attributes[ATTR_INSTALLED_VERSION] == "0.99.0b1"
+    assert state.attributes[ATTR_LATEST_VERSION] == "0.99.0"
 
     await hass.services.async_call(
         UPDATE_DOMAIN,
@@ -186,7 +178,7 @@ async def test_update_beta_to_stable(
         blocking=True,
     )
     assert mock_wled.upgrade.call_count == 1
-    mock_wled.upgrade.assert_called_with(version="0.8.6")
+    mock_wled.upgrade.assert_called_with(version="0.99.0")
 
 
 @pytest.mark.parametrize("device_fixture", ["rgb_single_segment"])
@@ -201,8 +193,8 @@ async def test_update_stay_beta(
     """
     assert (state := hass.states.get("update.wled_rgb_light_firmware"))
     assert state.state == STATE_ON
-    assert state.attributes[ATTR_INSTALLED_VERSION] == "0.8.6b1"
-    assert state.attributes[ATTR_LATEST_VERSION] == "0.8.6b2"
+    assert state.attributes[ATTR_INSTALLED_VERSION] == "1.0.0b4"
+    assert state.attributes[ATTR_LATEST_VERSION] == "1.0.0b5"
 
     await hass.services.async_call(
         UPDATE_DOMAIN,
@@ -211,4 +203,172 @@ async def test_update_stay_beta(
         blocking=True,
     )
     assert mock_wled.upgrade.call_count == 1
-    mock_wled.upgrade.assert_called_with(version="0.8.6b2")
+    mock_wled.upgrade.assert_called_with(version="1.0.0b5")
+
+
+async def test_update_entities(
+    hass: HomeAssistant,
+    mock_wled: MagicMock,
+    mock_wled_releases: MagicMock,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Test update entity async_update method."""
+    await async_setup_component(hass, HOME_ASSISTANT_DOMAIN, {})
+
+    assert (state := hass.states.get("update.wled_rgb_light_firmware"))
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_LATEST_VERSION] == "0.99.0"
+    mock_wled_releases.releases.assert_called_once()
+
+    mock_wled_releases.releases.return_value = Releases(
+        beta="1.0.0b5",
+        nightly=None,
+        repo="wled/WLED",
+        stable="16.0.0",
+    )
+
+    await hass.services.async_call(
+        HOME_ASSISTANT_DOMAIN,
+        SERVICE_UPDATE_ENTITY,
+        {ATTR_ENTITY_ID: state.entity_id},
+        blocking=True,
+    )
+
+    # Ensure we pass the debouncer interval to allow async_request_refresh to execute
+    freezer.tick(REQUEST_REFRESH_DEFAULT_COOLDOWN)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+
+    # releases() should be called twice: once on setup, once for the manual update
+    assert mock_wled_releases.releases.call_count == 2
+
+    assert (state := hass.states.get("update.wled_rgb_light_firmware"))
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_LATEST_VERSION] == "16.0.0"
+
+
+async def test_update_without_known_repo(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    mock_wled: MagicMock,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """Test there is no update entity when the firmware's origin isn't known."""
+    assert entity_registry.async_get("update.wled_rgb_light_firmware")
+    mock_wled.update.return_value.info.repo = None
+
+    await hass.config_entries.async_reload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    # The update entity it had before is removed, not left unavailable.
+    assert entity_registry.async_get("update.wled_rgb_light_firmware") is None
+    assert hass.states.get("update.wled_rgb_light_firmware") is None
+
+
+async def test_update_release_url_from_repo(
+    hass: HomeAssistant,
+    mock_wled: MagicMock,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """Test the release notes link to the repository the firmware comes from."""
+    mock_wled.update.return_value.info.repo = "MoonModules/WLED-MM"
+
+    await hass.config_entries.async_reload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert (state := hass.states.get("update.wled_rgb_light_firmware"))
+    assert state.attributes[ATTR_RELEASE_URL] == (
+        "https://github.com/MoonModules/WLED-MM/releases/tag/v0.99.0"
+    )
+
+
+async def test_update_without_firmware_for_device(
+    hass: HomeAssistant,
+    mock_wled: MagicMock,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """Test a version without a firmware file for the device isn't offered."""
+    mock_wled.firmware_available.return_value = False
+
+    await hass.config_entries.async_reload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert (state := hass.states.get("update.wled_rgb_light_firmware"))
+    assert state.state == STATE_OFF
+    assert state.attributes[ATTR_LATEST_VERSION] == "0.14.4"
+    mock_wled.firmware_available.assert_called_with(version="0.99.0")
+
+
+async def test_update_when_firmware_check_fails(
+    hass: HomeAssistant,
+    mock_wled: MagicMock,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """Test the update is still offered when GitHub can't tell."""
+    mock_wled.firmware_available.side_effect = WLEDError
+
+    await hass.config_entries.async_reload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert (state := hass.states.get("update.wled_rgb_light_firmware"))
+    assert state.state == STATE_ON
+    assert state.attributes[ATTR_LATEST_VERSION] == "0.99.0"
+
+
+async def test_update_install_refused(
+    hass: HomeAssistant,
+    mock_wled: MagicMock,
+) -> None:
+    """Test a firmware update the device refuses shows why."""
+    mock_wled.upgrade.side_effect = WLEDUpgradeError("Client is not on local subnet")
+
+    with pytest.raises(
+        HomeAssistantError, match="Client is not on local subnet"
+    ) as exc_info:
+        await hass.services.async_call(
+            UPDATE_DOMAIN,
+            SERVICE_INSTALL,
+            {ATTR_ENTITY_ID: "update.wled_rgb_light_firmware"},
+            blocking=True,
+        )
+
+    assert exc_info.value.translation_key == "firmware_upgrade_failed"
+
+
+async def test_update_follows_firmware_repository_change(
+    hass: HomeAssistant,
+    mock_wled: MagicMock,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Test the update entity follows a device flashed with another firmware."""
+    assert (state := hass.states.get("update.wled_rgb_light_firmware"))
+    assert "github.com/wled/WLED/" in state.attributes[ATTR_RELEASE_URL]
+
+    # The library updates the device object in place, like the real one does.
+    data = await async_load_json_object_fixture(hass, "rgb.json", DOMAIN)
+    data["info"]["repo"] = "MoonModules/WLED-MM"
+    mock_wled.update.return_value.update_from_dict(data)
+    freezer.tick(SCAN_INTERVAL)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert (state := hass.states.get("update.wled_rgb_light_firmware"))
+    assert "github.com/MoonModules/WLED-MM/" in state.attributes[ATTR_RELEASE_URL]
+
+
+async def test_update_while_releases_are_still_coming(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """Test a device set up while the shared releases aren't fetched yet."""
+    # Another device from the same repository is still fetching the releases.
+    hass.data[WLED_KEY]["wled/WLED"] = WLEDReleasesDataUpdateCoordinator(
+        hass, "wled/WLED"
+    )
+
+    await hass.config_entries.async_reload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert (state := hass.states.get("update.wled_rgb_light_firmware"))
+    assert state.state == STATE_UNKNOWN

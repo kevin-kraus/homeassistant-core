@@ -1,29 +1,28 @@
 """Config Flow for the zamg integration."""
-from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
-import voluptuous as vol
+import probatio
 from zamg import ZamgData
 from zamg.exceptions import ZamgApiError, ZamgNoDataError
 
-from homeassistant import config_entries
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import CONF_STATION_ID, DOMAIN, LOGGER
 
 
-class ZamgConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class ZamgConfigFlow(ConfigFlow, domain=DOMAIN):
     """Config flow for zamg integration."""
 
     VERSION = 1
 
     _client: ZamgData | None = None
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle a flow initiated by the user."""
         if self._client is None:
             self._client = ZamgData()
@@ -42,9 +41,11 @@ class ZamgConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             LOGGER.debug("config_flow: closest station = %s", closest_station_id)
             user_input = {}
 
-            schema = vol.Schema(
+            schema = probatio.Schema(
                 {
-                    vol.Required(CONF_STATION_ID, default=closest_station_id): vol.In(
+                    probatio.Required(
+                        CONF_STATION_ID, default=closest_station_id
+                    ): probatio.In(
                         {
                             station: f"{stations[station][2]} ({station})"
                             for station in stations

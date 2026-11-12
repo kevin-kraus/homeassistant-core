@@ -1,4 +1,5 @@
-"""Constants for the Plex component."""
+"""Constants for the Plex integration."""
+
 from datetime import timedelta
 from typing import Final
 
@@ -17,14 +18,12 @@ PLEXTV_THROTTLE = 60
 
 CLIENT_SCAN_INTERVAL = timedelta(minutes=10)
 DEBOUNCE_TIMEOUT = 1
-DISPATCHERS: Final = "dispatchers"
 GDM_DEBOUNCER: Final = "gdm_debouncer"
 GDM_SCANNER: Final = "gdm_scanner"
-PLATFORMS = frozenset([Platform.BUTTON, Platform.MEDIA_PLAYER, Platform.SENSOR])
-PLATFORMS_COMPLETED: Final = "platforms_completed"
+PLATFORMS = frozenset(
+    [Platform.BUTTON, Platform.MEDIA_PLAYER, Platform.SENSOR, Platform.UPDATE]
+)
 PLAYER_SOURCE = "player_source"
-SERVERS: Final = "servers"
-WEBSOCKETS: Final = "websockets"
 
 PLEX_SERVER_CONFIG = "server_config"
 
@@ -50,11 +49,7 @@ X_PLEX_PLATFORM = "Home Assistant"
 X_PLEX_PRODUCT = "Home Assistant"
 X_PLEX_VERSION = __version__
 
-AUTOMATIC_SETUP_STRING = "Obtain a new token from plex.tv"
-MANUAL_SETUP_STRING = "Configure Plex server manually"
-
 SERVICE_REFRESH_LIBRARY = "refresh_library"
-SERVICE_SCAN_CLIENTS = "scan_for_clients"
 
 PLEX_URI_SCHEME = "plex://"
 

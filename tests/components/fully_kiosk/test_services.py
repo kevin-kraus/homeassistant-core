@@ -1,7 +1,9 @@
 """Test Fully Kiosk Browser services."""
+
 from unittest.mock import MagicMock
 
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components.fully_kiosk.const import (
     ATTR_APPLICATION,
@@ -14,22 +16,20 @@ from homeassistant.components.fully_kiosk.const import (
     SERVICE_START_APPLICATION,
 )
 from homeassistant.const import ATTR_DEVICE_ID
-from homeassistant.core import HomeAssistant
+from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
-
-from tests.common import MockConfigEntry
 
 
 async def test_services(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
     mock_fully_kiosk: MagicMock,
     init_integration: MockConfigEntry,
 ) -> None:
     """Test the Fully Kiosk Browser services."""
-    device_registry = dr.async_get(hass)
-    device_entry = device_registry.async_get_device(
-        identifiers={(DOMAIN, "abcdef-123456")}
+    device_entry = device_registry.async_get_device_by_identifier(
+        (DOMAIN, "abcdef-123456"), init_integration.entry_id
     )
 
     assert device_entry
@@ -71,6 +71,22 @@ async def test_services(
     mock_fully_kiosk.setConfigurationString.assert_called_once_with(key, value)
 
     key = "test_key"
+    value = 1234
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_CONFIG,
+        {
+            ATTR_DEVICE_ID: [device_entry.id],
+            ATTR_KEY: key,
+            ATTR_VALUE: value,
+        },
+        blocking=True,
+    )
+
+    mock_fully_kiosk.setConfigurationString.assert_called_with(key, str(value))
+
+    key = "test_key"
     value = "true"
     await hass.services.async_call(
         DOMAIN,
@@ -103,15 +119,15 @@ async def test_services(
 
 async def test_service_unloaded_entry(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
     mock_fully_kiosk: MagicMock,
     init_integration: MockConfigEntry,
 ) -> None:
     """Test service not called when config entry unloaded."""
-    await init_integration.async_unload(hass)
+    await hass.config_entries.async_unload(init_integration.entry_id)
 
-    device_registry = dr.async_get(hass)
-    device_entry = device_registry.async_get_device(
-        identifiers={(DOMAIN, "abcdef-123456")}
+    device_entry = device_registry.async_get_device_by_identifier(
+        (DOMAIN, "abcdef-123456"), init_integration.entry_id
     )
 
     assert device_entry
@@ -123,7 +139,8 @@ async def test_service_unloaded_entry(
             {ATTR_DEVICE_ID: [device_entry.id], ATTR_URL: "https://nabucasa.com"},
             blocking=True,
         )
-    assert "Test device is not loaded" in str(excinfo)
+    assert excinfo.value.translation_domain == HOMEASSISTANT_DOMAIN
+    assert excinfo.value.translation_key == "service_config_entry_not_loaded"
     mock_fully_kiosk.loadUrl.assert_not_called()
 
     with pytest.raises(HomeAssistantError) as excinfo:
@@ -133,7 +150,8 @@ async def test_service_unloaded_entry(
             {ATTR_DEVICE_ID: [device_entry.id], ATTR_APPLICATION: "de.ozerov.fully"},
             blocking=True,
         )
-    assert "Test device is not loaded" in str(excinfo)
+    assert excinfo.value.translation_domain == HOMEASSISTANT_DOMAIN
+    assert excinfo.value.translation_key == "service_config_entry_not_loaded"
     mock_fully_kiosk.startApplication.assert_not_called()
 
 
@@ -151,24 +169,25 @@ async def test_service_bad_device_id(
             blocking=True,
         )
 
-    assert "Device 'bad-device_id' not found in device registry" in str(excinfo)
+    assert excinfo.value.translation_domain == HOMEASSISTANT_DOMAIN
+    assert excinfo.value.translation_key == "service_device_not_found"
+    assert excinfo.value.translation_placeholders == {"device_id": "bad-device_id"}
 
 
 async def test_service_called_with_non_fkb_target_devices(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
     mock_fully_kiosk: MagicMock,
     init_integration: MockConfigEntry,
 ) -> None:
     """Services raise exception when no valid devices provided."""
-    device_registry = dr.async_get(hass)
-
     other_domain = "NotFullyKiosk"
     other_config_id = "555"
-    await hass.config_entries.async_add(
-        MockConfigEntry(
-            title="Not Fully Kiosk", domain=other_domain, entry_id=other_config_id
-        )
+    other_mock_config_entry = MockConfigEntry(
+        title="Not Fully Kiosk", domain=other_domain, entry_id=other_config_id
     )
+    other_mock_config_entry.add_to_hass(hass)
+
     device_entry = device_registry.async_get_or_create(
         config_entry_id=other_config_id,
         identifiers={
@@ -187,4 +206,9 @@ async def test_service_called_with_non_fkb_target_devices(
             blocking=True,
         )
 
-    assert f"Device '{device_entry.id}' is not a fully_kiosk device" in str(excinfo)
+    assert excinfo.value.translation_domain == HOMEASSISTANT_DOMAIN
+    assert excinfo.value.translation_key == "service_device_wrong_domain"
+    assert excinfo.value.translation_placeholders == {
+        "device_name": device_entry.name,
+        "domain": DOMAIN,
+    }

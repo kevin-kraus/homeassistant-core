@@ -1,13 +1,14 @@
 """Define tests for the Freedompro config flow."""
+
 from unittest.mock import patch
 
 import pytest
 
-from homeassistant import data_entry_flow
 from homeassistant.components.freedompro.const import DOMAIN
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
 
 from .const import DEVICES
 
@@ -24,7 +25,7 @@ async def test_show_form(hass: HomeAssistant) -> None:
         DOMAIN, context={"source": SOURCE_USER}
     )
 
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
 
 
@@ -36,14 +37,27 @@ async def test_invalid_auth(hass: HomeAssistant) -> None:
             "state": False,
             "code": -201,
         },
-    ):
+    ) as mock_get_list:
         result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_USER},
-            data=VALID_CONFIG,
+            DOMAIN, context={"source": SOURCE_USER}
+        )
+
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "user"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=VALID_CONFIG,
         )
 
         assert result["errors"] == {"base": "invalid_auth"}
+
+        mock_get_list.return_value = {"state": True, "devices": DEVICES}
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=VALID_CONFIG,
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_connection_error(hass: HomeAssistant) -> None:
@@ -54,14 +68,27 @@ async def test_connection_error(hass: HomeAssistant) -> None:
             "state": False,
             "code": -200,
         },
-    ):
+    ) as mock_get_list:
         result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_USER},
-            data=VALID_CONFIG,
+            DOMAIN, context={"source": SOURCE_USER}
+        )
+
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "user"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=VALID_CONFIG,
         )
 
         assert result["errors"] == {"base": "cannot_connect"}
+
+        mock_get_list.return_value = {"state": True, "devices": DEVICES}
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=VALID_CONFIG,
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_create_entry(hass: HomeAssistant) -> None:
@@ -74,11 +101,17 @@ async def test_create_entry(hass: HomeAssistant) -> None:
         },
     ):
         result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_USER},
-            data=VALID_CONFIG,
+            DOMAIN, context={"source": SOURCE_USER}
         )
 
-        assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "user"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=VALID_CONFIG,
+        )
+
+        assert result["type"] is FlowResultType.CREATE_ENTRY
         assert result["title"] == "Freedompro"
         assert result["data"][CONF_API_KEY] == "ksdjfgslkjdfksjdfksjgfksjd"

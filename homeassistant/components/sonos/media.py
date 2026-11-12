@@ -1,7 +1,6 @@
 """Support for media metadata handling."""
-from __future__ import annotations
 
-import datetime
+import datetime as dt
 from typing import Any
 
 from soco.core import (
@@ -43,7 +42,7 @@ DURATION_SECONDS = "duration_in_s"
 POSITION_SECONDS = "position_in_s"
 
 
-def _timespan_secs(timespan: str | None) -> None | int:
+def _timespan_secs(timespan: str | None) -> int | None:
     """Parse a time-span into number of seconds."""
     if timespan in UNAVAILABLE_VALUES:
         return None
@@ -74,7 +73,7 @@ class SonosMedia:
         self.uri: str | None = None
 
         self.position: int | None = None
-        self.position_updated_at: datetime.datetime | None = None
+        self.position_updated_at: dt.datetime | None = None
 
     def clear(self) -> None:
         """Clear basic media info."""
@@ -131,7 +130,8 @@ class SonosMedia:
 
         self.artist = track_info.get("artist")
         self.album_name = track_info.get("album")
-        self.title = track_info.get("title")
+        title = track_info.get("title") or ""
+        self.title = title.strip() or None
         self.image_url = track_info.get("album_art")
 
         playlist_position = int(track_info.get("playlist_position", -1))

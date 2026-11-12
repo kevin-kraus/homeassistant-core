@@ -1,11 +1,14 @@
 """The tests for the mochad light platform."""
-import unittest.mock as mock
 
+from unittest import mock
+
+from pymochad.exceptions import MochadException
 import pytest
 
 from homeassistant.components import light
-from homeassistant.components.mochad import light as mochad
+from homeassistant.components.mochad import DOMAIN, light as mochad
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.setup import async_setup_component
 
 
@@ -17,7 +20,7 @@ def pymochad_mock():
 
 
 @pytest.fixture
-def light_mock(hass, brightness):
+def light_mock(hass: HomeAssistant, brightness: int) -> mochad.MochadLight:
     """Mock light."""
     controller_mock = mock.MagicMock()
     dev_dict = {"address": "a1", "name": "fake_light", "brightness_levels": brightness}
@@ -64,3 +67,20 @@ async def test_turn_off(light_mock) -> None:
     """Test turn_off."""
     light_mock.turn_off()
     light_mock.light.send_cmd.assert_called_once_with("off")
+
+
+@pytest.mark.parametrize(
+    ("brightness", "action", "translation_key"),
+    [(32, "turn_on", "turn_on_failed"), (32, "turn_off", "turn_off_failed")],
+)
+async def test_action_raises_on_communication_error(
+    light_mock: mochad.MochadLight, action: str, translation_key: str
+) -> None:
+    """Test that a failed action raises instead of being swallowed."""
+    light_mock.light.send_cmd.side_effect = MochadException("boom")
+    with pytest.raises(HomeAssistantError) as exc_info:
+        getattr(light_mock, action)()
+
+    assert exc_info.value.translation_domain == DOMAIN
+    assert exc_info.value.translation_key == translation_key
+    assert "error" in exc_info.value.translation_placeholders

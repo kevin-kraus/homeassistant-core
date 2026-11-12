@@ -1,12 +1,13 @@
 """Provides device triggers for lutron caseta."""
-from __future__ import annotations
 
 import logging
+from typing import cast
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.device_automation import DEVICE_TRIGGER_BASE_SCHEMA
 from homeassistant.components.homeassistant.triggers import event as event_trigger
+from homeassistant.components.homeassistant.triggers.event import EventTriggerArgument
 from homeassistant.const import (
     CONF_DEVICE_ID,
     CONF_DOMAIN,
@@ -19,15 +20,18 @@ from homeassistant.helpers.trigger import TriggerActionType, TriggerInfo
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
+    ACTION_LONG_PRESS,
+    ACTION_MULTITAP,
     ACTION_PRESS,
     ACTION_RELEASE,
     ATTR_ACTION,
     ATTR_BUTTON_TYPE,
+    BRIDGE_DEVICE_TYPES_WITH_LONG_HOLD,
     CONF_SUBTYPE,
     DOMAIN,
     LUTRON_CASETA_BUTTON_EVENT,
 )
-from .models import LutronCasetaData
+from .models import LutronCasetaConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,11 +41,22 @@ def _reverse_dict(forward_dict: dict) -> dict:
     return {v: k for k, v in forward_dict.items()}
 
 
-SUPPORTED_INPUTS_EVENTS_TYPES = [ACTION_PRESS, ACTION_RELEASE]
+SUPPORTED_INPUTS_EVENTS_TYPES = [
+    ACTION_PRESS,
+    ACTION_LONG_PRESS,
+    ACTION_MULTITAP,
+    ACTION_RELEASE,
+]
+
+# Triggers that are only available on specific bridge types.
+# Actions absent from this dict are supported by all bridge types.
+TRIGGER_REQUIRED_BRIDGE_TYPES: dict[str, frozenset[str]] = {
+    ACTION_LONG_PRESS: BRIDGE_DEVICE_TYPES_WITH_LONG_HOLD,
+}
 
 LUTRON_BUTTON_TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_TYPE): vol.In(SUPPORTED_INPUTS_EVENTS_TYPES),
+        probatio.Required(CONF_TYPE): probatio.In(SUPPORTED_INPUTS_EVENTS_TYPES),
     }
 )
 
@@ -70,7 +85,7 @@ PICO_2_BUTTON_BUTTON_TYPES_TO_LEAP = {
 }
 PICO_2_BUTTON_TRIGGER_SCHEMA = LUTRON_BUTTON_TRIGGER_SCHEMA.extend(
     {
-        vol.Required(CONF_SUBTYPE): vol.In(PICO_2_BUTTON_BUTTON_TYPES_TO_LIP),
+        probatio.Required(CONF_SUBTYPE): probatio.In(PICO_2_BUTTON_BUTTON_TYPES_TO_LIP),
     }
 )
 
@@ -89,7 +104,7 @@ PICO_2_BUTTON_RAISE_LOWER_BUTTON_TYPES_TO_LEAP = {
 }
 PICO_2_BUTTON_RAISE_LOWER_TRIGGER_SCHEMA = LUTRON_BUTTON_TRIGGER_SCHEMA.extend(
     {
-        vol.Required(CONF_SUBTYPE): vol.In(
+        probatio.Required(CONF_SUBTYPE): probatio.In(
             PICO_2_BUTTON_RAISE_LOWER_BUTTON_TYPES_TO_LIP
         ),
     }
@@ -108,7 +123,7 @@ PICO_3_BUTTON_BUTTON_TYPES_TO_LEAP = {
 }
 PICO_3_BUTTON_TRIGGER_SCHEMA = LUTRON_BUTTON_TRIGGER_SCHEMA.extend(
     {
-        vol.Required(CONF_SUBTYPE): vol.In(PICO_3_BUTTON_BUTTON_TYPES_TO_LIP),
+        probatio.Required(CONF_SUBTYPE): probatio.In(PICO_3_BUTTON_BUTTON_TYPES_TO_LIP),
     }
 )
 
@@ -128,7 +143,7 @@ PICO_3_BUTTON_RAISE_LOWER_BUTTON_TYPES_TO_LEAP = {
 }
 PICO_3_BUTTON_RAISE_LOWER_TRIGGER_SCHEMA = LUTRON_BUTTON_TRIGGER_SCHEMA.extend(
     {
-        vol.Required(CONF_SUBTYPE): vol.In(
+        probatio.Required(CONF_SUBTYPE): probatio.In(
             PICO_3_BUTTON_RAISE_LOWER_BUTTON_TYPES_TO_LIP
         ),
     }
@@ -151,7 +166,7 @@ LEAP_TO_PICO_4_BUTTON_BUTTON_TYPES = {
 }
 PICO_4_BUTTON_TRIGGER_SCHEMA = LUTRON_BUTTON_TRIGGER_SCHEMA.extend(
     {
-        vol.Required(CONF_SUBTYPE): vol.In(PICO_4_BUTTON_BUTTON_TYPES_TO_LIP),
+        probatio.Required(CONF_SUBTYPE): probatio.In(PICO_4_BUTTON_BUTTON_TYPES_TO_LIP),
     }
 )
 
@@ -173,7 +188,9 @@ LEAP_TO_PICO_4_BUTTON_ZONE_BUTTON_TYPES = {
 }
 PICO_4_BUTTON_ZONE_TRIGGER_SCHEMA = LUTRON_BUTTON_TRIGGER_SCHEMA.extend(
     {
-        vol.Required(CONF_SUBTYPE): vol.In(PICO_4_BUTTON_ZONE_BUTTON_TYPES_TO_LIP),
+        probatio.Required(CONF_SUBTYPE): probatio.In(
+            PICO_4_BUTTON_ZONE_BUTTON_TYPES_TO_LIP
+        ),
     }
 )
 
@@ -192,7 +209,9 @@ PICO_4_BUTTON_SCENE_BUTTON_TYPES_TO_LEAP = {
 }
 PICO_4_BUTTON_SCENE_TRIGGER_SCHEMA = LUTRON_BUTTON_TRIGGER_SCHEMA.extend(
     {
-        vol.Required(CONF_SUBTYPE): vol.In(PICO_4_BUTTON_SCENE_BUTTON_TYPES_TO_LIP),
+        probatio.Required(CONF_SUBTYPE): probatio.In(
+            PICO_4_BUTTON_SCENE_BUTTON_TYPES_TO_LIP
+        ),
     }
 )
 
@@ -211,7 +230,9 @@ PICO_4_BUTTON_2_GROUP_BUTTON_TYPES_TO_LEAP = {
 }
 PICO_4_BUTTON_2_GROUP_TRIGGER_SCHEMA = LUTRON_BUTTON_TRIGGER_SCHEMA.extend(
     {
-        vol.Required(CONF_SUBTYPE): vol.In(PICO_4_BUTTON_2_GROUP_BUTTON_TYPES_TO_LIP),
+        probatio.Required(CONF_SUBTYPE): probatio.In(
+            PICO_4_BUTTON_2_GROUP_BUTTON_TYPES_TO_LIP
+        ),
     }
 )
 
@@ -271,7 +292,26 @@ FOUR_GROUP_REMOTE_BUTTON_TYPES_TO_LEAP = {
 }
 FOUR_GROUP_REMOTE_TRIGGER_SCHEMA = LUTRON_BUTTON_TRIGGER_SCHEMA.extend(
     {
-        vol.Required(CONF_SUBTYPE): vol.In(FOUR_GROUP_REMOTE_BUTTON_TYPES_TO_LIP),
+        probatio.Required(CONF_SUBTYPE): probatio.In(
+            FOUR_GROUP_REMOTE_BUTTON_TYPES_TO_LIP
+        ),
+    }
+)
+
+# See mappings at https://github.com/home-assistant/core/issues/137548#issuecomment-2643440119
+PADDLE_SWITCH_PICO_BUTTON_TYPES_TO_LIP = {
+    "on": 2,  # 'Number': 2 in LIP
+    "off": 4,  # 'Number': 4 in LIP
+}
+PADDLE_SWITCH_PICO_BUTTON_TYPES_TO_LEAP = {
+    "on": 0,  # 'ButtonNumber': 0 in LEAP
+    "off": 2,  # 'ButtonNumber': 2 in LEAP
+}
+PADDLE_SWITCH_PICO_TRIGGER_SCHEMA = LUTRON_BUTTON_TRIGGER_SCHEMA.extend(
+    {
+        probatio.Required(CONF_SUBTYPE): probatio.In(
+            PADDLE_SWITCH_PICO_BUTTON_TYPES_TO_LIP
+        ),
     }
 )
 
@@ -286,6 +326,7 @@ DEVICE_TYPE_SCHEMA_MAP = {
     "Pico4ButtonZone": PICO_4_BUTTON_ZONE_TRIGGER_SCHEMA,
     "Pico4Button2Group": PICO_4_BUTTON_2_GROUP_TRIGGER_SCHEMA,
     "FourGroupRemote": FOUR_GROUP_REMOTE_TRIGGER_SCHEMA,
+    "PaddleSwitchPico": PADDLE_SWITCH_PICO_TRIGGER_SCHEMA,
 }
 
 DEVICE_TYPE_SUBTYPE_MAP_TO_LIP = {
@@ -298,6 +339,7 @@ DEVICE_TYPE_SUBTYPE_MAP_TO_LIP = {
     "Pico4ButtonZone": PICO_4_BUTTON_ZONE_BUTTON_TYPES_TO_LIP,
     "Pico4Button2Group": PICO_4_BUTTON_2_GROUP_BUTTON_TYPES_TO_LIP,
     "FourGroupRemote": FOUR_GROUP_REMOTE_BUTTON_TYPES_TO_LIP,
+    "PaddleSwitchPico": PADDLE_SWITCH_PICO_BUTTON_TYPES_TO_LIP,
 }
 
 DEVICE_TYPE_SUBTYPE_MAP_TO_LEAP = {
@@ -310,13 +352,14 @@ DEVICE_TYPE_SUBTYPE_MAP_TO_LEAP = {
     "Pico4ButtonZone": PICO_4_BUTTON_ZONE_BUTTON_TYPES_TO_LEAP,
     "Pico4Button2Group": PICO_4_BUTTON_2_GROUP_BUTTON_TYPES_TO_LEAP,
     "FourGroupRemote": FOUR_GROUP_REMOTE_BUTTON_TYPES_TO_LEAP,
+    "PaddleSwitchPico": PADDLE_SWITCH_PICO_BUTTON_TYPES_TO_LEAP,
 }
 
 LEAP_TO_DEVICE_TYPE_SUBTYPE_MAP: dict[str, dict[int, str]] = {
     k: _reverse_dict(v) for k, v in DEVICE_TYPE_SUBTYPE_MAP_TO_LEAP.items()
 }
 
-TRIGGER_SCHEMA = vol.Any(
+TRIGGER_SCHEMA = probatio.Any(
     PICO_2_BUTTON_TRIGGER_SCHEMA,
     PICO_3_BUTTON_RAISE_LOWER_TRIGGER_SCHEMA,
     PICO_4_BUTTON_TRIGGER_SCHEMA,
@@ -324,6 +367,7 @@ TRIGGER_SCHEMA = vol.Any(
     PICO_4_BUTTON_ZONE_TRIGGER_SCHEMA,
     PICO_4_BUTTON_2_GROUP_TRIGGER_SCHEMA,
     FOUR_GROUP_REMOTE_TRIGGER_SCHEMA,
+    PADDLE_SWITCH_PICO_TRIGGER_SCHEMA,
 )
 
 
@@ -357,7 +401,8 @@ async def async_validate_trigger_config(
         )
         return config
 
-    # Retrieve list of valid buttons, preferring hard-coded triggers from device_trigger.py
+    # Retrieve list of valid buttons, preferring
+    # hard-coded triggers from device_trigger.py
     device_type = keypad["type"]
     valid_buttons = DEVICE_TYPE_SUBTYPE_MAP_TO_LEAP.get(
         device_type,
@@ -378,8 +423,6 @@ async def async_get_triggers(
     hass: HomeAssistant, device_id: str
 ) -> list[dict[str, str]]:
     """List device triggers for lutron caseta devices."""
-    triggers = []
-
     # Check if device is a valid keypad.  Return empty if not.
     if not (data := get_lutron_data_by_dr_id(hass, device_id)) or not (
         keypad := data.keypad_data.dr_device_id_to_keypad.get(device_id)
@@ -388,25 +431,32 @@ async def async_get_triggers(
 
     keypad_button_names_to_leap = data.keypad_data.button_names_to_leap
 
-    # Retrieve list of valid buttons, preferring hard-coded triggers from device_trigger.py
+    # Retrieve list of valid buttons, preferring
+    # hard-coded triggers from device_trigger.py
     valid_buttons = DEVICE_TYPE_SUBTYPE_MAP_TO_LEAP.get(
         keypad["type"],
         keypad_button_names_to_leap[keypad["lutron_device_id"]],
     )
 
-    for trigger in SUPPORTED_INPUTS_EVENTS_TYPES:
-        for subtype in valid_buttons:
-            triggers.append(
-                {
-                    CONF_PLATFORM: "device",
-                    CONF_DEVICE_ID: device_id,
-                    CONF_DOMAIN: DOMAIN,
-                    CONF_TYPE: trigger,
-                    CONF_SUBTYPE: subtype,
-                }
-            )
+    bridge_type = data.bridge_device.get("type", "")
+    supported_triggers = [
+        t
+        for t in SUPPORTED_INPUTS_EVENTS_TYPES
+        if t not in TRIGGER_REQUIRED_BRIDGE_TYPES
+        or bridge_type in TRIGGER_REQUIRED_BRIDGE_TYPES[t]
+    ]
 
-    return triggers
+    return [
+        {
+            CONF_PLATFORM: "device",
+            CONF_DEVICE_ID: device_id,
+            CONF_DOMAIN: DOMAIN,
+            CONF_TYPE: trigger,
+            CONF_SUBTYPE: subtype,
+        }
+        for trigger in supported_triggers
+        for subtype in valid_buttons
+    ]
 
 
 async def async_attach_trigger(
@@ -420,9 +470,9 @@ async def async_attach_trigger(
         hass,
         event_trigger.TRIGGER_SCHEMA(
             {
-                event_trigger.CONF_PLATFORM: CONF_EVENT,
-                event_trigger.CONF_EVENT_TYPE: LUTRON_CASETA_BUTTON_EVENT,
-                event_trigger.CONF_EVENT_DATA: {
+                EventTriggerArgument.PLATFORM: CONF_EVENT,
+                EventTriggerArgument.EVENT_TYPE: LUTRON_CASETA_BUTTON_EVENT,
+                EventTriggerArgument.EVENT_DATA: {
                     CONF_DEVICE_ID: config[CONF_DEVICE_ID],
                     ATTR_ACTION: config[CONF_TYPE],
                     ATTR_BUTTON_TYPE: config[CONF_SUBTYPE],
@@ -437,11 +487,14 @@ async def async_attach_trigger(
 
 def get_lutron_data_by_dr_id(hass: HomeAssistant, device_id: str):
     """Get a lutron integration data for the given device registry device id."""
-    if DOMAIN not in hass.data:
-        return None
-
-    for entry_id in hass.data[DOMAIN]:
-        data: LutronCasetaData = hass.data[DOMAIN][entry_id]
-        if data.keypad_data.dr_device_id_to_keypad.get(device_id):
-            return data
+    entries = cast(
+        list[LutronCasetaConfigEntry],
+        hass.config_entries.async_entries(
+            DOMAIN, include_ignore=False, include_disabled=False
+        ),
+    )
+    for entry in entries:
+        if hasattr(entry, "runtime_data"):
+            if entry.runtime_data.keypad_data.dr_device_id_to_keypad.get(device_id):
+                return entry.runtime_data
     return None

@@ -1,4 +1,8 @@
 """Test the Rainforest Eagle diagnostics."""
+
+from pytest_homeassistant.components.diagnostics import get_diagnostics_for_config_entry
+from pytest_homeassistant.typing import ClientSessionGenerator
+
 from homeassistant.components.diagnostics import REDACTED
 from homeassistant.components.rainforest_eagle.const import (
     CONF_CLOUD_ID,
@@ -7,9 +11,6 @@ from homeassistant.components.rainforest_eagle.const import (
 from homeassistant.core import HomeAssistant
 
 from . import MOCK_200_RESPONSE_WITHOUT_PRICE
-
-from tests.components.diagnostics import get_diagnostics_for_config_entry
-from tests.typing import ClientSessionGenerator
 
 
 async def test_entry_diagnostics(
@@ -26,7 +27,7 @@ async def test_entry_diagnostics(
     config_entry_dict["data"][CONF_CLOUD_ID] = REDACTED
 
     assert result == {
-        "config_entry": config_entry_dict,
+        "config_entry": config_entry_dict | {"discovery_keys": {}},
         "data": {
             var["Name"]: var["Value"]
             for var in MOCK_200_RESPONSE_WITHOUT_PRICE.values()

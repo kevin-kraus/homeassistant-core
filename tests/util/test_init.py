@@ -1,11 +1,13 @@
 """Test Home Assistant util methods."""
+
 from datetime import datetime, timedelta
+import math
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from homeassistant import util
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util
 
 
 def test_raise_if_invalid_filename() -> None:
@@ -53,8 +55,8 @@ def test_slugify() -> None:
     assert util.slugify("影師嗎") == "ying_shi_ma"
     assert util.slugify("けいふぉんと") == "keihuonto"
     assert util.slugify("$") == "unknown"
-    assert util.slugify("Ⓐ") == "unknown"
-    assert util.slugify("ⓑ") == "unknown"
+    assert util.slugify("Ⓐ") == "a"
+    assert util.slugify("ⓑ") == "b"
     assert util.slugify("$$$") == "unknown"
     assert util.slugify("$something") == "something"
     assert util.slugify("") == ""
@@ -84,6 +86,19 @@ def test_convert() -> None:
     assert util.convert("NOT A NUMBER", int, 1) == 1
     assert util.convert(None, int, 1) == 1
     assert util.convert(object, int, 1) == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "to_type"),
+    [
+        pytest.param(math.inf, int, id="inf_to_int"),
+        pytest.param(-math.inf, int, id="negative_inf_to_int"),
+        pytest.param(10**400, float, id="huge_int_to_float"),
+    ],
+)
+def test_convert_overflow_returns_default(value: float, to_type: type) -> None:
+    """Test convert returns the default when the conversion overflows."""
+    assert util.convert(value, to_type, 1) == 1
 
 
 def test_ensure_unique_string() -> None:
@@ -143,6 +158,30 @@ def test_throttle() -> None:
 
     assert len(calls1) == 3
     assert len(calls2) == 2
+
+
+def test_throttle_refused_no_throttle_call_keeps_cooldown() -> None:
+    """Test a no_throttle call refused by limit_no_throttle keeps the cooldown."""
+    calls = []
+
+    @util.Throttle(timedelta(seconds=10), timedelta(seconds=5))
+    def test_throttle():
+        calls.append(1)
+        return True
+
+    now = dt_util.utcnow()
+
+    with patch("homeassistant.util.utcnow", return_value=now):
+        assert test_throttle() is True
+
+    # Refused by limit_no_throttle, must not restart the min_time cooldown
+    with patch("homeassistant.util.utcnow", return_value=now + timedelta(seconds=2)):
+        assert test_throttle(no_throttle=True) is None
+
+    with patch("homeassistant.util.utcnow", return_value=now + timedelta(seconds=11)):
+        assert test_throttle() is True
+
+    assert len(calls) == 2
 
 
 def test_throttle_per_instance() -> None:
@@ -232,3 +271,31 @@ async def test_throttle_async() -> None:
 
     assert (await test_method2()) is True
     assert (await test_method2()) is None
+
+
+@pytest.mark.parametrize(
+    ("input", "expected"),
+    [
+        ("fooBar", "foo_bar"),
+        ("FooBar", "foo_bar"),
+        ("Foobar", "foobar"),
+        ("Foo.bar", "foo_bar"),
+        ("_foo-Bar", "_foo_bar"),
+        ("HTTP", "http"),
+        ("HTTPResponse", "http_response"),
+        ("iPhone", "i_phone"),
+        ("IPAddress", "ip_address"),
+        ("IP_Address", "ip_address"),
+        ("My IP Address", "my_ip_address"),
+        ("LocalIP", "local_ip"),
+        ("Python3Thing", "python3_thing"),
+        ("mTLS", "m_tls"),
+        ("DTrace", "dtrace"),
+        ("IPv4", "ipv4"),
+        ("ID", "id"),
+        ("", ""),
+    ],
+)
+def test_snakecase(input, expected) -> None:
+    """Test snake casing a string."""
+    assert util.snakecase(input) == expected

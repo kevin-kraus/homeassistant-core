@@ -1,4 +1,5 @@
 """Constants for the NFAndroidTV integration."""
+
 DOMAIN: str = "nfandroidtv"
 CONF_DURATION = "duration"
 CONF_FONTSIZE = "fontsize"
@@ -18,7 +19,9 @@ ATTR_POSITION = "position"
 ATTR_TRANSPARENCY = "transparency"
 ATTR_COLOR = "color"
 ATTR_BKGCOLOR = "bkgcolor"
+ATTR_BGCOLOR = "background_color"
 ATTR_INTERRUPT = "interrupt"
+ATTR_INTERACTIVE = "interactive"
 ATTR_IMAGE = "image"
 # Attributes contained in image
 ATTR_IMAGE_URL = "url"
@@ -26,7 +29,6 @@ ATTR_IMAGE_PATH = "path"
 ATTR_IMAGE_USERNAME = "username"
 ATTR_IMAGE_PASSWORD = "password"
 ATTR_IMAGE_AUTH = "auth"
-ATTR_ICON = "icon"
 # Attributes contained in icon
 ATTR_ICON_URL = "url"
 ATTR_ICON_PATH = "path"

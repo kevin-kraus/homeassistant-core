@@ -1,20 +1,20 @@
 """Support for Neato Connected Vacuums switches."""
-from __future__ import annotations
 
 from datetime import timedelta
 import logging
-from typing import Any
+from typing import Any, override
 
 from pybotvac.exceptions import NeatoRobotException
 from pybotvac.robot import Robot
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_OFF, STATE_ON, EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import NEATO_LOGIN, NEATO_ROBOTS, SCAN_INTERVAL_MINUTES
+from . import NeatoConfigEntry
+from .const import DOMAIN, SCAN_INTERVAL_MINUTES
 from .entity import NeatoEntity
 from .hub import NeatoHub
 
@@ -28,15 +28,17 @@ SWITCH_TYPES = {SWITCH_TYPE_SCHEDULE: ["Schedule"]}
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: NeatoConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Neato switch with config entry."""
-    dev = []
-    neato: NeatoHub = hass.data[NEATO_LOGIN]
-
-    for robot in hass.data[NEATO_ROBOTS]:
-        for type_name in SWITCH_TYPES:
-            dev.append(NeatoConnectedSwitch(neato, robot, type_name))
+    hub = entry.runtime_data
+    dev = [
+        NeatoConnectedSwitch(hub, robot, type_name)
+        for robot in hub.robots
+        for type_name in SWITCH_TYPES
+    ]
 
     if not dev:
         return
@@ -88,28 +90,33 @@ class NeatoConnectedSwitch(NeatoEntity, SwitchEntity):
             )
 
     @property
+    @override
     def is_on(self) -> bool:
         """Return true if switch is on."""
         return bool(
             self.type == SWITCH_TYPE_SCHEDULE and self._schedule_state == STATE_ON
         )
 
+    @override
     def turn_on(self, **kwargs: Any) -> None:
         """Turn the switch on."""
         if self.type == SWITCH_TYPE_SCHEDULE:
             try:
                 self.robot.enable_schedule()
             except NeatoRobotException as ex:
-                _LOGGER.error(
-                    "Neato switch connection error '%s': %s", self.entity_id, ex
-                )
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="enable_schedule_failed",
+                ) from ex
 
+    @override
     def turn_off(self, **kwargs: Any) -> None:
         """Turn the switch off."""
         if self.type == SWITCH_TYPE_SCHEDULE:
             try:
                 self.robot.disable_schedule()
             except NeatoRobotException as ex:
-                _LOGGER.error(
-                    "Neato switch connection error '%s': %s", self.entity_id, ex
-                )
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="disable_schedule_failed",
+                ) from ex

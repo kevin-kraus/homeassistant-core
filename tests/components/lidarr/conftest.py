@@ -1,5 +1,4 @@
 """Configure pytest for Lidarr tests."""
-from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Generator
 from http import HTTPStatus
@@ -7,6 +6,8 @@ from http import HTTPStatus
 from aiohttp.client_exceptions import ClientError
 from aiopyarr.lidarr_client import LidarrClient
 import pytest
+from pytest_homeassistant.common import MockConfigEntry, load_fixture
+from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from homeassistant.components.lidarr.const import DOMAIN
 from homeassistant.const import (
@@ -19,9 +20,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.setup import async_setup_component
 
-from tests.common import MockConfigEntry, load_fixture
-from tests.test_util.aiohttp import AiohttpClientMocker
-
 URL = "http://127.0.0.1:8668"
 API_KEY = "1234567890abcdef1234567890abcdef"
 client = LidarrClient(session=async_get_clientsession, api_token=API_KEY, url=URL)
@@ -31,7 +29,7 @@ MOCK_INPUT = {CONF_URL: URL, CONF_VERIFY_SSL: False}
 
 CONF_DATA = MOCK_INPUT | {CONF_API_KEY: API_KEY}
 
-ComponentSetup = Callable[[], Awaitable[None]]
+type ComponentSetup = Callable[[], Awaitable[None]]
 
 
 def mock_error(
@@ -43,10 +41,12 @@ def mock_error(
         aioclient_mock.get(f"{API_URL}/rootfolder", status=status)
         aioclient_mock.get(f"{API_URL}/system/status", status=status)
         aioclient_mock.get(f"{API_URL}/wanted/missing", status=status)
+        aioclient_mock.get(f"{API_URL}/album", status=status)
     aioclient_mock.get(f"{API_URL}/queue", exc=ClientError)
     aioclient_mock.get(f"{API_URL}/rootfolder", exc=ClientError)
     aioclient_mock.get(f"{API_URL}/system/status", exc=ClientError)
     aioclient_mock.get(f"{API_URL}/wanted/missing", exc=ClientError)
+    aioclient_mock.get(f"{API_URL}/album", exc=ClientError)
 
 
 @pytest.fixture
@@ -115,6 +115,11 @@ def mock_connection(aioclient_mock: AiohttpClientMocker) -> None:
         headers={"Content-Type": CONTENT_TYPE_JSON},
     )
     aioclient_mock.get(
+        f"{API_URL}/album",
+        text=load_fixture("lidarr/album.json"),
+        headers={"Content-Type": CONTENT_TYPE_JSON},
+    )
+    aioclient_mock.get(
         f"{API_URL}/rootfolder",
         text=load_fixture("lidarr/rootfolder-linux.json"),
         headers={"Content-Type": CONTENT_TYPE_JSON},
@@ -131,7 +136,7 @@ def mock_config_entry(hass: HomeAssistant) -> MockConfigEntry:
 async def mock_setup_integration(
     hass: HomeAssistant,
     config_entry: MockConfigEntry,
-) -> Generator[ComponentSetup, None, None]:
+) -> Generator[ComponentSetup]:
     """Set up the lidarr integration in Home Assistant."""
     config_entry.add_to_hass(hass)
 

@@ -1,8 +1,9 @@
 """Tests for the Home Assistant Websocket API."""
+
 from unittest.mock import Mock, patch
 
 from aiohttp import WSMsgType
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.websocket_api import (
     async_register_command,
@@ -40,7 +41,7 @@ async def test_quiting_hass(hass: HomeAssistant, websocket_client) -> None:
 
     msg = await websocket_client.receive()
 
-    assert msg.type == WSMsgType.CLOSE
+    assert msg.type is WSMsgType.CLOSE
 
 
 async def test_unknown_command(websocket_client) -> None:
@@ -69,14 +70,14 @@ async def test_handler_failing(hass: HomeAssistant, websocket_client) -> None:
     assert msg["error"]["code"] == const.ERR_UNKNOWN_ERROR
 
 
-async def test_invalid_vol(hass: HomeAssistant, websocket_client) -> None:
-    """Test a command that raises invalid vol error."""
+async def test_invalid_probatio(hass: HomeAssistant, websocket_client) -> None:
+    """Test a command that raises invalid probatio error."""
     async_register_command(
         hass,
         "bla",
         Mock(side_effect=TypeError),
         messages.BASE_COMMAND_MESSAGE_SCHEMA.extend(
-            {"type": "bla", vol.Required("test_config"): str}
+            {"type": "bla", probatio.Required("test_config"): str}
         ),
     )
 
@@ -87,4 +88,4 @@ async def test_invalid_vol(hass: HomeAssistant, websocket_client) -> None:
     assert msg["type"] == const.TYPE_RESULT
     assert not msg["success"]
     assert msg["error"]["code"] == const.ERR_INVALID_FORMAT
-    assert "expected str for dictionary value" in msg["error"]["message"]
+    assert "expected str at" in msg["error"]["message"]

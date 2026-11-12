@@ -1,7 +1,6 @@
 """Provides device automations for Cover."""
-from __future__ import annotations
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.const import (
     CONF_ABOVE,
@@ -11,10 +10,6 @@ from homeassistant.const import (
     CONF_DOMAIN,
     CONF_ENTITY_ID,
     CONF_TYPE,
-    STATE_CLOSED,
-    STATE_CLOSING,
-    STATE_OPEN,
-    STATE_OPENING,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import (
@@ -26,43 +21,48 @@ from homeassistant.helpers.config_validation import DEVICE_CONDITION_BASE_SCHEMA
 from homeassistant.helpers.entity import get_supported_features
 from homeassistant.helpers.typing import ConfigType, TemplateVarsType
 
-from . import (
-    DOMAIN,
-    SUPPORT_CLOSE,
-    SUPPORT_OPEN,
-    SUPPORT_SET_POSITION,
-    SUPPORT_SET_TILT_POSITION,
-)
+from . import CoverEntityFeature, CoverEntityStateAttribute, CoverState
+from .const import DOMAIN
 
 # mypy: disallow-any-generics
 
 POSITION_CONDITION_TYPES = {"is_position", "is_tilt_position"}
 STATE_CONDITION_TYPES = {"is_open", "is_closed", "is_opening", "is_closing"}
 
-POSITION_CONDITION_SCHEMA = vol.All(
+POSITION_CONDITION_SCHEMA = probatio.All(
     DEVICE_CONDITION_BASE_SCHEMA.extend(
         {
-            vol.Required(CONF_ENTITY_ID): cv.entity_id_or_uuid,
-            vol.Required(CONF_TYPE): vol.In(POSITION_CONDITION_TYPES),
-            vol.Optional(CONF_ABOVE): vol.All(
-                vol.Coerce(int), vol.Range(min=0, max=100)
+            probatio.Required(CONF_ENTITY_ID): cv.entity_id_or_uuid,
+            probatio.Required(CONF_TYPE): probatio.In(POSITION_CONDITION_TYPES),
+            probatio.Optional(CONF_ABOVE): probatio.All(
+                probatio.Coerce(int), probatio.Percentage()
             ),
-            vol.Optional(CONF_BELOW): vol.All(
-                vol.Coerce(int), vol.Range(min=0, max=100)
+            probatio.Optional(CONF_BELOW): probatio.All(
+                probatio.Coerce(int), probatio.Percentage()
             ),
         }
     ),
-    cv.has_at_least_one_key(CONF_BELOW, CONF_ABOVE),
+    probatio.AtLeastOne(CONF_BELOW, CONF_ABOVE),
 )
 
 STATE_CONDITION_SCHEMA = DEVICE_CONDITION_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_ENTITY_ID): cv.entity_id_or_uuid,
-        vol.Required(CONF_TYPE): vol.In(STATE_CONDITION_TYPES),
+        probatio.Required(CONF_ENTITY_ID): cv.entity_id_or_uuid,
+        probatio.Required(CONF_TYPE): probatio.In(STATE_CONDITION_TYPES),
     }
 )
 
-CONDITION_SCHEMA = vol.Any(POSITION_CONDITION_SCHEMA, STATE_CONDITION_SCHEMA)
+CONDITION_SCHEMA = probatio.TaggedUnion(
+    CONF_TYPE,
+    {
+        "is_position": POSITION_CONDITION_SCHEMA,
+        "is_tilt_position": POSITION_CONDITION_SCHEMA,
+        "is_open": STATE_CONDITION_SCHEMA,
+        "is_closed": STATE_CONDITION_SCHEMA,
+        "is_opening": STATE_CONDITION_SCHEMA,
+        "is_closing": STATE_CONDITION_SCHEMA,
+    },
+)
 
 
 async def async_get_conditions(
@@ -78,7 +78,9 @@ async def async_get_conditions(
             continue
 
         supported_features = get_supported_features(hass, entry.entity_id)
-        supports_open_close = supported_features & (SUPPORT_OPEN | SUPPORT_CLOSE)
+        supports_open_close = supported_features & (
+            CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE
+        )
 
         # Add conditions for each entity that belongs to this integration
         base_condition = {
@@ -92,9 +94,9 @@ async def async_get_conditions(
             conditions += [
                 {**base_condition, CONF_TYPE: cond} for cond in STATE_CONDITION_TYPES
             ]
-        if supported_features & SUPPORT_SET_POSITION:
+        if supported_features & CoverEntityFeature.SET_POSITION:
             conditions.append({**base_condition, CONF_TYPE: "is_position"})
-        if supported_features & SUPPORT_SET_TILT_POSITION:
+        if supported_features & CoverEntityFeature.SET_TILT_POSITION:
             conditions.append({**base_condition, CONF_TYPE: "is_tilt_position"})
 
     return conditions
@@ -102,19 +104,19 @@ async def async_get_conditions(
 
 async def async_get_condition_capabilities(
     hass: HomeAssistant, config: ConfigType
-) -> dict[str, vol.Schema]:
+) -> dict[str, probatio.Schema]:
     """List condition capabilities."""
     if config[CONF_TYPE] not in ["is_position", "is_tilt_position"]:
         return {}
 
     return {
-        "extra_fields": vol.Schema(
+        "extra_fields": probatio.Schema(
             {
-                vol.Optional(CONF_ABOVE, default=0): vol.All(
-                    vol.Coerce(int), vol.Range(min=0, max=100)
+                probatio.Optional(CONF_ABOVE, default=0): probatio.All(
+                    probatio.Coerce(int), probatio.Percentage()
                 ),
-                vol.Optional(CONF_BELOW, default=100): vol.All(
-                    vol.Coerce(int), vol.Range(min=0, max=100)
+                probatio.Optional(CONF_BELOW, default=100): probatio.All(
+                    probatio.Coerce(int), probatio.Percentage()
                 ),
             }
         )
@@ -131,13 +133,13 @@ def async_condition_from_config(
 
     if config[CONF_TYPE] in STATE_CONDITION_TYPES:
         if config[CONF_TYPE] == "is_open":
-            state = STATE_OPEN
+            state = CoverState.OPEN
         elif config[CONF_TYPE] == "is_closed":
-            state = STATE_CLOSED
+            state = CoverState.CLOSED
         elif config[CONF_TYPE] == "is_opening":
-            state = STATE_OPENING
+            state = CoverState.OPENING
         elif config[CONF_TYPE] == "is_closing":
-            state = STATE_CLOSING
+            state = CoverState.CLOSING
 
         def test_is_state(hass: HomeAssistant, variables: TemplateVarsType) -> bool:
             """Test if an entity is a certain state."""
@@ -146,9 +148,9 @@ def async_condition_from_config(
         return test_is_state
 
     if config[CONF_TYPE] == "is_position":
-        position_attr = "current_position"
+        position_attr = CoverEntityStateAttribute.CURRENT_POSITION
     if config[CONF_TYPE] == "is_tilt_position":
-        position_attr = "current_tilt_position"
+        position_attr = CoverEntityStateAttribute.CURRENT_TILT_POSITION
     min_pos = config.get(CONF_ABOVE)
     max_pos = config.get(CONF_BELOW)
 

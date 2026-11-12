@@ -1,9 +1,8 @@
 """Set up the demo environment that mimics interaction with devices."""
-from __future__ import annotations
 
 import asyncio
 
-from homeassistant import config_entries, setup
+from homeassistant import config_entries, core as ha, setup
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
@@ -12,7 +11,6 @@ from homeassistant.const import (
     Platform,
     UnitOfSoundPressure,
 )
-import homeassistant.core as ha
 from homeassistant.core import Event, HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.discovery import async_load_platform
@@ -34,10 +32,13 @@ COMPONENTS_WITH_CONFIG_ENTRY_DEMO_PLATFORM = [
     Platform.EVENT,
     Platform.FAN,
     Platform.HUMIDIFIER,
+    Platform.LAWN_MOWER,
     Platform.LIGHT,
     Platform.LOCK,
     Platform.MEDIA_PLAYER,
+    Platform.NOTIFY,
     Platform.NUMBER,
+    Platform.REMOTE,
     Platform.SELECT,
     Platform.SENSOR,
     Platform.SIREN,
@@ -47,29 +48,32 @@ COMPONENTS_WITH_CONFIG_ENTRY_DEMO_PLATFORM = [
     Platform.TIME,
     Platform.UPDATE,
     Platform.VACUUM,
+    Platform.VALVE,
     Platform.WATER_HEATER,
+    Platform.WEATHER,
 ]
 
 COMPONENTS_WITH_DEMO_PLATFORM = [
+    Platform.GEO_LOCATION,
     Platform.TTS,
-    Platform.MAILBOX,
-    Platform.NOTIFY,
     Platform.IMAGE_PROCESSING,
     Platform.DEVICE_TRACKER,
-    Platform.WEATHER,
 ]
 
 CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
+__all__ = [
+    "DOMAIN",
+]
+
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the demo environment."""
-    if not hass.config_entries.async_entries(DOMAIN):
-        hass.async_create_task(
-            hass.config_entries.flow.async_init(
-                DOMAIN, context={"source": config_entries.SOURCE_IMPORT}, data={}
-            )
+    hass.async_create_task(
+        hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_IMPORT}, data={}
         )
+    )
 
     if DOMAIN not in config:
         return True
@@ -184,21 +188,19 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
     """Set the config entry up."""
     # Set up demo platforms with config entry
     await hass.config_entries.async_forward_entry_setups(
         config_entry, COMPONENTS_WITH_CONFIG_ENTRY_DEMO_PLATFORM
     )
-    return True
 
 
-async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
     """Unload a config entry."""
-    await hass.config_entries.async_unload_platforms(
+    await hass.config_entries.async_unload_platforms_or_raise(
         config_entry, COMPONENTS_WITH_CONFIG_ENTRY_DEMO_PLATFORM
     )
-    return True
 
 
 async def finish_setup(hass: HomeAssistant, config: ConfigType) -> None:

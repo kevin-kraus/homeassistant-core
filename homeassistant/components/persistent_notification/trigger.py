@@ -1,14 +1,13 @@
 """Offer persistent_notifications triggered automation rules."""
-from __future__ import annotations
 
 import logging
 from typing import Final
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.const import CONF_PLATFORM
 from homeassistant.core import CALLBACK_TYPE, HassJob, HomeAssistant, callback
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.trigger import TriggerActionType, TriggerData, TriggerInfo
 from homeassistant.helpers.typing import ConfigType
 
@@ -22,10 +21,10 @@ CONF_UPDATE_TYPE: Final = "update_type"
 
 TRIGGER_SCHEMA = cv.TRIGGER_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_PLATFORM): "persistent_notification",
-        vol.Optional(CONF_NOTIFICATION_ID): str,
-        vol.Optional(CONF_UPDATE_TYPE): vol.All(
-            cv.ensure_list, [vol.Coerce(UpdateType)]
+        probatio.Required(CONF_PLATFORM): "persistent_notification",
+        probatio.Optional(CONF_NOTIFICATION_ID): str,
+        probatio.Optional(CONF_UPDATE_TYPE): probatio.All(
+            probatio.EnsureList(), [probatio.Coerce(UpdateType)]
         ),
     }
 )

@@ -1,12 +1,13 @@
 """Services tests for the Google Mail integration."""
-from unittest.mock import patch
 
-from google.auth.exceptions import RefreshError
+from unittest.mock import Mock, patch
+
 import pytest
 
 from homeassistant import config_entries
 from homeassistant.components.google_mail import DOMAIN
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError, OAuth2TokenRequestReauthError
 
 from .conftest import BUILD, SENSOR, TOKEN, ComponentSetup
 
@@ -58,12 +59,22 @@ async def test_set_vacation(
 
 
 async def test_reauth_trigger(
-    hass: HomeAssistant, setup_integration: ComponentSetup
+    hass: HomeAssistant,
+    setup_integration: ComponentSetup,
 ) -> None:
     """Test reauth is triggered after a refresh error during service call."""
     await setup_integration()
 
-    with patch(TOKEN, side_effect=RefreshError), pytest.raises(RefreshError):
+    with (
+        patch(
+            TOKEN,
+            side_effect=OAuth2TokenRequestReauthError(
+                request_info=Mock(),
+                domain=DOMAIN,
+            ),
+        ),
+        pytest.raises(HomeAssistantError),
+    ):
         await hass.services.async_call(
             DOMAIN,
             "set_vacation",

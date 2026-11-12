@@ -1,5 +1,4 @@
 """Provide tests for mysensors light platform."""
-from __future__ import annotations
 
 from collections.abc import Callable
 from unittest.mock import MagicMock, call
@@ -12,6 +11,7 @@ from homeassistant.components.light import (
     ATTR_RGBW_COLOR,
     DOMAIN as LIGHT_DOMAIN,
 )
+from homeassistant.const import ATTR_BATTERY_LEVEL
 from homeassistant.core import HomeAssistant
 
 
@@ -28,6 +28,7 @@ async def test_dimmer_node(
 
     assert state
     assert state.state == "off"
+    assert state.attributes[ATTR_BATTERY_LEVEL] == 0
 
     # Test turn on
     await hass.services.async_call(
@@ -108,6 +109,7 @@ async def test_rgb_node(
 
     assert state
     assert state.state == "off"
+    assert state.attributes[ATTR_BATTERY_LEVEL] == 0
 
     # Test turn on
     await hass.services.async_call(
@@ -218,6 +220,7 @@ async def test_rgbw_node(
 
     assert state
     assert state.state == "off"
+    assert state.attributes[ATTR_BATTERY_LEVEL] == 0
 
     # Test turn on
     await hass.services.async_call(

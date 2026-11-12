@@ -1,9 +1,9 @@
 """Support for Tractive sensors."""
-from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import override
+
+from aiotractive import Trackable
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -11,53 +11,37 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_BATTERY_LEVEL,
     PERCENTAGE,
     EntityCategory,
+    UnitOfMass,
     UnitOfTime,
 )
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
-from . import Trackables, TractiveClient
 from .const import (
-    ATTR_ACTIVITY_LABEL,
-    ATTR_CALORIES,
     ATTR_DAILY_GOAL,
     ATTR_MINUTES_ACTIVE,
     ATTR_MINUTES_DAY_SLEEP,
     ATTR_MINUTES_NIGHT_SLEEP,
     ATTR_MINUTES_REST,
-    ATTR_SLEEP_LABEL,
     ATTR_TRACKER_STATE,
-    CLIENT,
-    DOMAIN,
-    TRACKABLES,
-    TRACKER_ACTIVITY_STATUS_UPDATED,
-    TRACKER_HARDWARE_STATUS_UPDATED,
-    TRACKER_WELLNESS_STATUS_UPDATED,
 )
+from .coordinator import TractiveConfigEntry, TractiveCoordinator
 from .entity import TractiveEntity
 
-
-@dataclass
-class TractiveRequiredKeysMixin:
-    """Mixin for required keys."""
-
-    signal_prefix: str
+PARALLEL_UPDATES = 0
 
 
-@dataclass
-class TractiveSensorEntityDescription(
-    SensorEntityDescription, TractiveRequiredKeysMixin
-):
+@dataclass(frozen=True, kw_only=True)
+class TractiveSensorEntityDescription(SensorEntityDescription):
     """Class describing Tractive sensor entities."""
 
     hardware_sensor: bool = False
-    value_fn: Callable[[StateType], StateType] = lambda state: state
+    health_sensor: bool = False
 
 
 class TractiveSensor(TractiveEntity, SensorEntity):
@@ -67,54 +51,45 @@ class TractiveSensor(TractiveEntity, SensorEntity):
 
     def __init__(
         self,
-        client: TractiveClient,
-        item: Trackables,
+        coordinator: TractiveCoordinator,
+        trackable: Trackable,
         description: TractiveSensorEntityDescription,
     ) -> None:
         """Initialize sensor entity."""
-        if description.hardware_sensor:
-            dispatcher_signal = (
-                f"{description.signal_prefix}-{item.tracker_details['_id']}"
-            )
-        else:
-            dispatcher_signal = f"{description.signal_prefix}-{item.trackable['_id']}"
-        super().__init__(
-            client, item.trackable, item.tracker_details, dispatcher_signal
-        )
+        super().__init__(coordinator, trackable, description.hardware_sensor)
 
-        self._attr_unique_id = f"{item.trackable['_id']}_{description.key}"
-        self._attr_available = False
+        self._attr_unique_id = f"{trackable.pet_id}_{description.key}"
         self.entity_description = description
 
-    @callback
-    def handle_status_update(self, event: dict[str, Any]) -> None:
-        """Handle status update."""
-        self._attr_native_value = self.entity_description.value_fn(
-            event[self.entity_description.key]
+    @property
+    @override
+    def native_value(self) -> StateType:
+        """Return the state of the sensor."""
+        status = (
+            self._tracker_status
+            if self.entity_description.hardware_sensor
+            else self._pet_status
         )
-
-        super().handle_status_update(event)
+        value: StateType = getattr(status, self.entity_description.key)
+        return value
 
 
 SENSOR_TYPES: tuple[TractiveSensorEntityDescription, ...] = (
     TractiveSensorEntityDescription(
         key=ATTR_BATTERY_LEVEL,
-        translation_key="tracker_battery_level",
         native_unit_of_measurement=PERCENTAGE,
         device_class=SensorDeviceClass.BATTERY,
-        signal_prefix=TRACKER_HARDWARE_STATUS_UPDATED,
         hardware_sensor=True,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     TractiveSensorEntityDescription(
         key=ATTR_TRACKER_STATE,
         translation_key="tracker_state",
-        signal_prefix=TRACKER_HARDWARE_STATUS_UPDATED,
         hardware_sensor=True,
-        icon="mdi:radar",
         entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.ENUM,
         options=[
+            "inaccurate_position",
             "not_reporting",
             "operational",
             "system_shutdown_user",
@@ -124,90 +99,64 @@ SENSOR_TYPES: tuple[TractiveSensorEntityDescription, ...] = (
     TractiveSensorEntityDescription(
         key=ATTR_MINUTES_ACTIVE,
         translation_key="activity_time",
-        icon="mdi:clock-time-eight-outline",
+        health_sensor=True,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        signal_prefix=TRACKER_ACTIVITY_STATUS_UPDATED,
+        device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.TOTAL,
     ),
     TractiveSensorEntityDescription(
         key=ATTR_MINUTES_REST,
         translation_key="rest_time",
-        icon="mdi:clock-time-eight-outline",
+        health_sensor=True,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        signal_prefix=TRACKER_WELLNESS_STATUS_UPDATED,
-        state_class=SensorStateClass.TOTAL,
-    ),
-    TractiveSensorEntityDescription(
-        key=ATTR_CALORIES,
-        translation_key="calories",
-        icon="mdi:fire",
-        native_unit_of_measurement="kcal",
-        signal_prefix=TRACKER_WELLNESS_STATUS_UPDATED,
+        device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.TOTAL,
     ),
     TractiveSensorEntityDescription(
         key=ATTR_DAILY_GOAL,
         translation_key="daily_goal",
-        icon="mdi:flag-checkered",
+        health_sensor=True,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        signal_prefix=TRACKER_ACTIVITY_STATUS_UPDATED,
+        device_class=SensorDeviceClass.DURATION,
     ),
     TractiveSensorEntityDescription(
         key=ATTR_MINUTES_DAY_SLEEP,
         translation_key="minutes_day_sleep",
-        icon="mdi:sleep",
+        health_sensor=True,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        signal_prefix=TRACKER_WELLNESS_STATUS_UPDATED,
+        device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.TOTAL,
     ),
     TractiveSensorEntityDescription(
         key=ATTR_MINUTES_NIGHT_SLEEP,
         translation_key="minutes_night_sleep",
-        icon="mdi:sleep",
+        health_sensor=True,
         native_unit_of_measurement=UnitOfTime.MINUTES,
-        signal_prefix=TRACKER_WELLNESS_STATUS_UPDATED,
+        device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.TOTAL,
     ),
     TractiveSensorEntityDescription(
-        key=ATTR_SLEEP_LABEL,
-        translation_key="sleep",
-        icon="mdi:sleep",
-        signal_prefix=TRACKER_WELLNESS_STATUS_UPDATED,
-        value_fn=lambda state: state.lower() if isinstance(state, str) else state,
-        device_class=SensorDeviceClass.ENUM,
-        options=[
-            "good",
-            "low",
-            "ok",
-        ],
-    ),
-    TractiveSensorEntityDescription(
-        key=ATTR_ACTIVITY_LABEL,
-        translation_key="activity",
-        icon="mdi:run",
-        signal_prefix=TRACKER_WELLNESS_STATUS_UPDATED,
-        value_fn=lambda state: state.lower() if isinstance(state, str) else state,
-        device_class=SensorDeviceClass.ENUM,
-        options=[
-            "good",
-            "low",
-            "ok",
-        ],
+        key="weight",
+        native_unit_of_measurement=UnitOfMass.GRAMS,
+        suggested_unit_of_measurement=UnitOfMass.KILOGRAMS,
+        suggested_display_precision=1,
+        device_class=SensorDeviceClass.WEIGHT,
+        state_class=SensorStateClass.MEASUREMENT,
     ),
 )
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: TractiveConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up Tractive device trackers."""
-    client = hass.data[DOMAIN][entry.entry_id][CLIENT]
-    trackables = hass.data[DOMAIN][entry.entry_id][TRACKABLES]
+    """Set up Tractive sensors."""
+    coordinator = entry.runtime_data
 
-    entities = [
-        TractiveSensor(client, item, description)
+    async_add_entities(
+        TractiveSensor(coordinator, trackable, description)
         for description in SENSOR_TYPES
-        for item in trackables
-    ]
-
-    async_add_entities(entities)
+        for trackable in coordinator.trackables
+        if not description.health_sensor or trackable.health_available
+    )

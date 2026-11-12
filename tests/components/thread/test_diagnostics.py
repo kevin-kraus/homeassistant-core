@@ -1,9 +1,11 @@
 """Test the thread websocket API."""
 
 import dataclasses
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+from pytest_homeassistant.components.diagnostics import get_diagnostics_for_config_entry
+from pytest_homeassistant.typing import ClientSessionGenerator
 from syrupy.assertion import SnapshotAssertion
 from zeroconf import DNSCache, ServiceInfo
 
@@ -13,9 +15,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
 from . import DATASET_1
-
-from tests.components.diagnostics import get_diagnostics_for_config_entry
-from tests.typing import ClientSessionGenerator
 
 TEST_ZEROCONF_RECORD_1 = ServiceInfo(
     type_="_meshcop._udp.local.",
@@ -182,7 +181,7 @@ def ndb() -> Mock:
 
 async def test_diagnostics(
     hass: HomeAssistant,
-    mock_async_zeroconf: None,
+    mock_async_zeroconf: MagicMock,
     ndb: Mock,
     hass_client: ClientSessionGenerator,
     snapshot: SnapshotAssertion,

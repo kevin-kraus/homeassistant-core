@@ -1,6 +1,8 @@
 """Tests for the Google Assistant notify."""
+
 from unittest.mock import call, patch
 
+from grpc import RpcError
 import pytest
 
 from homeassistant.components import notify
@@ -8,6 +10,7 @@ from homeassistant.components.google_assistant_sdk import DOMAIN
 from homeassistant.components.google_assistant_sdk.const import SUPPORTED_LANGUAGE_CODES
 from homeassistant.components.google_assistant_sdk.notify import broadcast_commands
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 
 from .conftest import ComponentSetup, ExpectedCredentials
 
@@ -33,21 +36,48 @@ async def test_broadcast_no_targets(
     await setup_integration()
 
     entry = hass.config_entries.async_entries(DOMAIN)[0]
-    entry.options = {"language_code": language_code}
+    hass.config_entries.async_update_entry(
+        entry, options={"language_code": language_code}
+    )
 
     with patch(
-        "homeassistant.components.google_assistant_sdk.helpers.TextAssistant"
+        "homeassistant.components.google_assistant_sdk.helpers.TextAssistantAsync"
     ) as mock_text_assistant:
         await hass.services.async_call(
             notify.DOMAIN,
             DOMAIN,
             {notify.ATTR_MESSAGE: message},
+            blocking=True,
         )
-        await hass.async_block_till_done()
     mock_text_assistant.assert_called_once_with(
         ExpectedCredentials(), language_code, audio_out=False
     )
-    mock_text_assistant.assert_has_calls([call().__enter__().assist(expected_command)])
+    # pylint:disable-next=unnecessary-dunder-call
+    mock_text_assistant.assert_has_calls([call().__aenter__().assist(expected_command)])
+
+
+async def test_broadcast_grpc_error(
+    hass: HomeAssistant,
+    setup_integration: ComponentSetup,
+) -> None:
+    """Test broadcast handling when RpcError is raised."""
+    await setup_integration()
+
+    with (
+        patch(
+            "homeassistant.components.google_assistant_sdk.helpers.TextAssistantAsync.assist",
+            side_effect=RpcError(),
+        ) as mock_assist_call,
+        pytest.raises(HomeAssistantError),
+    ):
+        await hass.services.async_call(
+            notify.DOMAIN,
+            DOMAIN,
+            {notify.ATTR_MESSAGE: "Dinner is served"},
+            blocking=True,
+        )
+
+    mock_assist_call.assert_called_once_with("broadcast Dinner is served")
 
 
 @pytest.mark.parametrize(
@@ -66,7 +96,12 @@ async def test_broadcast_no_targets(
             "Anuncia en el salón Es hora de hacer los deberes",
         ),
         ("ko-KR", "숙제할 시간이야", "거실", "숙제할 시간이야 라고 거실에 방송해 줘"),
-        ("ja-JP", "宿題の時間だよ", "リビング", "宿題の時間だよとリビングにブロードキャストして"),
+        (
+            "ja-JP",
+            "宿題の時間だよ",
+            "リビング",
+            "宿題の時間だよとリビングにブロードキャストして",
+        ),
     ],
     ids=["english", "spanish", "korean", "japanese"],
 )
@@ -82,18 +117,20 @@ async def test_broadcast_one_target(
     await setup_integration()
 
     entry = hass.config_entries.async_entries(DOMAIN)[0]
-    entry.options = {"language_code": language_code}
+    hass.config_entries.async_update_entry(
+        entry, options={"language_code": language_code}
+    )
 
     with patch(
-        "homeassistant.components.google_assistant_sdk.helpers.TextAssistant.assist",
+        "homeassistant.components.google_assistant_sdk.helpers.TextAssistantAsync.assist",
         return_value=("text_response", None, b""),
     ) as mock_assist_call:
         await hass.services.async_call(
             notify.DOMAIN,
             DOMAIN,
             {notify.ATTR_MESSAGE: message, notify.ATTR_TARGET: [target]},
+            blocking=True,
         )
-        await hass.async_block_till_done()
     mock_assist_call.assert_called_once_with(expected_command)
 
 
@@ -109,15 +146,15 @@ async def test_broadcast_two_targets(
     expected_command1 = "broadcast to basement time for dinner"
     expected_command2 = "broadcast to master bedroom time for dinner"
     with patch(
-        "homeassistant.components.google_assistant_sdk.helpers.TextAssistant.assist",
+        "homeassistant.components.google_assistant_sdk.helpers.TextAssistantAsync.assist",
         return_value=("text_response", None, b""),
     ) as mock_assist_call:
         await hass.services.async_call(
             notify.DOMAIN,
             DOMAIN,
             {notify.ATTR_MESSAGE: message, notify.ATTR_TARGET: [target1, target2]},
+            blocking=True,
         )
-        await hass.async_block_till_done()
     mock_assist_call.assert_has_calls(
         [call(expected_command1), call(expected_command2)]
     )
@@ -130,15 +167,15 @@ async def test_broadcast_empty_message(
     await setup_integration()
 
     with patch(
-        "homeassistant.components.google_assistant_sdk.helpers.TextAssistant.assist",
+        "homeassistant.components.google_assistant_sdk.helpers.TextAssistantAsync.assist",
         return_value=("text_response", None, b""),
     ) as mock_assist_call:
         await hass.services.async_call(
             notify.DOMAIN,
             DOMAIN,
             {notify.ATTR_MESSAGE: ""},
+            blocking=True,
         )
-        await hass.async_block_till_done()
     mock_assist_call.assert_not_called()
 
 

@@ -1,4 +1,5 @@
 """The tests for the Tasmota binary sensor platform."""
+
 import copy
 from datetime import timedelta
 import json
@@ -11,7 +12,10 @@ from hatasmota.utils import (
     get_topic_tele_will,
 )
 import pytest
+from pytest_homeassistant.common import async_fire_mqtt_message, async_fire_time_changed
+from pytest_homeassistant.typing import MqttMockHAClient, MqttMockPahoClient
 
+from homeassistant import core as ha
 from homeassistant.components.tasmota.const import DEFAULT_PREFIX
 from homeassistant.const import (
     ATTR_ASSUMED_STATE,
@@ -21,9 +25,8 @@ from homeassistant.const import (
     STATE_UNKNOWN,
     Platform,
 )
-import homeassistant.core as ha
 from homeassistant.core import HomeAssistant
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util
 
 from .test_common import (
     DEFAULT_CONFIG,
@@ -31,15 +34,14 @@ from .test_common import (
     help_test_availability_discovery_update,
     help_test_availability_poll_state,
     help_test_availability_when_connection_lost,
+    help_test_deep_sleep_availability,
+    help_test_deep_sleep_availability_when_connection_lost,
     help_test_discovery_device_remove,
     help_test_discovery_removal,
     help_test_discovery_update_unchanged,
     help_test_entity_id_update_discovery_update,
     help_test_entity_id_update_subscriptions,
 )
-
-from tests.common import async_fire_mqtt_message, async_fire_time_changed
-from tests.typing import MqttMockHAClient, MqttMockPahoClient
 
 
 async def test_controlling_state_via_mqtt(
@@ -313,6 +315,21 @@ async def test_availability_when_connection_lost(
     )
 
 
+async def test_deep_sleep_availability_when_connection_lost(
+    hass: HomeAssistant,
+    mqtt_client_mock: MqttMockPahoClient,
+    mqtt_mock: MqttMockHAClient,
+    setup_tasmota,
+) -> None:
+    """Test availability after MQTT disconnection."""
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["swc"][0] = 1
+    config["swn"][0] = "Test"
+    await help_test_deep_sleep_availability_when_connection_lost(
+        hass, mqtt_client_mock, mqtt_mock, Platform.BINARY_SENSOR, config
+    )
+
+
 async def test_availability(
     hass: HomeAssistant, mqtt_mock: MqttMockHAClient, setup_tasmota
 ) -> None:
@@ -321,6 +338,18 @@ async def test_availability(
     config["swc"][0] = 1
     config["swn"][0] = "Test"
     await help_test_availability(hass, mqtt_mock, Platform.BINARY_SENSOR, config)
+
+
+async def test_deep_sleep_availability(
+    hass: HomeAssistant, mqtt_mock: MqttMockHAClient, setup_tasmota
+) -> None:
+    """Test availability when deep sleep is enabled."""
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["swc"][0] = 1
+    config["swn"][0] = "Test"
+    await help_test_deep_sleep_availability(
+        hass, mqtt_mock, Platform.BINARY_SENSOR, config
+    )
 
 
 async def test_availability_discovery_update(

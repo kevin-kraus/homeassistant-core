@@ -1,8 +1,11 @@
 """Tests for the Dormakaba dKey integration."""
 
-from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
+from pytest_homeassistant.components.bluetooth import (
+    generate_advertisement_data,
+    generate_ble_device,
+)
 
-from tests.components.bluetooth import generate_advertisement_data, generate_ble_device
+from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 
 DKEY_DISCOVERY_INFO = BluetoothServiceInfoBleak(
     name="00123456",
@@ -18,6 +21,7 @@ DKEY_DISCOVERY_INFO = BluetoothServiceInfoBleak(
     ),
     time=0,
     connectable=True,
+    tx_power=-127,
 )
 
 
@@ -36,4 +40,5 @@ NOT_DKEY_DISCOVERY_INFO = BluetoothServiceInfoBleak(
     advertisement=generate_advertisement_data(),
     time=0,
     connectable=True,
+    tx_power=-127,
 )

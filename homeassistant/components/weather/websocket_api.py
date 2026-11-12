@@ -1,17 +1,15 @@
 """The weather websocket API."""
-from __future__ import annotations
 
 from typing import Any, Literal
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.util.json import JsonValueType
 
-from .const import DOMAIN, VALID_UNITS, WeatherEntityFeature
+from .const import DATA_COMPONENT, DOMAIN, VALID_UNITS, WeatherEntityFeature
 
 FORECAST_TYPE_TO_FLAG = {
     "daily": WeatherEntityFeature.FORECAST_DAILY,
@@ -30,7 +28,7 @@ def async_setup(hass: HomeAssistant) -> None:
 @callback
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "weather/convertible_units",
+        probatio.Required("type"): "weather/convertible_units",
     }
 )
 def ws_convertible_units(
@@ -45,9 +43,11 @@ def ws_convertible_units(
 
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "weather/subscribe_forecast",
-        vol.Required("entity_id"): cv.entity_domain(DOMAIN),
-        vol.Required("forecast_type"): vol.In(["daily", "hourly", "twice_daily"]),
+        probatio.Required("type"): "weather/subscribe_forecast",
+        probatio.Required("entity_id"): cv.entity_domain(DOMAIN),
+        probatio.Required("forecast_type"): probatio.In(
+            ["daily", "hourly", "twice_daily"]
+        ),
     }
 )
 @websocket_api.async_response
@@ -55,13 +55,10 @@ async def ws_subscribe_forecast(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Subscribe to weather forecasts."""
-    from . import WeatherEntity  # pylint: disable=import-outside-toplevel
-
-    component: EntityComponent[WeatherEntity] = hass.data[DOMAIN]
     entity_id: str = msg["entity_id"]
     forecast_type: Literal["daily", "hourly", "twice_daily"] = msg["forecast_type"]
 
-    if not (entity := component.get_entity(msg["entity_id"])):
+    if not (entity := hass.data[DATA_COMPONENT].get_entity(msg["entity_id"])):
         connection.send_error(
             msg["id"],
             "invalid_entity_id",

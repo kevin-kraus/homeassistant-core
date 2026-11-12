@@ -1,13 +1,13 @@
 """Config flow to configure the Meteo-France integration."""
-from __future__ import annotations
 
 import logging
+from typing import Any, override
 
 from meteofrance_api.client import MeteoFranceClient
-import voluptuous as vol
+from meteofrance_api.model import Place
+import probatio
 
-from homeassistant import config_entries
-from homeassistant.config_entries import SOURCE_IMPORT
+from homeassistant.config_entries import SOURCE_IMPORT, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE
 from homeassistant.core import callback
 
@@ -16,17 +16,21 @@ from .const import CONF_CITY, DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 
-class MeteoFranceFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
+class MeteoFranceFlowHandler(ConfigFlow, domain=DOMAIN):
     """Handle a Meteo-France config flow."""
 
     VERSION = 1
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Init MeteoFranceFlowHandler."""
-        self.places = []
+        self.places: list[Place] = []
 
     @callback
-    def _show_setup_form(self, user_input=None, errors=None):
+    def _show_setup_form(
+        self,
+        user_input: dict[str, Any] | None = None,
+        errors: dict[str, str] | None = None,
+    ) -> ConfigFlowResult:
         """Show the setup form to the user."""
 
         if user_input is None:
@@ -34,15 +38,22 @@ class MeteoFranceFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {vol.Required(CONF_CITY, default=user_input.get(CONF_CITY, "")): str}
+            data_schema=probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_CITY, default=user_input.get(CONF_CITY, "")
+                    ): str
+                }
             ),
             errors=errors or {},
         )
 
-    async def async_step_user(self, user_input=None):
+    @override
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle a flow initiated by the user."""
-        errors = {}
+        errors: dict[str, str] = {}
 
         if user_input is None:
             return self._show_setup_form(user_input, errors)
@@ -72,24 +83,22 @@ class MeteoFranceFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             data={CONF_LATITUDE: latitude, CONF_LONGITUDE: longitude},
         )
 
-    async def async_step_import(self, user_input):
-        """Import a config entry."""
-        return await self.async_step_user(user_input)
-
-    async def async_step_cities(self, user_input=None):
+    async def async_step_cities(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Step where the user choose the city from the API search results."""
         if not user_input:
             if len(self.places) > 1 and self.source != SOURCE_IMPORT:
-                places_for_form = {}
+                places_for_form: dict[str, str] = {}
                 for place in self.places:
                     places_for_form[_build_place_key(place)] = f"{place}"
 
                 return self.async_show_form(
                     step_id="cities",
-                    data_schema=vol.Schema(
+                    data_schema=probatio.Schema(
                         {
-                            vol.Required(CONF_CITY): vol.All(
-                                vol.Coerce(str), vol.In(places_for_form)
+                            probatio.Required(CONF_CITY): probatio.All(
+                                probatio.Coerce(str), probatio.In(places_for_form)
                             )
                         }
                     ),
@@ -106,5 +115,5 @@ class MeteoFranceFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
-def _build_place_key(place) -> str:
+def _build_place_key(place: Place) -> str:
     return f"{place};{place.latitude};{place.longitude}"

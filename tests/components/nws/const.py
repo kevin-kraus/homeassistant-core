@@ -1,4 +1,5 @@
 """Helpers for interacting with pynws."""
+
 from homeassistant.components.nws.const import CONF_STATION
 from homeassistant.components.weather import (
     ATTR_CONDITION_LIGHTNING_RAINY,
@@ -20,6 +21,7 @@ from homeassistant.components.weather import (
 from homeassistant.const import (
     CONF_API_KEY,
     CONF_LATITUDE,
+    CONF_LOCATION,
     CONF_LONGITUDE,
     UnitOfLength,
     UnitOfPressure,
@@ -35,8 +37,10 @@ from homeassistant.util.unit_conversion import (
 
 NWS_CONFIG = {
     CONF_API_KEY: "test",
-    CONF_LATITUDE: 35,
-    CONF_LONGITUDE: -75,
+    CONF_LOCATION: {
+        CONF_LATITUDE: 35,
+        CONF_LONGITUDE: -75,
+    },
     CONF_STATION: "ABC",
 }
 
@@ -65,6 +69,7 @@ CLEAR_NIGHT_OBSERVATION = DEFAULT_OBSERVATION.copy()
 CLEAR_NIGHT_OBSERVATION["iconTime"] = "night"
 
 SENSOR_EXPECTED_OBSERVATION_METRIC = {
+    "timestamp": "2019-08-12T23:53:00+00:00",
     "dewpoint": "5",
     "temperature": "10",
     "windChill": "5",
@@ -79,32 +84,37 @@ SENSOR_EXPECTED_OBSERVATION_METRIC = {
 }
 
 SENSOR_EXPECTED_OBSERVATION_IMPERIAL = {
+    "timestamp": "2019-08-12T23:53:00+00:00",
     "dewpoint": str(
         round(
             TemperatureConverter.convert(
                 5, UnitOfTemperature.CELSIUS, UnitOfTemperature.FAHRENHEIT
-            )
+            ),
+            1,
         )
     ),
     "temperature": str(
         round(
             TemperatureConverter.convert(
                 10, UnitOfTemperature.CELSIUS, UnitOfTemperature.FAHRENHEIT
-            )
+            ),
+            1,
         )
     ),
     "windChill": str(
         round(
             TemperatureConverter.convert(
                 5, UnitOfTemperature.CELSIUS, UnitOfTemperature.FAHRENHEIT
-            )
+            ),
+            1,
         )
     ),
     "heatIndex": str(
         round(
             TemperatureConverter.convert(
                 15, UnitOfTemperature.CELSIUS, UnitOfTemperature.FAHRENHEIT
-            )
+            ),
+            1,
         )
     ),
     "relativeHumidity": "10",
@@ -112,14 +122,14 @@ SENSOR_EXPECTED_OBSERVATION_IMPERIAL = {
         round(
             SpeedConverter.convert(
                 10, UnitOfSpeed.KILOMETERS_PER_HOUR, UnitOfSpeed.MILES_PER_HOUR
-            )
+            ),
         )
     ),
     "windGust": str(
         round(
             SpeedConverter.convert(
                 20, UnitOfSpeed.KILOMETERS_PER_HOUR, UnitOfSpeed.MILES_PER_HOUR
-            )
+            ),
         )
     ),
     "windDirection": "180",
@@ -173,7 +183,7 @@ WEATHER_EXPECTED_OBSERVATION_METRIC = {
     ATTR_WEATHER_HUMIDITY: 10,
 }
 
-NONE_OBSERVATION = {key: None for key in DEFAULT_OBSERVATION}
+NONE_OBSERVATION = dict.fromkeys(DEFAULT_OBSERVATION)
 
 DEFAULT_FORECAST = [
     {
@@ -184,6 +194,7 @@ DEFAULT_FORECAST = [
         "temperature": 10,
         "windSpeedAvg": 10,
         "windBearing": 180,
+        "shortForecast": "A short forecast.",
         "detailedForecast": "A detailed forecast.",
         "timestamp": "2019-08-12T23:53:00+00:00",
         "iconTime": "night",
@@ -230,5 +241,4 @@ EXPECTED_FORECAST_METRIC = {
     ),
     ATTR_FORECAST_HUMIDITY: 75,
 }
-
-NONE_FORECAST = [{key: None for key in DEFAULT_FORECAST[0]}]
+NONE_FORECAST = [dict.fromkeys(DEFAULT_FORECAST[0])]

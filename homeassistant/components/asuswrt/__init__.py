@@ -4,13 +4,14 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import Event, HomeAssistant
 
-from .const import DATA_ASUSWRT, DOMAIN
 from .router import AsusWrtRouter
 
 PLATFORMS = [Platform.DEVICE_TRACKER, Platform.SENSOR]
 
+type AsusWrtConfigEntry = ConfigEntry[AsusWrtRouter]
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+
+async def async_setup_entry(hass: HomeAssistant, entry: AsusWrtConfigEntry) -> None:
     """Set up AsusWrt platform."""
 
     router = AsusWrtRouter(hass, entry)
@@ -26,26 +27,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, async_close_connection)
     )
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {DATA_ASUSWRT: router}
+    entry.runtime_data = router
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    return True
 
-
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: AsusWrtConfigEntry) -> None:
     """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        router = hass.data[DOMAIN][entry.entry_id][DATA_ASUSWRT]
-        await router.close()
-        hass.data[DOMAIN].pop(entry.entry_id)
-
-    return unload_ok
+    await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
+    router = entry.runtime_data
+    await router.close()
 
 
-async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def update_listener(hass: HomeAssistant, entry: AsusWrtConfigEntry) -> None:
     """Update when config_entry options update."""
-    router = hass.data[DOMAIN][entry.entry_id][DATA_ASUSWRT]
+    router = entry.runtime_data
 
     if router.update_options(entry.options):
         await hass.config_entries.async_reload(entry.entry_id)

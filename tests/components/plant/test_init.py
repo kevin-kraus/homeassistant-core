@@ -1,20 +1,24 @@
 """Unit tests for platform/plant.py."""
+
 from datetime import datetime, timedelta
 
-import homeassistant.components.plant as plant
+from pytest_homeassistant.components.recorder.common import async_wait_recording_done
+
+from homeassistant.components import plant
+from homeassistant.components.plant.const import ATTR_MAX_BRIGHTNESS_HISTORY
+from homeassistant.components.plant.entity import DailyHistory
 from homeassistant.components.recorder import Recorder
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
-    CONDUCTIVITY,
     LIGHT_LUX,
     STATE_OK,
     STATE_PROBLEM,
     STATE_UNAVAILABLE,
+    UnitOfConductivity,
 )
 from homeassistant.core import HomeAssistant, State
+from homeassistant.helpers.entity_component import DATA_INSTANCES
 from homeassistant.setup import async_setup_component
-
-from tests.components.recorder.common import async_wait_recording_done
 
 GOOD_DATA = {
     "moisture": 50,
@@ -78,7 +82,11 @@ async def test_low_battery(hass: HomeAssistant) -> None:
 
 async def test_initial_states(hass: HomeAssistant) -> None:
     """Test plant initialises attributes if sensor already exists."""
-    hass.states.async_set(MOISTURE_ENTITY, 5, {ATTR_UNIT_OF_MEASUREMENT: CONDUCTIVITY})
+    hass.states.async_set(
+        MOISTURE_ENTITY,
+        5,
+        {ATTR_UNIT_OF_MEASUREMENT: UnitOfConductivity.MICROSIEMENS_PER_CM},
+    )
     plant_name = "some_plant"
     assert await async_setup_component(
         hass, plant.DOMAIN, {plant.DOMAIN: {plant_name: GOOD_CONFIG}}
@@ -97,11 +105,36 @@ async def test_update_states(hass: HomeAssistant) -> None:
     assert await async_setup_component(
         hass, plant.DOMAIN, {plant.DOMAIN: {plant_name: GOOD_CONFIG}}
     )
-    hass.states.async_set(MOISTURE_ENTITY, 5, {ATTR_UNIT_OF_MEASUREMENT: CONDUCTIVITY})
+    hass.states.async_set(
+        MOISTURE_ENTITY,
+        5,
+        {ATTR_UNIT_OF_MEASUREMENT: UnitOfConductivity.MICROSIEMENS_PER_CM},
+    )
     await hass.async_block_till_done()
     state = hass.states.get(f"plant.{plant_name}")
     assert state.state == STATE_PROBLEM
     assert state.attributes[plant.READING_MOISTURE] == 5
+
+
+async def test_state_tracking_stops_after_removal(hass: HomeAssistant) -> None:
+    """Test a removed plant no longer processes sensor state changes."""
+    plant_name = "some_plant"
+    entity_id = f"plant.{plant_name}"
+    assert await async_setup_component(
+        hass, plant.DOMAIN, {plant.DOMAIN: {plant_name: GOOD_CONFIG}}
+    )
+    hass.states.async_set(MOISTURE_ENTITY, 50)
+    await hass.async_block_till_done()
+    entity = hass.data[DATA_INSTANCES][plant.DOMAIN].get_entity(entity_id)
+    assert entity.extra_state_attributes[plant.READING_MOISTURE] == 50
+
+    await entity.async_remove()
+    assert hass.states.get(entity_id) is None
+
+    hass.states.async_set(MOISTURE_ENTITY, 5)
+    await hass.async_block_till_done()
+    assert entity.extra_state_attributes[plant.READING_MOISTURE] == 50
+    assert hass.states.get(entity_id) is None
 
 
 async def test_unavailable_state(hass: HomeAssistant) -> None:
@@ -114,7 +147,9 @@ async def test_unavailable_state(hass: HomeAssistant) -> None:
         hass, plant.DOMAIN, {plant.DOMAIN: {plant_name: GOOD_CONFIG}}
     )
     hass.states.async_set(
-        MOISTURE_ENTITY, STATE_UNAVAILABLE, {ATTR_UNIT_OF_MEASUREMENT: CONDUCTIVITY}
+        MOISTURE_ENTITY,
+        STATE_UNAVAILABLE,
+        {ATTR_UNIT_OF_MEASUREMENT: UnitOfConductivity.MICROSIEMENS_PER_CM},
     )
     await hass.async_block_till_done()
     state = hass.states.get(f"plant.{plant_name}")
@@ -131,13 +166,19 @@ async def test_state_problem_if_unavailable(hass: HomeAssistant) -> None:
     assert await async_setup_component(
         hass, plant.DOMAIN, {plant.DOMAIN: {plant_name: GOOD_CONFIG}}
     )
-    hass.states.async_set(MOISTURE_ENTITY, 42, {ATTR_UNIT_OF_MEASUREMENT: CONDUCTIVITY})
+    hass.states.async_set(
+        MOISTURE_ENTITY,
+        42,
+        {ATTR_UNIT_OF_MEASUREMENT: UnitOfConductivity.MICROSIEMENS_PER_CM},
+    )
     await hass.async_block_till_done()
     state = hass.states.get(f"plant.{plant_name}")
     assert state.state == STATE_OK
     assert state.attributes[plant.READING_MOISTURE] == 42
     hass.states.async_set(
-        MOISTURE_ENTITY, STATE_UNAVAILABLE, {ATTR_UNIT_OF_MEASUREMENT: CONDUCTIVITY}
+        MOISTURE_ENTITY,
+        STATE_UNAVAILABLE,
+        {ATTR_UNIT_OF_MEASUREMENT: UnitOfConductivity.MICROSIEMENS_PER_CM},
     )
     await hass.async_block_till_done()
     state = hass.states.get(f"plant.{plant_name}")
@@ -152,7 +193,7 @@ async def test_load_from_db(recorder_mock: Recorder, hass: HomeAssistant) -> Non
     is enabled via plant.ENABLE_LOAD_HISTORY.
     """
     plant_name = "wise_plant"
-    for value in [20, 30, 10]:
+    for value in (20, 30, 10):
         hass.states.async_set(
             BRIGHTNESS_ENTITY, value, {ATTR_UNIT_OF_MEASUREMENT: "Lux"}
         )
@@ -167,7 +208,7 @@ async def test_load_from_db(recorder_mock: Recorder, hass: HomeAssistant) -> Non
 
     state = hass.states.get(f"plant.{plant_name}")
     assert state.state == STATE_PROBLEM
-    max_brightness = state.attributes.get(plant.ATTR_MAX_BRIGHTNESS_HISTORY)
+    max_brightness = state.attributes.get(ATTR_MAX_BRIGHTNESS_HISTORY)
     assert max_brightness == 30
 
 
@@ -195,16 +236,16 @@ async def test_brightness_history(hass: HomeAssistant) -> None:
 
 def test_daily_history_no_data(hass: HomeAssistant) -> None:
     """Test with empty history."""
-    dh = plant.DailyHistory(3)
+    dh = DailyHistory(3)
     assert dh.max is None
 
 
 def test_daily_history_one_day(hass: HomeAssistant) -> None:
     """Test storing data for the same day."""
-    dh = plant.DailyHistory(3)
+    dh = DailyHistory(3)
     values = [-2, 10, 0, 5, 20]
-    for i in range(len(values)):
-        dh.add_measurement(values[i])
+    for i, value in enumerate(values):
+        dh.add_measurement(value)
         max_value = max(values[0 : i + 1])
         assert len(dh._days) == 1
         assert dh.max == max_value
@@ -212,8 +253,8 @@ def test_daily_history_one_day(hass: HomeAssistant) -> None:
 
 def test_daily_history_multiple_days(hass: HomeAssistant) -> None:
     """Test storing data for different days."""
-    dh = plant.DailyHistory(3)
-    today = datetime.now()
+    dh = DailyHistory(3)
+    today = datetime.now()  # pylint: disable=home-assistant-enforce-naive-now
     today_minus_1 = today - timedelta(days=1)
     today_minus_2 = today_minus_1 - timedelta(days=1)
     today_minus_3 = today_minus_2 - timedelta(days=1)
@@ -221,6 +262,6 @@ def test_daily_history_multiple_days(hass: HomeAssistant) -> None:
     values = [10, 1, 7, 3]
     max_values = [10, 10, 10, 7]
 
-    for i in range(len(days)):
-        dh.add_measurement(values[i], days[i])
+    for i, value in enumerate(days):
+        dh.add_measurement(values[i], value)
         assert max_values[i] == dh.max

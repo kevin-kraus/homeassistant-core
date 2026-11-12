@@ -1,7 +1,6 @@
 """Generic Hue Entity Model."""
-from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, override
 
 from aiohue.v2.controllers.base import BaseResourcesController
 from aiohue.v2.controllers.events import EventType
@@ -9,12 +8,9 @@ from aiohue.v2.models.resource import ResourceTypes
 from aiohue.v2.models.zigbee_connectivity import ConnectivityServiceStatus
 
 from homeassistant.core import callback
-from homeassistant.helpers.device_registry import (
-    DeviceInfo,
-    async_get as async_get_device_registry,
-)
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
-from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 
 from ..bridge import HueBridge
 from ..const import CONF_IGNORE_AVAILABILITY, DOMAIN
@@ -25,8 +21,12 @@ if TYPE_CHECKING:
     from aiohue.v2.models.light import Light
     from aiohue.v2.models.light_level import LightLevel
     from aiohue.v2.models.motion import Motion
+    from aiohue.v2.models.room import Room
+    from aiohue.v2.models.zone import Zone
 
-    HueResource: TypeAlias = Light | DevicePower | GroupedLight | LightLevel | Motion
+    type HueResource = (
+        Light | DevicePower | GroupedLight | LightLevel | Motion | Room | Zone
+    )
 
 
 RESOURCE_TYPE_NAMES = {
@@ -36,7 +36,7 @@ RESOURCE_TYPE_NAMES = {
 }
 
 
-class HueBaseEntity(Entity):
+class HueBaseEntity(Entity):  # pylint: disable=home-assistant-enforce-class-module
     """Generic Entity Class for a Hue resource."""
 
     _attr_should_poll = False
@@ -72,24 +72,7 @@ class HueBaseEntity(Entity):
         self._ignore_availability = None
         self._last_state = None
 
-    @property
-    def name(self) -> str:
-        """Return name for the entity."""
-        if self.device is None:
-            # this is just a guard
-            # creating a pretty name for device-less entities (e.g. groups/scenes)
-            # should be handled in the platform instead
-            return self.resource.type.value
-        dev_name = self.device.metadata.name
-        # if resource is a light, use the device name itself
-        if self.resource.type == ResourceTypes.LIGHT:
-            return dev_name
-        # for sensors etc, use devicename + pretty name of type
-        type_title = RESOURCE_TYPE_NAMES.get(
-            self.resource.type, self.resource.type.value.replace("_", " ").title()
-        )
-        return f"{dev_name} {type_title}"
-
+    @override
     async def async_added_to_hass(self) -> None:
         """Call when entity is added."""
         self._check_availability()
@@ -122,6 +105,7 @@ class HueBaseEntity(Entity):
             )
 
     @property
+    @override
     def available(self) -> bool:
         """Return entity availability."""
         # entities without a device attached should be always available
@@ -146,19 +130,13 @@ class HueBaseEntity(Entity):
     def _handle_event(self, event_type: EventType, resource: HueResource) -> None:
         """Handle status event for this resource (or it's parent)."""
         if event_type == EventType.RESOURCE_DELETED:
-            # handle removal of room and zone 'virtual' devices/services
-            # regular devices are removed automatically by the logic in device.py.
-            if resource.type in (ResourceTypes.ROOM, ResourceTypes.ZONE):
-                dev_reg = async_get_device_registry(self.hass)
-                if device := dev_reg.async_get_device(
-                    identifiers={(DOMAIN, resource.id)}
-                ):
-                    dev_reg.async_remove_device(device.id)
-            # cleanup entities that are not strictly device-bound and have the bridge as parent
-            if self.device is None:
-                ent_reg = async_get_entity_registry(self.hass)
+            # cleanup entities that are not strictly device-bound
+            # and have the bridge as parent
+            if self.device is None and resource.id == self.resource.id:
+                ent_reg = er.async_get(self.hass)
                 ent_reg.async_remove(self.entity_id)
             return
+
         self.logger.debug("Received status update for %s", self.entity_id)
         self._check_availability()
         self.on_update()
@@ -170,7 +148,8 @@ class HueBaseEntity(Entity):
         # return if we already processed this entity
         if self._ignore_availability is not None:
             return
-        # only do the availability check for entities connected to a device (with `on` feature)
+        # only do the availability check for entities connected to
+        # a device (with `on` feature)
         if self.device is None or not hasattr(self.resource, "on"):
             self._ignore_availability = False
             return
@@ -221,7 +200,8 @@ class HueBaseEntity(Entity):
                     self.device.product_data.model_id,
                     self.device.product_data.software_version,
                 )
-                # set attribute to false because we only want to log once per light/device.
-                # a user must opt-in to ignore availability through integration options
+                # set attribute to false because we only want to log
+                # once per light/device. a user must opt-in to
+                # ignore availability through integration options
                 self._ignore_availability = False
         self._last_state = cur_state

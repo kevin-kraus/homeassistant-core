@@ -1,5 +1,6 @@
 """The AirNow integration."""
-import datetime
+
+import datetime as dt
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -11,77 +12,71 @@ from homeassistant.const import (
     Platform,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import DOMAIN
-from .coordinator import AirNowDataUpdateCoordinator
+from .coordinator import AirNowConfigEntry, AirNowDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR]
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: AirNowConfigEntry) -> None:
     """Set up AirNow from a config entry."""
     api_key = entry.data[CONF_API_KEY]
     latitude = entry.data[CONF_LATITUDE]
     longitude = entry.data[CONF_LONGITUDE]
 
-    # Station Radius is a user-configurable option
-    distance = entry.options[CONF_RADIUS]
-
     # Reports are published hourly but update twice per hour
-    update_interval = datetime.timedelta(minutes=30)
+    update_interval = dt.timedelta(minutes=30)
 
     # Setup the Coordinator
     session = async_get_clientsession(hass)
     coordinator = AirNowDataUpdateCoordinator(
-        hass, session, api_key, latitude, longitude, distance, update_interval
+        hass, entry, session, api_key, latitude, longitude, update_interval
     )
 
     # Sync with Coordinator
     await coordinator.async_config_entry_first_refresh()
 
     # Store Entity and Initialize Platforms
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = coordinator
-
-    # Listen for option changes
-    entry.async_on_unload(entry.add_update_listener(update_listener))
+    entry.runtime_data = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    return True
+    # Clean up unused device entries with no entities
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+
+    device_entries = dr.async_entries_for_config_entry(
+        device_registry, config_entry_id=entry.entry_id
+    )
+    for dev in device_entries:
+        dev_entities = er.async_entries_for_device(
+            entity_registry, dev.id, include_disabled_entities=True
+        )
+        if not dev_entities:
+            device_registry.async_remove_device(dev.id)
 
 
-async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Migrate old entry."""
     _LOGGER.debug("Migrating from version %s", entry.version)
 
-    if entry.version == 1:
-        new_options = {CONF_RADIUS: entry.data[CONF_RADIUS]}
-        new_data = entry.data.copy()
-        del new_data[CONF_RADIUS]
+    if entry.version < 3:
+        # The 2026 AirNow API dropped the distance parameter, so the radius
+        # option no longer affects lookups. Strip it from both older layouts:
+        # version 1 kept it in data, version 2 in options.
+        new_data = {k: v for k, v in entry.data.items() if k != CONF_RADIUS}
+        new_options = {k: v for k, v in entry.options.items() if k != CONF_RADIUS}
 
-        entry.version = 2
         hass.config_entries.async_update_entry(
-            entry, data=new_data, options=new_options
+            entry, data=new_data, options=new_options, version=3
         )
 
     _LOGGER.info("Migration to version %s successful", entry.version)
 
-    return True
 
-
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: AirNowConfigEntry) -> None:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-
-    if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
-
-    return unload_ok
-
-
-async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle options update."""
-    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)

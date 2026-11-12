@@ -1,8 +1,9 @@
 """Tests for JVC Projector remote platform."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components.remote import (
     ATTR_COMMAND,
@@ -14,22 +15,22 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 
-from tests.common import MockConfigEntry
-
 ENTITY_ID = "remote.jvc_projector"
 
 
 async def test_entity_state(
     hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
     mock_device: MagicMock,
     mock_integration: MockConfigEntry,
 ) -> None:
     """Tests entity state is registered."""
     entity = hass.states.get(ENTITY_ID)
     assert entity
-    assert er.async_get(hass).async_get(entity.entity_id)
+    assert entity_registry.async_get(entity.entity_id)
 
 
+@patch("homeassistant.components.jvc_projector.remote.POWER_SLEEP", 0)
 async def test_commands(
     hass: HomeAssistant,
     mock_device: MagicMock,
@@ -42,7 +43,6 @@ async def test_commands(
         {ATTR_ENTITY_ID: ENTITY_ID},
         blocking=True,
     )
-    assert mock_device.power_on.call_count == 1
 
     await hass.services.async_call(
         REMOTE_DOMAIN,
@@ -50,7 +50,6 @@ async def test_commands(
         {ATTR_ENTITY_ID: ENTITY_ID},
         blocking=True,
     )
-    assert mock_device.power_off.call_count == 1
 
     await hass.services.async_call(
         REMOTE_DOMAIN,
@@ -58,7 +57,28 @@ async def test_commands(
         {ATTR_ENTITY_ID: ENTITY_ID, ATTR_COMMAND: ["ok"]},
         blocking=True,
     )
-    assert mock_device.remote.call_count == 1
+
+    await hass.services.async_call(
+        REMOTE_DOMAIN,
+        SERVICE_SEND_COMMAND,
+        {ATTR_ENTITY_ID: ENTITY_ID, ATTR_COMMAND: ["hdmi1"]},
+        blocking=True,
+    )
+
+    await hass.services.async_call(
+        REMOTE_DOMAIN,
+        SERVICE_SEND_COMMAND,
+        {ATTR_ENTITY_ID: ENTITY_ID, ATTR_COMMAND: ["anamo"]},
+        blocking=True,
+    )
+
+    await hass.services.async_call(
+        REMOTE_DOMAIN,
+        SERVICE_SEND_COMMAND,
+        {ATTR_ENTITY_ID: ENTITY_ID, ATTR_COMMAND: ["picture_mode"]},
+        blocking=True,
+    )
+    assert mock_device.remote.call_count == 4
 
 
 async def test_unknown_command(

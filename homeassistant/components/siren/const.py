@@ -1,15 +1,30 @@
 """Constants for the siren component."""
 
-from enum import IntFlag
-from typing import Final
+from enum import IntFlag, StrEnum
+from typing import TYPE_CHECKING, Final
+
+from homeassistant.util.hass_dict import HassKey
+
+if TYPE_CHECKING:
+    from homeassistant.helpers.entity_component import EntityComponent
+
+    from .entity import SirenEntity
 
 DOMAIN: Final = "siren"
+
+DATA_COMPONENT: HassKey[EntityComponent[SirenEntity]] = HassKey(DOMAIN)
 
 ATTR_TONE: Final = "tone"
 
 ATTR_AVAILABLE_TONES: Final = "available_tones"
 ATTR_DURATION: Final = "duration"
 ATTR_VOLUME_LEVEL: Final = "volume_level"
+
+
+class SirenEntityCapabilityAttribute(StrEnum):
+    """Capability attributes for siren entities."""
+
+    AVAILABLE_TONES = "available_tones"
 
 
 class SirenEntityFeature(IntFlag):
@@ -22,10 +37,17 @@ class SirenEntityFeature(IntFlag):
     DURATION = 16
 
 
-# These constants are deprecated as of Home Assistant 2022.5
-# Please use the SirenEntityFeature enum instead.
-SUPPORT_TURN_ON: Final = 1
-SUPPORT_TURN_OFF: Final = 2
-SUPPORT_TONES: Final = 4
-SUPPORT_VOLUME_SET: Final = 8
-SUPPORT_DURATION: Final = 16
+class SirenService(StrEnum):
+    """Store keys for siren services."""
+
+    TOGGLE = "toggle"
+    TURN_OFF = "turn_off"
+    TURN_ON = "turn_on"
+
+
+class SirenServiceArgument(StrEnum):
+    """Store keys for siren service arguments."""
+
+    DURATION = "duration"
+    TONE = "tone"
+    VOLUME_LEVEL = "volume_level"

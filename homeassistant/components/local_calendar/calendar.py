@@ -1,18 +1,18 @@
 """Calendar platform for a Local Calendar."""
 
-from __future__ import annotations
-
+import asyncio
 from datetime import date, datetime, timedelta
 import logging
-from typing import Any
+from typing import Any, override
 
 from ical.calendar import Calendar
 from ical.calendar_stream import IcsCalendarStream
-from ical.event import Event
+from ical.event import Event, EventStatus
+from ical.exceptions import CalendarParseError
 from ical.store import EventStore, EventStoreError
+from ical.timeline import Timeline, materialize_timeline
 from ical.types import Range, Recur
-from pydantic import ValidationError
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.calendar import (
     EVENT_END,
@@ -21,13 +21,14 @@ from homeassistant.components.calendar import (
     CalendarEntity,
     CalendarEntityFeature,
     CalendarEvent,
+    CalendarEventStatus,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
+from . import LocalCalendarConfigEntry
 from .const import CONF_CALENDAR_NAME, DOMAIN
 from .store import LocalCalendarStore
 
@@ -35,16 +36,24 @@ _LOGGER = logging.getLogger(__name__)
 
 PRODID = "-//homeassistant.io//local_calendar 1.0//EN"
 
+# Materialize a bounded timeline of upcoming events on every update so the
+# state can be recomputed synchronously, without walking recurrence rules in
+# the event loop. Mirrors what remote_calendar does.
+MAX_LOOKAHEAD_EVENTS = 20
+MAX_LOOKAHEAD_TIME = timedelta(days=365)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    config_entry: LocalCalendarConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the local calendar platform."""
-    store = hass.data[DOMAIN][config_entry.entry_id]
+    store = config_entry.runtime_data
     ics = await store.async_load()
-    calendar = IcsCalendarStream.calendar_from_ics(ics)
+    calendar: Calendar = await hass.async_add_executor_job(
+        IcsCalendarStream.calendar_from_ics, ics
+    )
     calendar.prodid = PRODID
 
     name = config_entry.data[CONF_CALENDAR_NAME]
@@ -72,46 +81,75 @@ class LocalCalendarEntity(CalendarEntity):
         """Initialize LocalCalendarEntity."""
         self._store = store
         self._calendar = calendar
-        self._event: CalendarEvent | None = None
-        self._attr_name = name.capitalize()
+        self._calendar_lock = asyncio.Lock()
+        self._timeline: Timeline | None = None
+        self._attr_name = name
         self._attr_unique_id = unique_id
 
     @property
+    @override
     def event(self) -> CalendarEvent | None:
         """Return the next upcoming event."""
-        return self._event
+        if self._timeline is None:
+            return None
+        events = (
+            event
+            for event in self._timeline.active_after(dt_util.now())
+            if not _is_cancelled(event)
+        )
+        if event := next(events, None):
+            return _get_calendar_event(event)
+        return None
 
+    @override
     async def async_get_events(
         self, hass: HomeAssistant, start_date: datetime, end_date: datetime
     ) -> list[CalendarEvent]:
         """Get all events in a specific time frame."""
-        events = self._calendar.timeline_tz(start_date.tzinfo).overlapping(
-            start_date,
-            end_date,
-        )
-        return [_get_calendar_event(event) for event in events]
+
+        def events_in_range() -> list[CalendarEvent]:
+            events = self._calendar.timeline_tz(start_date.tzinfo).overlapping(
+                start_date,
+                end_date,
+            )
+            return [
+                _get_calendar_event(event)
+                for event in events
+                if not _is_cancelled(event)
+            ]
+
+        return await self.hass.async_add_executor_job(events_in_range)
 
     async def async_update(self) -> None:
         """Update entity state with the next upcoming event."""
-        now = dt_util.now()
-        events = self._calendar.timeline_tz(now.tzinfo).active_after(now)
-        if event := next(events, None):
-            self._event = _get_calendar_event(event)
-        else:
-            self._event = None
+
+        def _get_timeline() -> Timeline:
+            now = dt_util.now()
+            return materialize_timeline(
+                self._calendar.timeline_tz(now.tzinfo),
+                start=now,
+                stop=now + MAX_LOOKAHEAD_TIME,
+                max_number_of_events=MAX_LOOKAHEAD_EVENTS,
+            )
+
+        self._timeline = await self.hass.async_add_executor_job(_get_timeline)
 
     async def _async_store(self) -> None:
         """Persist the calendar to disk."""
         content = IcsCalendarStream.calendar_to_ics(self._calendar)
         await self._store.async_store(content)
 
+    @override
     async def async_create_event(self, **kwargs: Any) -> None:
         """Add a new event to calendar."""
         event = _parse_event(kwargs)
-        EventStore(self._calendar).add(event)
-        await self._async_store()
+        async with self._calendar_lock:
+            event_store = EventStore(self._calendar)
+            await self.hass.async_add_executor_job(event_store.add, event)
+            await self._async_store()
         await self.async_update_ha_state(force_refresh=True)
 
+    @override
     async def async_delete_event(
         self,
         uid: str,
@@ -122,17 +160,22 @@ class LocalCalendarEntity(CalendarEntity):
         range_value: Range = Range.NONE
         if recurrence_range == Range.THIS_AND_FUTURE:
             range_value = Range.THIS_AND_FUTURE
-        try:
-            EventStore(self._calendar).delete(
-                uid,
-                recurrence_id=recurrence_id,
-                recurrence_range=range_value,
-            )
-        except EventStoreError as err:
-            raise HomeAssistantError(f"Error while deleting event: {err}") from err
-        await self._async_store()
+        async with self._calendar_lock:
+            try:
+                EventStore(self._calendar).delete(
+                    uid,
+                    recurrence_id=recurrence_id,
+                    recurrence_range=range_value,
+                )
+            except EventStoreError as err:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="delete_event_error",
+                ) from err
+            await self._async_store()
         await self.async_update_ha_state(force_refresh=True)
 
+    @override
     async def async_update_event(
         self,
         uid: str,
@@ -145,16 +188,26 @@ class LocalCalendarEntity(CalendarEntity):
         range_value: Range = Range.NONE
         if recurrence_range == Range.THIS_AND_FUTURE:
             range_value = Range.THIS_AND_FUTURE
-        try:
-            EventStore(self._calendar).edit(
-                uid,
-                new_event,
-                recurrence_id=recurrence_id,
-                recurrence_range=range_value,
-            )
-        except EventStoreError as err:
-            raise HomeAssistantError(f"Error while updating event: {err}") from err
-        await self._async_store()
+
+        async with self._calendar_lock:
+            event_store = EventStore(self._calendar)
+
+            def apply_edit() -> None:
+                event_store.edit(
+                    uid,
+                    new_event,
+                    recurrence_id=recurrence_id,
+                    recurrence_range=range_value,
+                )
+
+            try:
+                await self.hass.async_add_executor_job(apply_edit)
+            except EventStoreError as err:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="update_event_error",
+                ) from err
+            await self._async_store()
         await self.async_update_ha_state(force_refresh=True)
 
 
@@ -176,12 +229,43 @@ def _parse_event(event: dict[str, Any]) -> Event:
             and value.tzinfo is not None
         ):
             event[key] = dt_util.as_local(value).replace(tzinfo=None)
+    # UNTIL in the rrule must be floating (timezone-naive) to match the
+    # floating dtstart used by the ical library. Strip tzinfo from UNTIL
+    # if present, converting to local time first.
+    if (rrule_obj := event.get(EVENT_RRULE)) and isinstance(rrule_obj, Recur):
+        if isinstance(rrule_obj.until, datetime) and rrule_obj.until.tzinfo is not None:
+            rrule_obj.until = dt_util.as_local(rrule_obj.until).replace(tzinfo=None)
 
     try:
-        return Event.parse_obj(event)
-    except ValidationError as err:
+        return Event(**event)
+    except CalendarParseError as err:
         _LOGGER.debug("Error parsing event input fields: %s (%s)", event, str(err))
-        raise vol.Invalid("Error parsing event input fields") from err
+        raise probatio.Invalid("Error parsing event input fields") from err
+
+
+def _is_cancelled(event: Event) -> bool:
+    """Return whether an event has been called off.
+
+    rfc5545 keeps a cancelled event in the calendar rather than deleting it,
+    and an imported calendar can carry one. A calendar entity does not return
+    such events.
+    """
+    return event.status == EventStatus.CANCELLED
+
+
+def _get_status(event: Event) -> CalendarEventStatus | None:
+    """Return the status of an event, if a calendar entity reports that status.
+
+    Cancelled events are filtered out before this, so they never reach here.
+    ical's enum is a plain (str, Enum) rather than a StrEnum, so its value has to
+    be read explicitly.
+    """
+    if event.status is None:
+        return None
+    try:
+        return CalendarEventStatus(event.status.value.lower())
+    except ValueError:
+        return None
 
 
 def _get_calendar_event(event: Event) -> CalendarEvent:
@@ -200,7 +284,7 @@ def _get_calendar_event(event: Event) -> CalendarEvent:
             end = start + timedelta(days=1)
 
     return CalendarEvent(
-        summary=event.summary,
+        summary=event.summary or "",
         start=start,
         end=end,
         description=event.description,
@@ -208,4 +292,5 @@ def _get_calendar_event(event: Event) -> CalendarEvent:
         rrule=event.rrule.as_rrule_str() if event.rrule else None,
         recurrence_id=event.recurrence_id,
         location=event.location,
+        status=_get_status(event),
     )

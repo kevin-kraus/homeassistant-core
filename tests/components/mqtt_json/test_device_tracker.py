@@ -1,24 +1,26 @@
 """The tests for the JSON MQTT device tracker platform."""
-from collections.abc import Generator
+
+from collections.abc import AsyncGenerator
 import json
 import logging
 import os
 from unittest.mock import patch
 
 import pytest
+from pytest_homeassistant.common import async_fire_mqtt_message
+from pytest_homeassistant.typing import MqttMockHAClient
 
 from homeassistant.components.device_tracker.legacy import (
     DOMAIN as DT_DOMAIN,
     YAML_DEVICES,
+    AsyncSeeCallback,
 )
 from homeassistant.components.mqtt import DOMAIN as MQTT_DOMAIN
 from homeassistant.config_entries import ConfigEntryDisabler
 from homeassistant.const import CONF_PLATFORM
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.setup import async_setup_component
-
-from tests.common import async_fire_mqtt_message
-from tests.typing import MqttMockHAClient
 
 LOCATION_MESSAGE = {
     "longitude": 1.0,
@@ -33,7 +35,7 @@ LOCATION_MESSAGE_INCOMPLETE = {"longitude": 2.0}
 @pytest.fixture(autouse=True)
 async def setup_comp(
     hass: HomeAssistant, mqtt_mock: MqttMockHAClient
-) -> Generator[None, None, None]:
+) -> AsyncGenerator[None]:
     """Initialize components."""
     yaml_devices = hass.config.path(YAML_DEVICES)
     yield
@@ -42,7 +44,7 @@ async def setup_comp(
 
 
 async def test_setup_fails_without_mqtt_being_setup(
-    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    hass: HomeAssistant, mqtt_mock: MqttMockHAClient, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Ensure mqtt is started when we setup the component."""
     # Simulate MQTT is was removed
@@ -51,6 +53,8 @@ async def test_setup_fails_without_mqtt_being_setup(
     await hass.config_entries.async_set_disabled_by(
         mqtt_entry.entry_id, ConfigEntryDisabler.USER
     )
+    # mqtt is mocked so we need to simulate it is not connected
+    mqtt_mock.connected = False
 
     dev_id = "zanzito"
     topic = "location/zanzito"
@@ -60,15 +64,23 @@ async def test_setup_fails_without_mqtt_being_setup(
         DT_DOMAIN,
         {DT_DOMAIN: {CONF_PLATFORM: "mqtt_json", "devices": {dev_id: topic}}},
     )
+    await hass.async_block_till_done()
+
     assert "MQTT integration is not available" in caplog.text
 
 
 async def test_ensure_device_tracker_platform_validation(hass: HomeAssistant) -> None:
     """Test if platform validation was done."""
 
-    async def mock_setup_scanner(hass, config, see, discovery_info=None):
+    async def mock_setup_scanner(
+        hass: HomeAssistant,
+        config: ConfigType,
+        see: AsyncSeeCallback,
+        discovery_info: DiscoveryInfoType | None = None,
+    ) -> bool:
         """Check that Qos was added by validation."""
         assert "qos" in config
+        return True
 
     with patch(
         "homeassistant.components.mqtt_json.device_tracker.async_setup_scanner",
@@ -82,6 +94,7 @@ async def test_ensure_device_tracker_platform_validation(hass: HomeAssistant) ->
             DT_DOMAIN,
             {DT_DOMAIN: {CONF_PLATFORM: "mqtt_json", "devices": {dev_id: topic}}},
         )
+        await hass.async_block_till_done()
         assert mock_sp.call_count == 1
 
 
@@ -96,6 +109,7 @@ async def test_json_message(hass: HomeAssistant) -> None:
         DT_DOMAIN,
         {DT_DOMAIN: {CONF_PLATFORM: "mqtt_json", "devices": {dev_id: topic}}},
     )
+    await hass.async_block_till_done()
     async_fire_mqtt_message(hass, topic, location)
     await hass.async_block_till_done()
     state = hass.states.get("device_tracker.zanzito")
@@ -116,6 +130,7 @@ async def test_non_json_message(
         DT_DOMAIN,
         {DT_DOMAIN: {CONF_PLATFORM: "mqtt_json", "devices": {dev_id: topic}}},
     )
+    await hass.async_block_till_done()
 
     caplog.set_level(logging.ERROR)
     caplog.clear()
@@ -137,6 +152,7 @@ async def test_incomplete_message(
         DT_DOMAIN,
         {DT_DOMAIN: {CONF_PLATFORM: "mqtt_json", "devices": {dev_id: topic}}},
     )
+    await hass.async_block_till_done()
 
     caplog.set_level(logging.ERROR)
     caplog.clear()
@@ -160,6 +176,8 @@ async def test_single_level_wildcard_topic(hass: HomeAssistant) -> None:
         DT_DOMAIN,
         {DT_DOMAIN: {CONF_PLATFORM: "mqtt_json", "devices": {dev_id: subscription}}},
     )
+    await hass.async_block_till_done()
+
     async_fire_mqtt_message(hass, topic, location)
     await hass.async_block_till_done()
     state = hass.states.get("device_tracker.zanzito")
@@ -179,6 +197,8 @@ async def test_multi_level_wildcard_topic(hass: HomeAssistant) -> None:
         DT_DOMAIN,
         {DT_DOMAIN: {CONF_PLATFORM: "mqtt_json", "devices": {dev_id: subscription}}},
     )
+    await hass.async_block_till_done()
+
     async_fire_mqtt_message(hass, topic, location)
     await hass.async_block_till_done()
     state = hass.states.get("device_tracker.zanzito")
@@ -199,6 +219,8 @@ async def test_single_level_wildcard_topic_not_matching(hass: HomeAssistant) -> 
         DT_DOMAIN,
         {DT_DOMAIN: {CONF_PLATFORM: "mqtt_json", "devices": {dev_id: subscription}}},
     )
+    await hass.async_block_till_done()
+
     async_fire_mqtt_message(hass, topic, location)
     await hass.async_block_till_done()
     assert hass.states.get(entity_id) is None
@@ -217,6 +239,8 @@ async def test_multi_level_wildcard_topic_not_matching(hass: HomeAssistant) -> N
         DT_DOMAIN,
         {DT_DOMAIN: {CONF_PLATFORM: "mqtt_json", "devices": {dev_id: subscription}}},
     )
+    await hass.async_block_till_done()
+
     async_fire_mqtt_message(hass, topic, location)
     await hass.async_block_till_done()
     assert hass.states.get(entity_id) is None

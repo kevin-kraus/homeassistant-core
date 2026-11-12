@@ -1,13 +1,11 @@
 """Config flow for Google Translate text-to-speech integration."""
-from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
-import voluptuous as vol
+import probatio
 
-from homeassistant import config_entries
 from homeassistant.components.tts import CONF_LANG
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 
 from .const import (
     CONF_TLD,
@@ -18,22 +16,25 @@ from .const import (
     SUPPORT_TLD,
 )
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
+STEP_USER_DATA_SCHEMA = probatio.Schema(
     {
-        vol.Optional(CONF_LANG, default=DEFAULT_LANG): vol.In(SUPPORT_LANGUAGES),
-        vol.Optional(CONF_TLD, default=DEFAULT_TLD): vol.In(SUPPORT_TLD),
+        probatio.Optional(CONF_LANG, default=DEFAULT_LANG): probatio.In(
+            SUPPORT_LANGUAGES
+        ),
+        probatio.Optional(CONF_TLD, default=DEFAULT_TLD): probatio.In(SUPPORT_TLD),
     }
 )
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class GoogleTranslateConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Google Translate text-to-speech."""
 
     VERSION = 1
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         if user_input is not None:
             self._async_abort_entries_match(
@@ -50,7 +51,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_onboarding(
         self, data: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle a flow initialized by onboarding."""
         return self.async_create_entry(
             title="Google Translate text-to-speech",

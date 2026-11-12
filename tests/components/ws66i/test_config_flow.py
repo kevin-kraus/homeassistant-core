@@ -1,7 +1,12 @@
 """Test the WS66i 6-Zone Amplifier config flow."""
+
+from collections.abc import Generator
+from contextlib import contextmanager
 from unittest.mock import patch
 
-from homeassistant import config_entries, data_entry_flow
+from pytest_homeassistant.common import MockConfigEntry
+
+from homeassistant import config_entries
 from homeassistant.components.ws66i.const import (
     CONF_SOURCE_1,
     CONF_SOURCE_2,
@@ -15,12 +20,20 @@ from homeassistant.components.ws66i.const import (
 )
 from homeassistant.const import CONF_IP_ADDRESS
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
 
 from .test_media_player import AttrDict
 
-from tests.common import MockConfigEntry
-
 CONFIG = {CONF_IP_ADDRESS: "1.1.1.1"}
+
+
+@contextmanager
+def _patch_success() -> Generator[None]:
+    with (
+        patch("homeassistant.components.ws66i.config_flow.get_ws66i"),
+        patch("homeassistant.components.ws66i.async_setup_entry", return_value=None),
+    ):
+        yield
 
 
 async def test_form(hass: HomeAssistant) -> None:
@@ -28,15 +41,18 @@ async def test_form(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {}
 
-    with patch(
-        "homeassistant.components.ws66i.config_flow.get_ws66i",
-    ) as mock_ws66i, patch(
-        "homeassistant.components.ws66i.async_setup_entry",
-        return_value=True,
-    ) as mock_setup_entry:
+    with (
+        patch(
+            "homeassistant.components.ws66i.config_flow.get_ws66i",
+        ) as mock_ws66i,
+        patch(
+            "homeassistant.components.ws66i.async_setup_entry",
+            return_value=None,
+        ) as mock_setup_entry,
+    ):
         ws66i_instance = mock_ws66i.return_value
 
         result2 = await hass.config_entries.flow.async_configure(
@@ -47,7 +63,7 @@ async def test_form(hass: HomeAssistant) -> None:
         ws66i_instance.open.assert_called_once()
         ws66i_instance.close.assert_called_once()
 
-    assert result2["type"] == "create_entry"
+    assert result2["type"] is FlowResultType.CREATE_ENTRY
     assert result2["title"] == "WS66i Amp"
     assert result2["data"] == {CONF_IP_ADDRESS: CONFIG[CONF_IP_ADDRESS]}
 
@@ -67,8 +83,16 @@ async def test_form_cannot_connect(hass: HomeAssistant) -> None:
             result["flow_id"], CONFIG
         )
 
-    assert result2["type"] == "form"
+    assert result2["type"] is FlowResultType.FORM
     assert result2["errors"] == {"base": "cannot_connect"}
+
+    with _patch_success():
+        result3 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], CONFIG
+        )
+        await hass.async_block_till_done()
+
+    assert result3["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_form_wrong_ip(hass: HomeAssistant) -> None:
@@ -84,8 +108,16 @@ async def test_form_wrong_ip(hass: HomeAssistant) -> None:
             result["flow_id"], CONFIG
         )
 
-    assert result2["type"] == "form"
+    assert result2["type"] is FlowResultType.FORM
     assert result2["errors"] == {"base": "cannot_connect"}
+
+    with _patch_success():
+        result3 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], CONFIG
+        )
+        await hass.async_block_till_done()
+
+    assert result3["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_generic_exception(hass: HomeAssistant) -> None:
@@ -101,8 +133,16 @@ async def test_generic_exception(hass: HomeAssistant) -> None:
             result["flow_id"], CONFIG
         )
 
-    assert result2["type"] == "form"
+    assert result2["type"] is FlowResultType.FORM
     assert result2["errors"] == {"base": "unknown"}
+
+    with _patch_success():
+        result3 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], CONFIG
+        )
+        await hass.async_block_till_done()
+
+    assert result3["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_options_flow(hass: HomeAssistant) -> None:
@@ -126,7 +166,7 @@ async def test_options_flow(hass: HomeAssistant) -> None:
 
         result = await hass.config_entries.options.async_init(config_entry.entry_id)
 
-        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["type"] is FlowResultType.FORM
         assert result["step_id"] == "init"
 
         result = await hass.config_entries.options.async_configure(
@@ -141,7 +181,7 @@ async def test_options_flow(hass: HomeAssistant) -> None:
             },
         )
 
-        assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+        assert result["type"] is FlowResultType.CREATE_ENTRY
         assert config_entry.options[CONF_SOURCES] == {
             "1": "one",
             "2": "too",

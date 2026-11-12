@@ -1,120 +1,75 @@
 """The lawn mower integration."""
-from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import timedelta
 import logging
-from typing import final
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.config_validation import (  # noqa: F401
-    PLATFORM_SCHEMA,
-    PLATFORM_SCHEMA_BASE,
-)
-from homeassistant.helpers.entity import Entity, EntityDescription
+from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
+    DATA_COMPONENT,
     DOMAIN,
     SERVICE_DOCK,
     SERVICE_PAUSE,
     SERVICE_START_MOWING,
+    SERVICE_STOP,
     LawnMowerActivity,
     LawnMowerEntityFeature,
+    LawnMowerService,
 )
-
-SCAN_INTERVAL = timedelta(seconds=60)
+from .entity import LawnMowerEntity, LawnMowerEntityEntityDescription
+from .services import async_setup_services
 
 _LOGGER = logging.getLogger(__name__)
+
+ENTITY_ID_FORMAT = DOMAIN + ".{}"
+PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA
+PLATFORM_SCHEMA_BASE = cv.PLATFORM_SCHEMA_BASE
+SCAN_INTERVAL = timedelta(seconds=60)
+
+__all__ = [
+    "DOMAIN",
+    "ENTITY_ID_FORMAT",
+    "PLATFORM_SCHEMA",
+    "PLATFORM_SCHEMA_BASE",
+    "SERVICE_DOCK",
+    "SERVICE_PAUSE",
+    "SERVICE_START_MOWING",
+    "SERVICE_STOP",
+    "LawnMowerActivity",
+    "LawnMowerEntity",
+    "LawnMowerEntityEntityDescription",
+    "LawnMowerEntityFeature",
+    "LawnMowerService",
+]
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the lawn_mower component."""
-    component = hass.data[DOMAIN] = EntityComponent[LawnMowerEntity](
+    component = hass.data[DATA_COMPONENT] = EntityComponent[LawnMowerEntity](
         _LOGGER, DOMAIN, hass, SCAN_INTERVAL
     )
     await component.async_setup(config)
 
-    component.async_register_entity_service(
-        SERVICE_START_MOWING,
-        {},
-        "async_start_mowing",
-        [LawnMowerEntityFeature.START_MOWING],
-    )
-    component.async_register_entity_service(
-        SERVICE_PAUSE, {}, "async_pause", [LawnMowerEntityFeature.PAUSE]
-    )
-    component.async_register_entity_service(
-        SERVICE_DOCK, {}, "async_dock", [LawnMowerEntityFeature.DOCK]
-    )
+    async_setup_services(hass)
 
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Set up lawn mower devices."""
-    component: EntityComponent[LawnMowerEntity] = hass.data[DOMAIN]
-    return await component.async_setup_entry(entry)
+    if not await hass.data[DATA_COMPONENT].async_setup_entry(entry):
+        raise ConfigEntryError(
+            translation_domain=HOMEASSISTANT_DOMAIN,
+            translation_key="platform_setup_failed",
+            translation_placeholders={"platform": entry.domain, "domain": DOMAIN},
+        )
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Unload a config entry."""
-    component: EntityComponent[LawnMowerEntity] = hass.data[DOMAIN]
-    return await component.async_unload_entry(entry)
-
-
-@dataclass
-class LawnMowerEntityEntityDescription(EntityDescription):
-    """A class that describes lawn mower entities."""
-
-
-class LawnMowerEntity(Entity):
-    """Base class for lawn mower entities."""
-
-    entity_description: LawnMowerEntityEntityDescription
-    _attr_activity: LawnMowerActivity | None = None
-    _attr_supported_features: LawnMowerEntityFeature = LawnMowerEntityFeature(0)
-
-    @final
-    @property
-    def state(self) -> str | None:
-        """Return the current state."""
-        if (activity := self.activity) is None:
-            return None
-        return str(activity)
-
-    @property
-    def activity(self) -> LawnMowerActivity | None:
-        """Return the current lawn mower activity."""
-        return self._attr_activity
-
-    @property
-    def supported_features(self) -> LawnMowerEntityFeature:
-        """Flag lawn mower features that are supported."""
-        return self._attr_supported_features
-
-    def start_mowing(self) -> None:
-        """Start or resume mowing."""
-        raise NotImplementedError()
-
-    async def async_start_mowing(self) -> None:
-        """Start or resume mowing."""
-        await self.hass.async_add_executor_job(self.start_mowing)
-
-    def dock(self) -> None:
-        """Dock the mower."""
-        raise NotImplementedError()
-
-    async def async_dock(self) -> None:
-        """Dock the mower."""
-        await self.hass.async_add_executor_job(self.dock)
-
-    def pause(self) -> None:
-        """Pause the lawn mower."""
-        raise NotImplementedError()
-
-    async def async_pause(self) -> None:
-        """Pause the lawn mower."""
-        await self.hass.async_add_executor_job(self.pause)
+    await hass.data[DATA_COMPONENT].async_unload_entry(entry)

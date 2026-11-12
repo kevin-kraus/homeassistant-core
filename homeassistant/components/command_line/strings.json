@@ -1,14 +1,22 @@
 {
+  "exceptions": {
+    "command_error": {
+      "message": "Error trying to execute command: {command}. Error: {error}"
+    },
+    "timeout_error": {
+      "message": "Timeout trying to execute command: {command}"
+    }
+  },
   "issues": {
-    "deprecated_platform_yaml": {
-      "title": "Command Line YAML configuration has moved",
-      "description": "Configuring Command Line `{platform}` using YAML has moved.\n\nConsult the documentation to move your YAML configuration to integration key and restart Home Assistant to fix this issue."
+    "shell_command_template_deprecation": {
+      "description": "The `command_line` `{platform}` `{name}` runs a command (`{program}`) that uses a template. For security, commands that use a template will run without a shell in Home Assistant 2027.4, so shell features (pipes, redirects, globbing, etc.) anywhere in the command will no longer work.\n\nUpdate the command to avoid shell features, or move the logic into a script the command calls.",
+      "title": "Command with a template uses shell features"
     }
   },
   "services": {
     "reload": {
-      "name": "[%key:common::action::reload%]",
-      "description": "Reloads command line configuration from the YAML-configuration."
+      "description": "Reloads command line configuration from the YAML-configuration.",
+      "name": "[%key:common::action::reload%]"
     }
   }
 }

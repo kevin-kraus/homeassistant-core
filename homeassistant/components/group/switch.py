@@ -1,30 +1,36 @@
 """Platform allowing several switches to be grouped into one switch."""
-from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, override
 
-import voluptuous as vol
+import probatio
 
-from homeassistant.components.switch import DOMAIN, PLATFORM_SCHEMA, SwitchEntity
+from homeassistant.components.switch import (
+    DOMAIN as SWITCH_DOMAIN,
+    PLATFORM_SCHEMA as SWITCH_PLATFORM_SCHEMA,
+    SwitchEntity,
+    SwitchService,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_ENTITY_ID,
     CONF_ENTITIES,
     CONF_NAME,
     CONF_UNIQUE_ID,
-    SERVICE_TURN_OFF,
-    SERVICE_TURN_ON,
     STATE_ON,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv, entity_registry as er
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import (
+    AddConfigEntryEntitiesCallback,
+    AddEntitiesCallback,
+)
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from . import GroupEntity
+from .const import GroupEntityStateAttribute
+from .entity import GroupEntity
 
 DEFAULT_NAME = "Switch Group"
 CONF_ALL = "all"
@@ -32,12 +38,12 @@ CONF_ALL = "all"
 # No limit on parallel updates to enable a group calling another group
 PARALLEL_UPDATES = 0
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+PLATFORM_SCHEMA = SWITCH_PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_ENTITIES): cv.entities_domain(DOMAIN),
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-        vol.Optional(CONF_UNIQUE_ID): cv.string,
-        vol.Optional(CONF_ALL, default=False): cv.boolean,
+        probatio.Required(CONF_ENTITIES): cv.entities_domain(SWITCH_DOMAIN),
+        probatio.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        probatio.Optional(CONF_UNIQUE_ID): cv.string,
+        probatio.Optional(CONF_ALL, default=False): cv.boolean,
     }
 )
 
@@ -66,7 +72,7 @@ async def async_setup_platform(
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Initialize Switch Group config entry."""
     registry = er.async_get(hass)
@@ -87,7 +93,7 @@ async def async_setup_entry(
 
 @callback
 def async_create_preview_switch(
-    name: str, validated_config: dict[str, Any]
+    hass: HomeAssistant, name: str, validated_config: dict[str, Any]
 ) -> SwitchGroup:
     """Create a preview sensor."""
     return SwitchGroup(
@@ -115,39 +121,46 @@ class SwitchGroup(GroupEntity, SwitchEntity):
         self._entity_ids = entity_ids
 
         self._attr_name = name
-        self._attr_extra_state_attributes = {ATTR_ENTITY_ID: entity_ids}
+        self._attr_extra_state_attributes = {
+            GroupEntityStateAttribute.ENTITY_ID: entity_ids
+        }
         self._attr_unique_id = unique_id
         self.mode = any
         if mode:
             self.mode = all
 
+    @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Forward the turn_on command to all switches in the group."""
         data = {ATTR_ENTITY_ID: self._entity_ids}
         _LOGGER.debug("Forwarded turn_on command: %s", data)
 
         await self.hass.services.async_call(
-            DOMAIN,
-            SERVICE_TURN_ON,
+            SWITCH_DOMAIN,
+            SwitchService.TURN_ON,
             data,
             blocking=True,
             context=self._context,
         )
 
+    @override
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Forward the turn_off command to all switches in the group."""
         data = {ATTR_ENTITY_ID: self._entity_ids}
         await self.hass.services.async_call(
-            DOMAIN,
-            SERVICE_TURN_OFF,
+            SWITCH_DOMAIN,
+            SwitchService.TURN_OFF,
             data,
             blocking=True,
             context=self._context,
         )
 
     @callback
+    @override
     def async_update_group_state(self) -> None:
         """Query all members and determine the switch group state."""
+        self._update_assumed_state_from_members()
+
         states = [
             state.state
             for entity_id in self._entity_ids

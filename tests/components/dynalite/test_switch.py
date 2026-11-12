@@ -1,8 +1,10 @@
 """Test Dynalite switch."""
+
 from unittest.mock import Mock
 
 from dynalite_devices_lib.switch import DynalitePresetSwitchDevice
 import pytest
+from pytest_homeassistant.common import mock_restore_cache
 
 from homeassistant.const import ATTR_FRIENDLY_NAME, STATE_OFF, STATE_ON
 from homeassistant.core import HomeAssistant, State
@@ -14,8 +16,6 @@ from .common import (
     create_mock_device,
     run_service_tests,
 )
-
-from tests.common import mock_restore_cache
 
 
 @pytest.fixture

@@ -1,8 +1,10 @@
 {
   "domain": "samsungtv",
   "name": "Samsung Smart TV",
-  "codeowners": ["@chemelli74", "@epenet"],
+  "categories": ["media_entertainment.tv_streaming"],
+  "codeowners": ["@chemelli74"],
   "config_flow": true,
+  "connectivity": ["network"],
   "dependencies": ["ssdp"],
   "dhcp": [
     {
@@ -34,12 +36,12 @@
   "integration_type": "device",
   "iot_class": "local_push",
   "loggers": ["samsungctl", "samsungtvws"],
+  "quality_scale": "gold",
   "requirements": [
-    "getmac==0.8.2",
+    "getmac==0.9.6",
     "samsungctl[websocket]==0.7.1",
-    "samsungtvws[async,encrypted]==2.6.0",
-    "wakeonlan==2.1.0",
-    "async-upnp-client==0.35.1"
+    "samsungtvws[async,encrypted]==3.0.7",
+    "async-upnp-client==0.49.0"
   ],
   "ssdp": [
     {
@@ -59,10 +61,10 @@
   ],
   "zeroconf": [
     {
-      "type": "_airplay._tcp.local.",
       "properties": {
         "manufacturer": "samsung*"
-      }
+      },
+      "type": "_airplay._tcp.local."
     }
   ]
 }

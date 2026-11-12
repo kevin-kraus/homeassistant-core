@@ -1,4 +1,7 @@
 """Test cases around the demo fan platform."""
+
+from unittest.mock import patch
+
 import pytest
 
 from homeassistant.components import fan
@@ -15,24 +18,34 @@ from homeassistant.const import (
     SERVICE_TURN_ON,
     STATE_OFF,
     STATE_ON,
+    Platform,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
 FULL_FAN_ENTITY_IDS = ["fan.living_room_fan", "fan.percentage_full_fan"]
 FANS_WITH_PRESET_MODE_ONLY = ["fan.preset_only_limited_fan"]
-LIMITED_AND_FULL_FAN_ENTITY_IDS = FULL_FAN_ENTITY_IDS + [
+LIMITED_AND_FULL_FAN_ENTITY_IDS = [
+    *FULL_FAN_ENTITY_IDS,
     "fan.ceiling_fan",
     "fan.percentage_limited_fan",
 ]
-FANS_WITH_PRESET_MODES = FULL_FAN_ENTITY_IDS + [
-    "fan.percentage_limited_fan",
-]
+FANS_WITH_PRESET_MODES = [*FULL_FAN_ENTITY_IDS, "fan.percentage_limited_fan"]
 PERCENTAGE_MODEL_FANS = ["fan.percentage_full_fan", "fan.percentage_limited_fan"]
 
 
+@pytest.fixture
+async def fan_only() -> None:
+    """Enable only the datetime platform."""
+    with patch(
+        "homeassistant.components.demo.COMPONENTS_WITH_CONFIG_ENTRY_DEMO_PLATFORM",
+        [Platform.FAN],
+    ):
+        yield
+
+
 @pytest.fixture(autouse=True)
-async def setup_comp(hass, disable_platforms):
+async def setup_comp(hass: HomeAssistant, fan_only: None):
     """Initialize components."""
     assert await async_setup_component(hass, fan.DOMAIN, {"fan": {"platform": "demo"}})
     await hass.async_block_till_done()
@@ -47,6 +60,7 @@ async def test_turn_on(hass: HomeAssistant, fan_entity_id) -> None:
     await hass.services.async_call(
         fan.DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: fan_entity_id}, blocking=True
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
 
@@ -64,6 +78,7 @@ async def test_turn_on_with_speed_and_percentage(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PERCENTAGE: 100},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
     assert state.attributes[fan.ATTR_PERCENTAGE] == 100
@@ -74,6 +89,7 @@ async def test_turn_on_with_speed_and_percentage(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PERCENTAGE: 66},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
     assert state.attributes[fan.ATTR_PERCENTAGE] == 66
@@ -84,6 +100,7 @@ async def test_turn_on_with_speed_and_percentage(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PERCENTAGE: 33},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
     assert state.attributes[fan.ATTR_PERCENTAGE] == 33
@@ -94,6 +111,7 @@ async def test_turn_on_with_speed_and_percentage(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PERCENTAGE: 100},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
     assert state.attributes[fan.ATTR_PERCENTAGE] == 100
@@ -104,6 +122,7 @@ async def test_turn_on_with_speed_and_percentage(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PERCENTAGE: 66},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
     assert state.attributes[fan.ATTR_PERCENTAGE] == 66
@@ -114,6 +133,7 @@ async def test_turn_on_with_speed_and_percentage(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PERCENTAGE: 33},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
     assert state.attributes[fan.ATTR_PERCENTAGE] == 33
@@ -124,6 +144,7 @@ async def test_turn_on_with_speed_and_percentage(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PERCENTAGE: 0},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_OFF
     assert state.attributes[fan.ATTR_PERCENTAGE] == 0
@@ -142,6 +163,7 @@ async def test_turn_on_with_preset_mode_only(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PRESET_MODE: PRESET_MODE_AUTO},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
     assert state.attributes[fan.ATTR_PRESET_MODE] == PRESET_MODE_AUTO
@@ -158,6 +180,7 @@ async def test_turn_on_with_preset_mode_only(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PRESET_MODE: PRESET_MODE_SMART},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
     assert state.attributes[fan.ATTR_PRESET_MODE] == PRESET_MODE_SMART
@@ -165,18 +188,24 @@ async def test_turn_on_with_preset_mode_only(
     await hass.services.async_call(
         fan.DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: fan_entity_id}, blocking=True
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_OFF
     assert state.attributes[fan.ATTR_PRESET_MODE] is None
 
-    with pytest.raises(ValueError):
+    with pytest.raises(fan.NotValidPresetModeError) as exc:
         await hass.services.async_call(
             fan.DOMAIN,
             SERVICE_TURN_ON,
             {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PRESET_MODE: "invalid"},
             blocking=True,
         )
-        await hass.async_block_till_done()
+    assert exc.value.translation_domain == fan.DOMAIN
+    assert exc.value.translation_key == "not_valid_preset_mode"
+    assert exc.value.translation_placeholders == {
+        "preset_mode": "invalid",
+        "preset_modes": "auto, smart, sleep, on",
+    }
 
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_OFF
@@ -196,6 +225,7 @@ async def test_turn_on_with_preset_mode_and_speed(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PRESET_MODE: PRESET_MODE_AUTO},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
     assert state.attributes[fan.ATTR_PERCENTAGE] is None
@@ -213,6 +243,7 @@ async def test_turn_on_with_preset_mode_and_speed(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PERCENTAGE: 100},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
     assert state.attributes[fan.ATTR_PERCENTAGE] == 100
@@ -224,6 +255,7 @@ async def test_turn_on_with_preset_mode_and_speed(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PRESET_MODE: PRESET_MODE_SMART},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
     assert state.attributes[fan.ATTR_PERCENTAGE] is None
@@ -232,19 +264,25 @@ async def test_turn_on_with_preset_mode_and_speed(
     await hass.services.async_call(
         fan.DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: fan_entity_id}, blocking=True
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_OFF
     assert state.attributes[fan.ATTR_PERCENTAGE] == 0
     assert state.attributes[fan.ATTR_PRESET_MODE] is None
 
-    with pytest.raises(ValueError):
+    with pytest.raises(fan.NotValidPresetModeError) as exc:
         await hass.services.async_call(
             fan.DOMAIN,
             SERVICE_TURN_ON,
             {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PRESET_MODE: "invalid"},
             blocking=True,
         )
-        await hass.async_block_till_done()
+    assert exc.value.translation_domain == fan.DOMAIN
+    assert exc.value.translation_key == "not_valid_preset_mode"
+    assert exc.value.translation_placeholders == {
+        "preset_mode": "invalid",
+        "preset_modes": "auto, smart, sleep, on",
+    }
 
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_OFF
@@ -261,12 +299,14 @@ async def test_turn_off(hass: HomeAssistant, fan_entity_id) -> None:
     await hass.services.async_call(
         fan.DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: fan_entity_id}, blocking=True
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
 
     await hass.services.async_call(
         fan.DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: fan_entity_id}, blocking=True
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_OFF
 
@@ -280,12 +320,14 @@ async def test_turn_off_without_entity_id(hass: HomeAssistant, fan_entity_id) ->
     await hass.services.async_call(
         fan.DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: fan_entity_id}, blocking=True
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
 
     await hass.services.async_call(
         fan.DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: ENTITY_MATCH_ALL}, blocking=True
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_OFF
 
@@ -302,6 +344,7 @@ async def test_set_direction(hass: HomeAssistant, fan_entity_id) -> None:
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_DIRECTION: fan.DIRECTION_REVERSE},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_DIRECTION] == fan.DIRECTION_REVERSE
 
@@ -318,6 +361,7 @@ async def test_set_preset_mode(hass: HomeAssistant, fan_entity_id) -> None:
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PRESET_MODE: PRESET_MODE_AUTO},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_ON
     assert state.attributes[fan.ATTR_PERCENTAGE] is None
@@ -330,23 +374,25 @@ async def test_set_preset_mode_invalid(hass: HomeAssistant, fan_entity_id) -> No
     state = hass.states.get(fan_entity_id)
     assert state.state == STATE_OFF
 
-    with pytest.raises(ValueError):
+    with pytest.raises(fan.NotValidPresetModeError) as exc:
         await hass.services.async_call(
             fan.DOMAIN,
             fan.SERVICE_SET_PRESET_MODE,
             {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PRESET_MODE: "invalid"},
             blocking=True,
         )
-        await hass.async_block_till_done()
+    assert exc.value.translation_domain == fan.DOMAIN
+    assert exc.value.translation_key == "not_valid_preset_mode"
 
-    with pytest.raises(ValueError):
+    with pytest.raises(fan.NotValidPresetModeError) as exc:
         await hass.services.async_call(
             fan.DOMAIN,
             SERVICE_TURN_ON,
             {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PRESET_MODE: "invalid"},
             blocking=True,
         )
-        await hass.async_block_till_done()
+    assert exc.value.translation_domain == fan.DOMAIN
+    assert exc.value.translation_key == "not_valid_preset_mode"
 
 
 @pytest.mark.parametrize("fan_entity_id", FULL_FAN_ENTITY_IDS)
@@ -361,6 +407,7 @@ async def test_set_percentage(hass: HomeAssistant, fan_entity_id) -> None:
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PERCENTAGE: 33},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_PERCENTAGE] == 33
 
@@ -378,6 +425,7 @@ async def test_increase_decrease_speed(hass: HomeAssistant, fan_entity_id) -> No
         {ATTR_ENTITY_ID: fan_entity_id},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_PERCENTAGE] == 33
 
@@ -387,6 +435,7 @@ async def test_increase_decrease_speed(hass: HomeAssistant, fan_entity_id) -> No
         {ATTR_ENTITY_ID: fan_entity_id},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_PERCENTAGE] == 66
 
@@ -396,6 +445,7 @@ async def test_increase_decrease_speed(hass: HomeAssistant, fan_entity_id) -> No
         {ATTR_ENTITY_ID: fan_entity_id},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_PERCENTAGE] == 100
 
@@ -405,6 +455,7 @@ async def test_increase_decrease_speed(hass: HomeAssistant, fan_entity_id) -> No
         {ATTR_ENTITY_ID: fan_entity_id},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_PERCENTAGE] == 100
 
@@ -414,6 +465,7 @@ async def test_increase_decrease_speed(hass: HomeAssistant, fan_entity_id) -> No
         {ATTR_ENTITY_ID: fan_entity_id},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_PERCENTAGE] == 66
 
@@ -423,6 +475,7 @@ async def test_increase_decrease_speed(hass: HomeAssistant, fan_entity_id) -> No
         {ATTR_ENTITY_ID: fan_entity_id},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_PERCENTAGE] == 33
 
@@ -432,6 +485,7 @@ async def test_increase_decrease_speed(hass: HomeAssistant, fan_entity_id) -> No
         {ATTR_ENTITY_ID: fan_entity_id},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_PERCENTAGE] == 0
 
@@ -441,6 +495,7 @@ async def test_increase_decrease_speed(hass: HomeAssistant, fan_entity_id) -> No
         {ATTR_ENTITY_ID: fan_entity_id},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_PERCENTAGE] == 0
 
@@ -456,6 +511,7 @@ async def test_increase_decrease_speed_with_percentage_step(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PERCENTAGE_STEP: 25},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_PERCENTAGE] == 25
 
@@ -465,6 +521,7 @@ async def test_increase_decrease_speed_with_percentage_step(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PERCENTAGE_STEP: 25},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_PERCENTAGE] == 50
 
@@ -474,6 +531,7 @@ async def test_increase_decrease_speed_with_percentage_step(
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_PERCENTAGE_STEP: 25},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_PERCENTAGE] == 75
 
@@ -491,6 +549,7 @@ async def test_oscillate(hass: HomeAssistant, fan_entity_id) -> None:
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_OSCILLATING: True},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_OSCILLATING] is True
 
@@ -500,6 +559,7 @@ async def test_oscillate(hass: HomeAssistant, fan_entity_id) -> None:
         {ATTR_ENTITY_ID: fan_entity_id, fan.ATTR_OSCILLATING: False},
         blocking=True,
     )
+    await hass.async_block_till_done()
     state = hass.states.get(fan_entity_id)
     assert state.attributes[fan.ATTR_OSCILLATING] is False
 
@@ -512,4 +572,5 @@ async def test_is_on(hass: HomeAssistant, fan_entity_id) -> None:
     await hass.services.async_call(
         fan.DOMAIN, SERVICE_TURN_ON, {ATTR_ENTITY_ID: fan_entity_id}, blocking=True
     )
+    await hass.async_block_till_done()
     assert fan.is_on(hass, fan_entity_id)

@@ -1,10 +1,30 @@
 {
   "domain": "xbox",
   "name": "Xbox",
-  "codeowners": ["@hunterjm"],
+  "categories": ["media_entertainment.gaming"],
+  "codeowners": ["@tr4nt0r"],
   "config_flow": true,
-  "dependencies": ["auth", "application_credentials"],
+  "connectivity": ["cloud"],
+  "dependencies": ["application_credentials"],
+  "dhcp": [
+    {
+      "hostname": "xbox*"
+    }
+  ],
   "documentation": "https://www.home-assistant.io/integrations/xbox",
+  "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "requirements": ["xbox-webapi==2.0.11"]
+  "quality_scale": "platinum",
+
+  "requirements": ["python-xbox==0.4.0"],
+  "ssdp": [
+    {
+      "manufacturer": "Microsoft Corporation",
+      "modelName": "Xbox 360"
+    },
+    {
+      "manufacturer": "Microsoft Corporation",
+      "modelName": "Xbox One"
+    }
+  ]
 }

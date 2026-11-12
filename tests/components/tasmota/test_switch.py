@@ -1,4 +1,5 @@
 """The tests for the Tasmota switch platform."""
+
 import copy
 import json
 from unittest.mock import patch
@@ -9,6 +10,8 @@ from hatasmota.utils import (
     get_topic_tele_will,
 )
 import pytest
+from pytest_homeassistant.common import async_fire_mqtt_message
+from pytest_homeassistant.typing import MqttMockHAClient, MqttMockPahoClient
 
 from homeassistant.components.tasmota.const import DEFAULT_PREFIX
 from homeassistant.const import ATTR_ASSUMED_STATE, STATE_OFF, STATE_ON, Platform
@@ -20,6 +23,8 @@ from .test_common import (
     help_test_availability_discovery_update,
     help_test_availability_poll_state,
     help_test_availability_when_connection_lost,
+    help_test_deep_sleep_availability,
+    help_test_deep_sleep_availability_when_connection_lost,
     help_test_discovery_device_remove,
     help_test_discovery_removal,
     help_test_discovery_update_unchanged,
@@ -27,9 +32,7 @@ from .test_common import (
     help_test_entity_id_update_subscriptions,
 )
 
-from tests.common import async_fire_mqtt_message
 from tests.components.switch import common
-from tests.typing import MqttMockHAClient, MqttMockPahoClient
 
 
 async def test_controlling_state_via_mqtt(
@@ -104,7 +107,7 @@ async def test_sending_mqtt_commands(
     # Turn the switch on and verify MQTT message is sent
     await common.async_turn_on(hass, "switch.tasmota_test")
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/Power1", "ON", 0, False
+        "tasmota_49A3BC/cmnd/Power1", "ON", 0, False, message_expiry_interval=None
     )
     mqtt_mock.async_publish.reset_mock()
 
@@ -115,7 +118,7 @@ async def test_sending_mqtt_commands(
     # Turn the switch off and verify MQTT message is sent
     await common.async_turn_off(hass, "switch.tasmota_test")
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/Power1", "OFF", 0, False
+        "tasmota_49A3BC/cmnd/Power1", "OFF", 0, False, message_expiry_interval=None
     )
 
     state = hass.states.get("switch.tasmota_test")
@@ -158,6 +161,20 @@ async def test_availability_when_connection_lost(
     )
 
 
+async def test_deep_sleep_availability_when_connection_lost(
+    hass: HomeAssistant,
+    mqtt_client_mock: MqttMockPahoClient,
+    mqtt_mock: MqttMockHAClient,
+    setup_tasmota,
+) -> None:
+    """Test availability after MQTT disconnection."""
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["rl"][0] = 1
+    await help_test_deep_sleep_availability_when_connection_lost(
+        hass, mqtt_client_mock, mqtt_mock, Platform.SWITCH, config
+    )
+
+
 async def test_availability(
     hass: HomeAssistant, mqtt_mock: MqttMockHAClient, setup_tasmota
 ) -> None:
@@ -165,6 +182,15 @@ async def test_availability(
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["rl"][0] = 1
     await help_test_availability(hass, mqtt_mock, Platform.SWITCH, config)
+
+
+async def test_deep_sleep_availability(
+    hass: HomeAssistant, mqtt_mock: MqttMockHAClient, setup_tasmota
+) -> None:
+    """Test availability."""
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["rl"][0] = 1
+    await help_test_deep_sleep_availability(hass, mqtt_mock, Platform.SWITCH, config)
 
 
 async def test_availability_discovery_update(

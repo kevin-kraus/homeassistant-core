@@ -1,51 +1,52 @@
 """Provide pre-made queries on top of the recorder component."""
-from __future__ import annotations
 
 from datetime import datetime as dt, timedelta
 from http import HTTPStatus
 from typing import cast
 
 from aiohttp import web
-import voluptuous as vol
+import probatio
 
+from homeassistant.auth.permissions import filter_entity_ids_by_permission
+from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.components import frontend
-from homeassistant.components.http import HomeAssistantView
+from homeassistant.components.http import KEY_HASS, KEY_HASS_USER, HomeAssistantView
 from homeassistant.components.recorder import get_instance, history
-from homeassistant.components.recorder.util import session_scope
 from homeassistant.const import CONF_EXCLUDE, CONF_INCLUDE
 from homeassistant.core import HomeAssistant, valid_entity_id
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entityfilter import INCLUDE_EXCLUDE_BASE_FILTER_SCHEMA
+from homeassistant.helpers.recorder import session_scope
 from homeassistant.helpers.typing import ConfigType
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util
 
 from . import websocket_api
 from .const import DOMAIN
-from .helpers import entities_may_have_state_changes_after
+from .helpers import entities_may_have_state_changes_after, has_states_before
 
 CONF_ORDER = "use_include_order"
 
 _ONE_DAY = timedelta(days=1)
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        DOMAIN: vol.All(
+        DOMAIN: probatio.All(
             cv.deprecated(CONF_INCLUDE),
             cv.deprecated(CONF_EXCLUDE),
             cv.deprecated(CONF_ORDER),
             INCLUDE_EXCLUDE_BASE_FILTER_SCHEMA.extend(
-                {vol.Optional(CONF_ORDER, default=False): cv.boolean}
+                {probatio.Optional(CONF_ORDER, default=False): cv.boolean}
             ),
         )
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the history hooks."""
     hass.http.register_view(HistoryPeriodView())
-    frontend.async_register_built_in_panel(hass, "history", "history", "hass:chart-box")
+    frontend.async_register_built_in_panel(hass, "history", "history", "mdi:chart-box")
     websocket_api.async_setup(hass)
     return True
 
@@ -74,13 +75,19 @@ class HistoryPeriodView(HomeAssistantView):
                 "filter_entity_id is missing", HTTPStatus.BAD_REQUEST
             )
 
-        hass = request.app["hass"]
+        hass = request.app[KEY_HASS]
 
         for entity_id in entity_ids:
             if not hass.states.get(entity_id) and not valid_entity_id(entity_id):
                 return self.json_message(
                     "Invalid filter_entity_id", HTTPStatus.BAD_REQUEST
                 )
+
+        entity_ids = filter_entity_ids_by_permission(
+            request[KEY_HASS_USER], entity_ids, POLICY_READ
+        )
+        if not entity_ids:
+            return self.json([])
 
         now = dt_util.utcnow()
         if datetime_:
@@ -106,10 +113,16 @@ class HistoryPeriodView(HomeAssistantView):
         no_attributes = "no_attributes" in request.query
 
         if (
-            not include_start_time_state
-            and entity_ids
-            and not entities_may_have_state_changes_after(
-                hass, entity_ids, start_time, no_attributes
+            # has_states_before will return True if there are states older than
+            # end_time. If it's false, we know there are no states in the
+            # database up until end_time.
+            (end_time and not has_states_before(hass, end_time))
+            or (
+                not include_start_time_state
+                and entity_ids
+                and not entities_may_have_state_changes_after(
+                    hass, entity_ids, start_time, no_attributes
+                )
             )
         ):
             return self.json([])

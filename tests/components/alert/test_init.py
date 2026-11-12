@@ -1,10 +1,17 @@
 """The tests for the Alert component."""
 
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 
+from freezegun.api import FrozenDateTimeFactory
 import pytest
+from pytest_homeassistant.common import (
+    MockEntityPlatform,
+    async_fire_time_changed,
+    async_mock_service,
+)
 
-import homeassistant.components.alert as alert
+from homeassistant.components import alert, notify
 from homeassistant.components.alert.const import (
     CONF_ALERT_MESSAGE,
     CONF_DATA,
@@ -14,7 +21,6 @@ from homeassistant.components.alert.const import (
     CONF_TITLE,
     DOMAIN,
 )
-import homeassistant.components.notify as notify
 from homeassistant.const import (
     ATTR_ENTITY_ID,
     CONF_ENTITY_ID,
@@ -29,9 +35,8 @@ from homeassistant.const import (
     STATE_ON,
 )
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.setup import async_setup_component
-
-from tests.common import async_mock_service
 
 NAME = "alert_test"
 DONE_MESSAGE = "alert_gone"
@@ -94,6 +99,32 @@ async def test_fire(hass: HomeAssistant, mock_notifier: list[ServiceCall]) -> No
     assert hass.states.get(ENTITY_ID).state == STATE_ON
 
 
+async def test_fire_when_already_in_alert_state(
+    hass: HomeAssistant, mock_notifier: list[ServiceCall]
+) -> None:
+    """Test the alert fires if the watched entity is already in the alert state.
+
+    This is the case after a restart when the watched entity's state is
+    restored before the alert subscribes to state changes.
+    """
+    hass.states.async_set("sensor.test", STATE_ON)
+    assert await async_setup_component(hass, DOMAIN, TEST_CONFIG)
+    await hass.async_block_till_done()
+    assert hass.states.get(ENTITY_ID).state == STATE_ON
+    assert len(mock_notifier) == 1
+
+
+async def test_idle_when_already_not_in_alert_state(
+    hass: HomeAssistant, mock_notifier: list[ServiceCall]
+) -> None:
+    """Test the alert stays idle if the watched entity is not in the alert state."""
+    hass.states.async_set("sensor.test", STATE_OFF)
+    assert await async_setup_component(hass, DOMAIN, TEST_CONFIG)
+    await hass.async_block_till_done()
+    assert hass.states.get(ENTITY_ID).state == STATE_IDLE
+    assert len(mock_notifier) == 0
+
+
 async def test_silence(hass: HomeAssistant, mock_notifier: list[ServiceCall]) -> None:
     """Test silencing the alert."""
     assert await async_setup_component(hass, DOMAIN, TEST_CONFIG)
@@ -114,6 +145,38 @@ async def test_silence(hass: HomeAssistant, mock_notifier: list[ServiceCall]) ->
     assert hass.states.get(ENTITY_ID).state == STATE_IDLE
     hass.states.async_set("sensor.test", STATE_ON)
     await hass.async_block_till_done()
+    assert hass.states.get(ENTITY_ID).state == STATE_ON
+
+
+async def test_silence_can_acknowledge_false(hass: HomeAssistant) -> None:
+    """Test silencing an alert with can_acknowledge=False.
+
+    Attempting to silence should not silence.
+    """
+    # Create copy of config where can_acknowledge is False
+    config = deepcopy(TEST_CONFIG)
+    config[DOMAIN][NAME]["can_acknowledge"] = False
+
+    # Setup the alert component
+    assert await async_setup_component(hass, DOMAIN, config)
+    await hass.async_block_till_done()
+
+    # Ensure the alert is currently on
+    hass.states.async_set(ENTITY_ID, STATE_ON)
+    await hass.async_block_till_done()
+    assert hass.states.get(ENTITY_ID).state == STATE_ON
+
+    # Attempt to acknowledge
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_TURN_OFF,
+            {ATTR_ENTITY_ID: ENTITY_ID},
+            blocking=True,
+        )
+    await hass.async_block_till_done()
+
+    # The state should still be ON because can_acknowledge=False
     assert hass.states.get(ENTITY_ID).state == STATE_ON
 
 
@@ -336,12 +399,50 @@ async def test_skipfirst(hass: HomeAssistant, mock_notifier: list[ServiceCall]) 
     assert len(mock_notifier) == 0
 
 
+# Clocks in Europe/Rome go back from 03:00 CEST to 02:00 CET at 01:00 UTC
+@pytest.mark.parametrize(
+    "start",
+    [
+        pytest.param(datetime(2026, 10, 25, 0, 58, tzinfo=UTC), id="end_of_dst"),
+        pytest.param(datetime(2026, 10, 25, 1, 4, 22, tzinfo=UTC), id="repeated_hour"),
+    ],
+)
+async def test_repeat_across_dst_fall_back(
+    hass: HomeAssistant,
+    mock_notifier: list[ServiceCall],
+    freezer: FrozenDateTimeFactory,
+    start: datetime,
+) -> None:
+    """Test the repeat delay is kept when clocks go back at the end of DST."""
+    await hass.config.async_set_time_zone("Europe/Rome")
+    freezer.move_to(start)
+    config = deepcopy(TEST_CONFIG)
+    config[DOMAIN][NAME][CONF_REPEAT] = 3
+    config[DOMAIN][NAME][CONF_SKIP_FIRST] = True
+    assert await async_setup_component(hass, DOMAIN, config)
+
+    hass.states.async_set(TEST_ENTITY, STATE_ON)
+    await hass.async_block_till_done()
+    assert len(mock_notifier) == 0
+
+    freezer.tick(timedelta(minutes=2, seconds=59))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert len(mock_notifier) == 0
+
+    freezer.tick(timedelta(seconds=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert len(mock_notifier) == 1
+
+
 async def test_done_message_state_tracker_reset_on_cancel(hass: HomeAssistant) -> None:
     """Test that the done message is reset when canceled."""
-    entity = alert.Alert(hass, *TEST_NOACK)
+    entity = alert.AlertEntity(hass, *TEST_NOACK)
+    entity.platform = MockEntityPlatform(hass)
     entity._cancel = lambda *args: None
     assert entity._send_done_message is False
     entity._send_done_message = True
-    hass.async_add_job(entity.end_alerting)
+    await entity.end_alerting()
     await hass.async_block_till_done()
     assert entity._send_done_message is False

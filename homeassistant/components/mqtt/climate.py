@@ -1,13 +1,12 @@
 """Support for MQTT climate devices."""
-from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-import functools
+from functools import partial
 import logging
-from typing import Any
+from typing import Any, override
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components import climate
 from homeassistant.components.climate import (
@@ -24,7 +23,9 @@ from homeassistant.components.climate import (
     SWING_OFF,
     SWING_ON,
     ClimateEntity,
+    ClimateEntityCapabilityAttribute,
     ClimateEntityFeature,
+    ClimateEntityStateAttribute,
     HVACAction,
     HVACMode,
 )
@@ -43,15 +44,20 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant, callback
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.service_info.mqtt import ReceivePayloadType
 from homeassistant.helpers.template import Template
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.typing import (
+    UNDEFINED,
+    ConfigType,
+    UndefinedType,
+    VolSchemaType,
+)
 from homeassistant.util.unit_conversion import TemperatureConverter
 
 from . import subscription
-from .config import DEFAULT_RETAIN, MQTT_BASE_SCHEMA
+from .config import MQTT_BASE_SCHEMA
 from .const import (
     CONF_ACTION_TEMPLATE,
     CONF_ACTION_TOPIC,
@@ -59,7 +65,17 @@ from .const import (
     CONF_CURRENT_HUMIDITY_TOPIC,
     CONF_CURRENT_TEMP_TEMPLATE,
     CONF_CURRENT_TEMP_TOPIC,
-    CONF_ENCODING,
+    CONF_FAN_MODE_COMMAND_TEMPLATE,
+    CONF_FAN_MODE_COMMAND_TOPIC,
+    CONF_FAN_MODE_LIST,
+    CONF_FAN_MODE_STATE_TEMPLATE,
+    CONF_FAN_MODE_STATE_TOPIC,
+    CONF_HUMIDITY_COMMAND_TEMPLATE,
+    CONF_HUMIDITY_COMMAND_TOPIC,
+    CONF_HUMIDITY_MAX,
+    CONF_HUMIDITY_MIN,
+    CONF_HUMIDITY_STATE_TEMPLATE,
+    CONF_HUMIDITY_STATE_TOPIC,
     CONF_MODE_COMMAND_TEMPLATE,
     CONF_MODE_COMMAND_TOPIC,
     CONF_MODE_LIST,
@@ -68,117 +84,94 @@ from .const import (
     CONF_POWER_COMMAND_TEMPLATE,
     CONF_POWER_COMMAND_TOPIC,
     CONF_PRECISION,
-    CONF_QOS,
+    CONF_PRESET_MODE_COMMAND_TEMPLATE,
+    CONF_PRESET_MODE_COMMAND_TOPIC,
+    CONF_PRESET_MODE_STATE_TOPIC,
+    CONF_PRESET_MODE_VALUE_TEMPLATE,
+    CONF_PRESET_MODES_LIST,
     CONF_RETAIN,
+    CONF_SWING_HORIZONTAL_MODE_COMMAND_TEMPLATE,
+    CONF_SWING_HORIZONTAL_MODE_COMMAND_TOPIC,
+    CONF_SWING_HORIZONTAL_MODE_LIST,
+    CONF_SWING_HORIZONTAL_MODE_STATE_TEMPLATE,
+    CONF_SWING_HORIZONTAL_MODE_STATE_TOPIC,
+    CONF_SWING_MODE_COMMAND_TEMPLATE,
+    CONF_SWING_MODE_COMMAND_TOPIC,
+    CONF_SWING_MODE_LIST,
+    CONF_SWING_MODE_STATE_TEMPLATE,
+    CONF_SWING_MODE_STATE_TOPIC,
     CONF_TEMP_COMMAND_TEMPLATE,
     CONF_TEMP_COMMAND_TOPIC,
+    CONF_TEMP_HIGH_COMMAND_TEMPLATE,
+    CONF_TEMP_HIGH_COMMAND_TOPIC,
+    CONF_TEMP_HIGH_STATE_TEMPLATE,
+    CONF_TEMP_HIGH_STATE_TOPIC,
     CONF_TEMP_INITIAL,
+    CONF_TEMP_LOW_COMMAND_TEMPLATE,
+    CONF_TEMP_LOW_COMMAND_TOPIC,
+    CONF_TEMP_LOW_STATE_TEMPLATE,
+    CONF_TEMP_LOW_STATE_TOPIC,
     CONF_TEMP_MAX,
     CONF_TEMP_MIN,
     CONF_TEMP_STATE_TEMPLATE,
     CONF_TEMP_STATE_TOPIC,
+    CONF_TEMP_STEP,
+    DEFAULT_CLIMATE_INITIAL_TEMPERATURE,
     DEFAULT_OPTIMISTIC,
-    DOMAIN,
+    DEFAULT_RETAIN,
     PAYLOAD_NONE,
 )
-from .debug_info import log_messages
-from .mixins import MQTT_ENTITY_COMMON_SCHEMA, MqttEntity, async_setup_entry_helper
+from .entity import MqttEntity, async_setup_entity_entry_helper
 from .models import (
     MqttCommandTemplate,
     MqttValueTemplate,
     PublishPayloadType,
     ReceiveMessage,
-    ReceivePayloadType,
 )
-from .util import get_mqtt_data, valid_publish_topic, valid_subscribe_topic
+from .schemas import MQTT_ENTITY_COMMON_SCHEMA
+from .util import valid_publish_topic, valid_subscribe_topic
 
 _LOGGER = logging.getLogger(__name__)
 
-MQTT_CLIMATE_AUX_DOCS = "https://www.home-assistant.io/integrations/climate.mqtt/"
+PARALLEL_UPDATES = 0
 
 DEFAULT_NAME = "MQTT HVAC"
 
-# Options CONF_AUX_COMMAND_TOPIC, CONF_AUX_STATE_TOPIC
-# and CONF_AUX_STATE_TEMPLATE were deprecated in HA Core 2023.9
-# Support will be removed in HA Core 2024.3
-CONF_AUX_COMMAND_TOPIC = "aux_command_topic"
-CONF_AUX_STATE_TEMPLATE = "aux_state_template"
-CONF_AUX_STATE_TOPIC = "aux_state_topic"
-
-CONF_FAN_MODE_COMMAND_TEMPLATE = "fan_mode_command_template"
-CONF_FAN_MODE_COMMAND_TOPIC = "fan_mode_command_topic"
-CONF_FAN_MODE_LIST = "fan_modes"
-CONF_FAN_MODE_STATE_TEMPLATE = "fan_mode_state_template"
-CONF_FAN_MODE_STATE_TOPIC = "fan_mode_state_topic"
-
-CONF_HUMIDITY_COMMAND_TEMPLATE = "target_humidity_command_template"
-CONF_HUMIDITY_COMMAND_TOPIC = "target_humidity_command_topic"
-CONF_HUMIDITY_STATE_TEMPLATE = "target_humidity_state_template"
-CONF_HUMIDITY_STATE_TOPIC = "target_humidity_state_topic"
-CONF_HUMIDITY_MAX = "max_humidity"
-CONF_HUMIDITY_MIN = "min_humidity"
-
-# Support for CONF_POWER_STATE_TOPIC and CONF_POWER_STATE_TEMPLATE
-# was removed in HA Core 2023.8
-CONF_POWER_STATE_TEMPLATE = "power_state_template"
-CONF_POWER_STATE_TOPIC = "power_state_topic"
-CONF_PRESET_MODE_STATE_TOPIC = "preset_mode_state_topic"
-CONF_PRESET_MODE_COMMAND_TOPIC = "preset_mode_command_topic"
-CONF_PRESET_MODE_VALUE_TEMPLATE = "preset_mode_value_template"
-CONF_PRESET_MODE_COMMAND_TEMPLATE = "preset_mode_command_template"
-CONF_PRESET_MODES_LIST = "preset_modes"
-CONF_SWING_MODE_COMMAND_TEMPLATE = "swing_mode_command_template"
-CONF_SWING_MODE_COMMAND_TOPIC = "swing_mode_command_topic"
-CONF_SWING_MODE_LIST = "swing_modes"
-CONF_SWING_MODE_STATE_TEMPLATE = "swing_mode_state_template"
-CONF_SWING_MODE_STATE_TOPIC = "swing_mode_state_topic"
-CONF_TEMP_HIGH_COMMAND_TEMPLATE = "temperature_high_command_template"
-CONF_TEMP_HIGH_COMMAND_TOPIC = "temperature_high_command_topic"
-CONF_TEMP_HIGH_STATE_TEMPLATE = "temperature_high_state_template"
-CONF_TEMP_HIGH_STATE_TOPIC = "temperature_high_state_topic"
-CONF_TEMP_LOW_COMMAND_TEMPLATE = "temperature_low_command_template"
-CONF_TEMP_LOW_COMMAND_TOPIC = "temperature_low_command_topic"
-CONF_TEMP_LOW_STATE_TEMPLATE = "temperature_low_state_template"
-CONF_TEMP_LOW_STATE_TOPIC = "temperature_low_state_topic"
-CONF_TEMP_STEP = "temp_step"
-
-DEFAULT_INITIAL_TEMPERATURE = 21.0
-
 MQTT_CLIMATE_ATTRIBUTES_BLOCKED = frozenset(
     {
-        climate.ATTR_AUX_HEAT,
-        climate.ATTR_CURRENT_HUMIDITY,
-        climate.ATTR_CURRENT_TEMPERATURE,
-        climate.ATTR_FAN_MODE,
-        climate.ATTR_FAN_MODES,
-        climate.ATTR_HUMIDITY,
-        climate.ATTR_HVAC_ACTION,
-        climate.ATTR_HVAC_MODES,
-        climate.ATTR_MAX_HUMIDITY,
-        climate.ATTR_MAX_TEMP,
-        climate.ATTR_MIN_HUMIDITY,
-        climate.ATTR_MIN_TEMP,
-        climate.ATTR_PRESET_MODE,
-        climate.ATTR_PRESET_MODES,
-        climate.ATTR_SWING_MODE,
-        climate.ATTR_SWING_MODES,
-        climate.ATTR_TARGET_TEMP_HIGH,
-        climate.ATTR_TARGET_TEMP_LOW,
-        climate.ATTR_TARGET_TEMP_STEP,
-        climate.ATTR_TEMPERATURE,
+        ClimateEntityCapabilityAttribute.FAN_MODES,
+        ClimateEntityCapabilityAttribute.HVAC_MODES,
+        ClimateEntityCapabilityAttribute.MAX_HUMIDITY,
+        ClimateEntityCapabilityAttribute.MAX_TEMP,
+        ClimateEntityCapabilityAttribute.MIN_HUMIDITY,
+        ClimateEntityCapabilityAttribute.MIN_TEMP,
+        ClimateEntityCapabilityAttribute.PRESET_MODES,
+        ClimateEntityCapabilityAttribute.SWING_HORIZONTAL_MODES,
+        ClimateEntityCapabilityAttribute.SWING_MODES,
+        ClimateEntityCapabilityAttribute.TARGET_TEMP_STEP,
+        ClimateEntityStateAttribute.CURRENT_HUMIDITY,
+        ClimateEntityStateAttribute.CURRENT_TEMPERATURE,
+        ClimateEntityStateAttribute.FAN_MODE,
+        ClimateEntityStateAttribute.HVAC_ACTION,
+        ClimateEntityStateAttribute.PRESET_MODE,
+        ClimateEntityStateAttribute.SWING_HORIZONTAL_MODE,
+        ClimateEntityStateAttribute.SWING_MODE,
+        ClimateEntityStateAttribute.TARGET_HUMIDITY,
+        ClimateEntityStateAttribute.TARGET_TEMPERATURE,
+        ClimateEntityStateAttribute.TARGET_TEMP_HIGH,
+        ClimateEntityStateAttribute.TARGET_TEMP_LOW,
     }
 )
 
 VALUE_TEMPLATE_KEYS = (
-    CONF_AUX_STATE_TEMPLATE,
     CONF_CURRENT_HUMIDITY_TEMPLATE,
     CONF_CURRENT_TEMP_TEMPLATE,
     CONF_FAN_MODE_STATE_TEMPLATE,
     CONF_HUMIDITY_STATE_TEMPLATE,
     CONF_MODE_STATE_TEMPLATE,
-    CONF_POWER_STATE_TEMPLATE,
     CONF_ACTION_TEMPLATE,
     CONF_PRESET_MODE_VALUE_TEMPLATE,
+    CONF_SWING_HORIZONTAL_MODE_STATE_TEMPLATE,
     CONF_SWING_MODE_STATE_TEMPLATE,
     CONF_TEMP_HIGH_STATE_TEMPLATE,
     CONF_TEMP_LOW_STATE_TEMPLATE,
@@ -191,6 +184,7 @@ COMMAND_TEMPLATE_KEYS = {
     CONF_MODE_COMMAND_TEMPLATE,
     CONF_POWER_COMMAND_TEMPLATE,
     CONF_PRESET_MODE_COMMAND_TEMPLATE,
+    CONF_SWING_HORIZONTAL_MODE_COMMAND_TEMPLATE,
     CONF_SWING_MODE_COMMAND_TEMPLATE,
     CONF_TEMP_COMMAND_TEMPLATE,
     CONF_TEMP_HIGH_COMMAND_TEMPLATE,
@@ -200,8 +194,6 @@ COMMAND_TEMPLATE_KEYS = {
 
 TOPIC_KEYS = (
     CONF_ACTION_TOPIC,
-    CONF_AUX_COMMAND_TOPIC,
-    CONF_AUX_STATE_TOPIC,
     CONF_CURRENT_HUMIDITY_TOPIC,
     CONF_CURRENT_TEMP_TOPIC,
     CONF_FAN_MODE_COMMAND_TOPIC,
@@ -211,9 +203,10 @@ TOPIC_KEYS = (
     CONF_MODE_COMMAND_TOPIC,
     CONF_MODE_STATE_TOPIC,
     CONF_POWER_COMMAND_TOPIC,
-    CONF_POWER_STATE_TOPIC,
     CONF_PRESET_MODE_COMMAND_TOPIC,
     CONF_PRESET_MODE_STATE_TOPIC,
+    CONF_SWING_HORIZONTAL_MODE_COMMAND_TOPIC,
+    CONF_SWING_HORIZONTAL_MODE_STATE_TOPIC,
     CONF_SWING_MODE_COMMAND_TOPIC,
     CONF_SWING_MODE_STATE_TOPIC,
     CONF_TEMP_COMMAND_TOPIC,
@@ -228,16 +221,16 @@ TOPIC_KEYS = (
 def valid_preset_mode_configuration(config: ConfigType) -> ConfigType:
     """Validate that the preset mode reset payload is not one of the preset modes."""
     if PRESET_NONE in config[CONF_PRESET_MODES_LIST]:
-        raise ValueError("preset_modes must not include preset mode 'none'")
+        raise probatio.Invalid("preset_modes must not include preset mode 'none'")
     return config
 
 
 def valid_humidity_range_configuration(config: ConfigType) -> ConfigType:
     """Validate a target_humidity range configuration, throws otherwise."""
     if config[CONF_HUMIDITY_MIN] >= config[CONF_HUMIDITY_MAX]:
-        raise ValueError("target_humidity_max must be > target_humidity_min")
+        raise probatio.Invalid("target_humidity_max must be > target_humidity_min")
     if config[CONF_HUMIDITY_MAX] > 100:
-        raise ValueError("max_humidity must be <= 100")
+        raise probatio.Invalid("max_humidity must be <= 100")
 
     return config
 
@@ -252,7 +245,7 @@ def valid_humidity_state_configuration(config: ConfigType) -> ConfigType:
         CONF_HUMIDITY_STATE_TOPIC in config
         and CONF_HUMIDITY_COMMAND_TOPIC not in config
     ):
-        raise ValueError(
+        raise probatio.Invalid(
             f"{CONF_HUMIDITY_STATE_TOPIC} cannot be used without"
             f" {CONF_HUMIDITY_COMMAND_TOPIC}"
         )
@@ -262,37 +255,31 @@ def valid_humidity_state_configuration(config: ConfigType) -> ConfigType:
 
 _PLATFORM_SCHEMA_BASE = MQTT_BASE_SCHEMA.extend(
     {
-        # Options CONF_AUX_COMMAND_TOPIC, CONF_AUX_STATE_TOPIC
-        # and CONF_AUX_STATE_TEMPLATE were deprecated in HA Core 2023.9
-        # Support will be removed in HA Core 2024.3
-        vol.Optional(CONF_AUX_COMMAND_TOPIC): valid_publish_topic,
-        vol.Optional(CONF_AUX_STATE_TEMPLATE): cv.template,
-        vol.Optional(CONF_AUX_STATE_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_CURRENT_HUMIDITY_TEMPLATE): cv.template,
-        vol.Optional(CONF_CURRENT_HUMIDITY_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_CURRENT_TEMP_TEMPLATE): cv.template,
-        vol.Optional(CONF_CURRENT_TEMP_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_FAN_MODE_COMMAND_TEMPLATE): cv.template,
-        vol.Optional(CONF_FAN_MODE_COMMAND_TOPIC): valid_publish_topic,
-        vol.Optional(
+        probatio.Optional(CONF_CURRENT_HUMIDITY_TEMPLATE): cv.template,
+        probatio.Optional(CONF_CURRENT_HUMIDITY_TOPIC): valid_subscribe_topic,
+        probatio.Optional(CONF_CURRENT_TEMP_TEMPLATE): cv.template,
+        probatio.Optional(CONF_CURRENT_TEMP_TOPIC): valid_subscribe_topic,
+        probatio.Optional(CONF_FAN_MODE_COMMAND_TEMPLATE): cv.template,
+        probatio.Optional(CONF_FAN_MODE_COMMAND_TOPIC): valid_publish_topic,
+        probatio.Optional(
             CONF_FAN_MODE_LIST,
             default=[FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH],
-        ): cv.ensure_list,
-        vol.Optional(CONF_FAN_MODE_STATE_TEMPLATE): cv.template,
-        vol.Optional(CONF_FAN_MODE_STATE_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_HUMIDITY_COMMAND_TEMPLATE): cv.template,
-        vol.Optional(CONF_HUMIDITY_COMMAND_TOPIC): valid_publish_topic,
-        vol.Optional(CONF_HUMIDITY_MIN, default=DEFAULT_MIN_HUMIDITY): vol.Coerce(
-            float
-        ),
-        vol.Optional(CONF_HUMIDITY_MAX, default=DEFAULT_MAX_HUMIDITY): vol.Coerce(
-            float
-        ),
-        vol.Optional(CONF_HUMIDITY_STATE_TEMPLATE): cv.template,
-        vol.Optional(CONF_HUMIDITY_STATE_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_MODE_COMMAND_TEMPLATE): cv.template,
-        vol.Optional(CONF_MODE_COMMAND_TOPIC): valid_publish_topic,
-        vol.Optional(
+        ): probatio.EnsureList(),
+        probatio.Optional(CONF_FAN_MODE_STATE_TEMPLATE): cv.template,
+        probatio.Optional(CONF_FAN_MODE_STATE_TOPIC): valid_subscribe_topic,
+        probatio.Optional(CONF_HUMIDITY_COMMAND_TEMPLATE): cv.template,
+        probatio.Optional(CONF_HUMIDITY_COMMAND_TOPIC): valid_publish_topic,
+        probatio.Optional(
+            CONF_HUMIDITY_MIN, default=DEFAULT_MIN_HUMIDITY
+        ): cv.positive_float,
+        probatio.Optional(
+            CONF_HUMIDITY_MAX, default=DEFAULT_MAX_HUMIDITY
+        ): cv.positive_float,
+        probatio.Optional(CONF_HUMIDITY_STATE_TEMPLATE): cv.template,
+        probatio.Optional(CONF_HUMIDITY_STATE_TOPIC): valid_subscribe_topic,
+        probatio.Optional(CONF_MODE_COMMAND_TEMPLATE): cv.template,
+        probatio.Optional(CONF_MODE_COMMAND_TOPIC): valid_publish_topic,
+        probatio.Optional(
             CONF_MODE_LIST,
             default=[
                 HVACMode.AUTO,
@@ -302,87 +289,83 @@ _PLATFORM_SCHEMA_BASE = MQTT_BASE_SCHEMA.extend(
                 HVACMode.DRY,
                 HVACMode.FAN_ONLY,
             ],
-        ): cv.ensure_list,
-        vol.Optional(CONF_MODE_STATE_TEMPLATE): cv.template,
-        vol.Optional(CONF_MODE_STATE_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_NAME): vol.Any(cv.string, None),
-        vol.Optional(CONF_OPTIMISTIC, default=DEFAULT_OPTIMISTIC): cv.boolean,
-        vol.Optional(CONF_PAYLOAD_ON, default="ON"): cv.string,
-        vol.Optional(CONF_PAYLOAD_OFF, default="OFF"): cv.string,
-        vol.Optional(CONF_POWER_COMMAND_TOPIC): valid_publish_topic,
-        vol.Optional(CONF_POWER_COMMAND_TEMPLATE): cv.template,
-        vol.Optional(CONF_POWER_STATE_TEMPLATE): cv.template,
-        vol.Optional(CONF_POWER_STATE_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_PRECISION): vol.In(
-            [PRECISION_TENTHS, PRECISION_HALVES, PRECISION_WHOLE]
+        ): probatio.EnsureList(),
+        probatio.Optional(CONF_MODE_STATE_TEMPLATE): cv.template,
+        probatio.Optional(CONF_MODE_STATE_TOPIC): valid_subscribe_topic,
+        probatio.Optional(CONF_NAME): probatio.Any(cv.string, None),
+        probatio.Optional(CONF_OPTIMISTIC, default=DEFAULT_OPTIMISTIC): cv.boolean,
+        probatio.Optional(CONF_PAYLOAD_ON, default="ON"): cv.string,
+        probatio.Optional(CONF_PAYLOAD_OFF, default="OFF"): cv.string,
+        probatio.Optional(CONF_POWER_COMMAND_TOPIC): valid_publish_topic,
+        probatio.Optional(CONF_POWER_COMMAND_TEMPLATE): cv.template,
+        probatio.Optional(CONF_PRECISION): probatio.All(
+            probatio.Coerce(float),
+            probatio.In([PRECISION_TENTHS, PRECISION_HALVES, PRECISION_WHOLE]),
         ),
-        vol.Optional(CONF_RETAIN, default=DEFAULT_RETAIN): cv.boolean,
-        vol.Optional(CONF_ACTION_TEMPLATE): cv.template,
-        vol.Optional(CONF_ACTION_TOPIC): valid_subscribe_topic,
+        probatio.Optional(CONF_RETAIN, default=DEFAULT_RETAIN): cv.boolean,
+        probatio.Optional(CONF_ACTION_TEMPLATE): cv.template,
+        probatio.Optional(CONF_ACTION_TOPIC): valid_subscribe_topic,
         # CONF_PRESET_MODE_COMMAND_TOPIC and CONF_PRESET_MODES_LIST
         # must be used together
-        vol.Inclusive(
+        probatio.Inclusive(
             CONF_PRESET_MODE_COMMAND_TOPIC, "preset_modes"
         ): valid_publish_topic,
-        vol.Inclusive(
+        probatio.Inclusive(
             CONF_PRESET_MODES_LIST, "preset_modes", default=[]
-        ): cv.ensure_list,
-        vol.Optional(CONF_PRESET_MODE_COMMAND_TEMPLATE): cv.template,
-        vol.Optional(CONF_PRESET_MODE_STATE_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_PRESET_MODE_VALUE_TEMPLATE): cv.template,
-        vol.Optional(CONF_SWING_MODE_COMMAND_TEMPLATE): cv.template,
-        vol.Optional(CONF_SWING_MODE_COMMAND_TOPIC): valid_publish_topic,
-        vol.Optional(
+        ): probatio.EnsureList(),
+        probatio.Optional(CONF_PRESET_MODE_COMMAND_TEMPLATE): cv.template,
+        probatio.Optional(CONF_PRESET_MODE_STATE_TOPIC): valid_subscribe_topic,
+        probatio.Optional(CONF_PRESET_MODE_VALUE_TEMPLATE): cv.template,
+        probatio.Optional(CONF_SWING_HORIZONTAL_MODE_COMMAND_TEMPLATE): cv.template,
+        probatio.Optional(
+            CONF_SWING_HORIZONTAL_MODE_COMMAND_TOPIC
+        ): valid_publish_topic,
+        probatio.Optional(
+            CONF_SWING_HORIZONTAL_MODE_LIST, default=[SWING_ON, SWING_OFF]
+        ): probatio.EnsureList(),
+        probatio.Optional(CONF_SWING_HORIZONTAL_MODE_STATE_TEMPLATE): cv.template,
+        probatio.Optional(
+            CONF_SWING_HORIZONTAL_MODE_STATE_TOPIC
+        ): valid_subscribe_topic,
+        probatio.Optional(CONF_SWING_MODE_COMMAND_TEMPLATE): cv.template,
+        probatio.Optional(CONF_SWING_MODE_COMMAND_TOPIC): valid_publish_topic,
+        probatio.Optional(
             CONF_SWING_MODE_LIST, default=[SWING_ON, SWING_OFF]
-        ): cv.ensure_list,
-        vol.Optional(CONF_SWING_MODE_STATE_TEMPLATE): cv.template,
-        vol.Optional(CONF_SWING_MODE_STATE_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_TEMP_INITIAL): vol.All(vol.Coerce(float)),
-        vol.Optional(CONF_TEMP_MIN): vol.Coerce(float),
-        vol.Optional(CONF_TEMP_MAX): vol.Coerce(float),
-        vol.Optional(CONF_TEMP_STEP, default=1.0): vol.Coerce(float),
-        vol.Optional(CONF_TEMP_COMMAND_TEMPLATE): cv.template,
-        vol.Optional(CONF_TEMP_COMMAND_TOPIC): valid_publish_topic,
-        vol.Optional(CONF_TEMP_HIGH_COMMAND_TEMPLATE): cv.template,
-        vol.Optional(CONF_TEMP_HIGH_COMMAND_TOPIC): valid_publish_topic,
-        vol.Optional(CONF_TEMP_HIGH_STATE_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_TEMP_HIGH_STATE_TEMPLATE): cv.template,
-        vol.Optional(CONF_TEMP_LOW_COMMAND_TEMPLATE): cv.template,
-        vol.Optional(CONF_TEMP_LOW_COMMAND_TOPIC): valid_publish_topic,
-        vol.Optional(CONF_TEMP_LOW_STATE_TEMPLATE): cv.template,
-        vol.Optional(CONF_TEMP_LOW_STATE_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_TEMP_STATE_TEMPLATE): cv.template,
-        vol.Optional(CONF_TEMP_STATE_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_TEMPERATURE_UNIT): cv.temperature_unit,
-        vol.Optional(CONF_VALUE_TEMPLATE): cv.template,
+        ): probatio.EnsureList(),
+        probatio.Optional(CONF_SWING_MODE_STATE_TEMPLATE): cv.template,
+        probatio.Optional(CONF_SWING_MODE_STATE_TOPIC): valid_subscribe_topic,
+        probatio.Optional(CONF_TEMP_INITIAL): probatio.All(probatio.Coerce(float)),
+        probatio.Optional(CONF_TEMP_MIN): probatio.Coerce(float),
+        probatio.Optional(CONF_TEMP_MAX): probatio.Coerce(float),
+        probatio.Optional(CONF_TEMP_STEP, default=1.0): probatio.Coerce(float),
+        probatio.Optional(CONF_TEMP_COMMAND_TEMPLATE): cv.template,
+        probatio.Optional(CONF_TEMP_COMMAND_TOPIC): valid_publish_topic,
+        probatio.Optional(CONF_TEMP_HIGH_COMMAND_TEMPLATE): cv.template,
+        probatio.Optional(CONF_TEMP_HIGH_COMMAND_TOPIC): valid_publish_topic,
+        probatio.Optional(CONF_TEMP_HIGH_STATE_TOPIC): valid_subscribe_topic,
+        probatio.Optional(CONF_TEMP_HIGH_STATE_TEMPLATE): cv.template,
+        probatio.Optional(CONF_TEMP_LOW_COMMAND_TEMPLATE): cv.template,
+        probatio.Optional(CONF_TEMP_LOW_COMMAND_TOPIC): valid_publish_topic,
+        probatio.Optional(CONF_TEMP_LOW_STATE_TEMPLATE): cv.template,
+        probatio.Optional(CONF_TEMP_LOW_STATE_TOPIC): valid_subscribe_topic,
+        probatio.Optional(CONF_TEMP_STATE_TEMPLATE): cv.template,
+        probatio.Optional(CONF_TEMP_STATE_TOPIC): valid_subscribe_topic,
+        probatio.Optional(CONF_TEMPERATURE_UNIT): cv.temperature_unit,
+        probatio.Optional(CONF_VALUE_TEMPLATE): cv.template,
     }
 ).extend(MQTT_ENTITY_COMMON_SCHEMA.schema)
 
-PLATFORM_SCHEMA_MODERN = vol.All(
-    # Support for CONF_POWER_STATE_TOPIC and CONF_POWER_STATE_TEMPLATE
-    # was removed in HA Core 2023.8
-    cv.removed(CONF_POWER_STATE_TEMPLATE),
-    cv.removed(CONF_POWER_STATE_TOPIC),
-    # Options CONF_AUX_COMMAND_TOPIC, CONF_AUX_STATE_TOPIC
-    # and CONF_AUX_STATE_TEMPLATE were deprecated in HA Core 2023.9
-    # Support will be removed in HA Core 2024.3
-    cv.deprecated(CONF_AUX_COMMAND_TOPIC),
-    cv.deprecated(CONF_AUX_STATE_TEMPLATE),
-    cv.deprecated(CONF_AUX_STATE_TOPIC),
+PLATFORM_SCHEMA_MODERN = probatio.All(
     _PLATFORM_SCHEMA_BASE,
     valid_preset_mode_configuration,
     valid_humidity_range_configuration,
     valid_humidity_state_configuration,
 )
 
-_DISCOVERY_SCHEMA_BASE = _PLATFORM_SCHEMA_BASE.extend({}, extra=vol.REMOVE_EXTRA)
+_DISCOVERY_SCHEMA_BASE = _PLATFORM_SCHEMA_BASE.extend({}, extra=probatio.REMOVE_EXTRA)
 
-DISCOVERY_SCHEMA = vol.All(
+DISCOVERY_SCHEMA = probatio.All(
     _DISCOVERY_SCHEMA_BASE,
-    # Support for CONF_POWER_STATE_TOPIC and CONF_POWER_STATE_TEMPLATE
-    # was removed in HA Core 2023.8
-    cv.removed(CONF_POWER_STATE_TEMPLATE),
-    cv.removed(CONF_POWER_STATE_TOPIC),
     valid_preset_mode_configuration,
     valid_humidity_range_configuration,
     valid_humidity_state_configuration,
@@ -392,24 +375,18 @@ DISCOVERY_SCHEMA = vol.All(
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up MQTT climate device through YAML and through MQTT discovery."""
-    setup = functools.partial(
-        _async_setup_entity, hass, async_add_entities, config_entry=config_entry
+    """Set up MQTT climate through YAML and through MQTT discovery."""
+    async_setup_entity_entry_helper(
+        hass,
+        config_entry,
+        MqttClimate,
+        climate.DOMAIN,
+        async_add_entities,
+        DISCOVERY_SCHEMA,
+        PLATFORM_SCHEMA_MODERN,
     )
-    await async_setup_entry_helper(hass, climate.DOMAIN, setup, DISCOVERY_SCHEMA)
-
-
-async def _async_setup_entity(
-    hass: HomeAssistant,
-    async_add_entities: AddEntitiesCallback,
-    config: ConfigType,
-    config_entry: ConfigEntry,
-    discovery_data: DiscoveryInfoType | None = None,
-) -> None:
-    """Set up the MQTT climate devices."""
-    async_add_entities([MqttClimate(hass, config, config_entry, discovery_data)])
 
 
 class MqttTemperatureControlEntity(MqttEntity, ABC):
@@ -419,43 +396,17 @@ class MqttTemperatureControlEntity(MqttEntity, ABC):
     climate and water_heater platforms.
     """
 
-    _attr_target_temperature_low: float | None
-    _attr_target_temperature_high: float | None
+    _attr_native_current_temperature: float | None
+    _attr_native_target_temperature: float | None
+    _attr_native_target_temperature_low: float | None
+    _attr_native_target_temperature_high: float | None
 
+    _feature_preset_mode: bool = False
     _optimistic: bool
     _topic: dict[str, Any]
 
     _command_templates: dict[str, Callable[[PublishPayloadType], PublishPayloadType]]
     _value_templates: dict[str, Callable[[ReceivePayloadType], ReceivePayloadType]]
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        config: ConfigType,
-        config_entry: ConfigEntry,
-        discovery_data: DiscoveryInfoType | None,
-    ) -> None:
-        """Initialize the temperature controlled device."""
-        self._attr_target_temperature_low = None
-        self._attr_target_temperature_high = None
-        self._feature_preset_mode = False
-        MqttEntity.__init__(self, hass, config, config_entry, discovery_data)
-
-    def add_subscription(
-        self,
-        topics: dict[str, dict[str, Any]],
-        topic: str,
-        msg_callback: Callable[[ReceiveMessage], None],
-    ) -> None:
-        """Add a subscription."""
-        qos: int = self._config[CONF_QOS]
-        if topic in self._topic and self._topic[topic] is not None:
-            topics[topic] = {
-                "topic": self._topic[topic],
-                "msg_callback": msg_callback,
-                "qos": qos,
-                "encoding": self._config[CONF_ENCODING] or None,
-            }
 
     def render_template(
         self, msg: ReceiveMessage, template_name: str
@@ -465,184 +416,84 @@ class MqttTemperatureControlEntity(MqttEntity, ABC):
         return template(msg.payload)
 
     @callback
-    def handle_climate_attribute_received(
-        self, msg: ReceiveMessage, template_name: str, attr: str
-    ) -> None:
-        """Handle climate attributes coming via MQTT."""
+    def _parse_float_payload(
+        self, msg: ReceiveMessage, template_name: str, name: str
+    ) -> float | UndefinedType | None:
+        """Render and parse a numeric payload, UNDEFINED means ignore the update."""
         payload = self.render_template(msg, template_name)
         if not payload:
             _LOGGER.debug(
-                "Invalid empty payload for attribute %s, ignoring update",
-                attr,
+                "Invalid empty payload for %s, ignoring update",
+                name,
             )
-            return
+            return UNDEFINED
         if payload == PAYLOAD_NONE:
-            setattr(self, attr, None)
-            get_mqtt_data(self.hass).state_write_requests.write_state_request(self)
-            return
+            return None
         try:
-            setattr(self, attr, float(payload))
-            get_mqtt_data(self.hass).state_write_requests.write_state_request(self)
+            return float(payload)
         except ValueError:
             _LOGGER.error("Could not parse %s from %s", template_name, payload)
+            return UNDEFINED
 
-    def prepare_subscribe_topics(
-        self, topics: dict[str, dict[str, Any]]
-    ) -> None:  # noqa: C901
-        """(Re)Subscribe to topics."""
-
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def handle_current_temperature_received(msg: ReceiveMessage) -> None:
-            """Handle current temperature coming via MQTT."""
-            self.handle_climate_attribute_received(
-                msg, CONF_CURRENT_TEMP_TEMPLATE, "_attr_current_temperature"
+    @callback
+    def _handle_current_temperature_received(self, msg: ReceiveMessage) -> None:
+        """Handle receiving the current temperature via MQTT."""
+        if (
+            value := self._parse_float_payload(
+                msg, CONF_CURRENT_TEMP_TEMPLATE, "current temperature"
             )
+        ) is not UNDEFINED:
+            self._attr_native_current_temperature = value
 
-        self.add_subscription(
-            topics, CONF_CURRENT_TEMP_TOPIC, handle_current_temperature_received
-        )
-
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def handle_target_temperature_received(msg: ReceiveMessage) -> None:
-            """Handle target temperature coming via MQTT."""
-            self.handle_climate_attribute_received(
-                msg, CONF_TEMP_STATE_TEMPLATE, "_attr_target_temperature"
-            )
-
-        self.add_subscription(
-            topics, CONF_TEMP_STATE_TOPIC, handle_target_temperature_received
-        )
-
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def handle_temperature_low_received(msg: ReceiveMessage) -> None:
-            """Handle target temperature low coming via MQTT."""
-            self.handle_climate_attribute_received(
-                msg, CONF_TEMP_LOW_STATE_TEMPLATE, "_attr_target_temperature_low"
-            )
-
-        self.add_subscription(
-            topics, CONF_TEMP_LOW_STATE_TOPIC, handle_temperature_low_received
-        )
-
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def handle_temperature_high_received(msg: ReceiveMessage) -> None:
-            """Handle target temperature high coming via MQTT."""
-            self.handle_climate_attribute_received(
-                msg, CONF_TEMP_HIGH_STATE_TEMPLATE, "_attr_target_temperature_high"
-            )
-
-        self.add_subscription(
-            topics, CONF_TEMP_HIGH_STATE_TOPIC, handle_temperature_high_received
-        )
-
-        self._sub_state = subscription.async_prepare_subscribe_topics(
-            self.hass, self._sub_state, topics
-        )
-
+    @override
     async def _subscribe_topics(self) -> None:
         """(Re)Subscribe to topics."""
-        await subscription.async_subscribe_topics(self.hass, self._sub_state)
+        subscription.async_subscribe_topics_internal(self.hass, self._sub_state)
 
     async def _publish(self, topic: str, payload: PublishPayloadType) -> None:
         if self._topic[topic] is not None:
-            await self.async_publish(
-                self._topic[topic],
-                payload,
-                self._config[CONF_QOS],
-                self._config[CONF_RETAIN],
-                self._config[CONF_ENCODING],
-            )
-
-    async def _set_climate_attribute(
-        self,
-        temp: float | None,
-        cmnd_topic: str,
-        cmnd_template: str,
-        state_topic: str,
-        attr: str,
-    ) -> bool:
-        if temp is None:
-            return False
-        changed = False
-        if self._optimistic or self._topic[state_topic] is None:
-            # optimistic mode
-            changed = True
-            setattr(self, attr, temp)
-
-        payload = self._command_templates[cmnd_template](temp)
-        await self._publish(cmnd_topic, payload)
-        return changed
+            await self.async_publish_with_config(self._topic[topic], payload)
 
     @abstractmethod
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperatures."""
-        changed = await self._set_climate_attribute(
-            kwargs.get(ATTR_TEMPERATURE),
-            CONF_TEMP_COMMAND_TOPIC,
-            CONF_TEMP_COMMAND_TEMPLATE,
-            CONF_TEMP_STATE_TOPIC,
-            "_attr_target_temperature",
-        )
-
-        changed |= await self._set_climate_attribute(
-            kwargs.get(ATTR_TARGET_TEMP_LOW),
-            CONF_TEMP_LOW_COMMAND_TOPIC,
-            CONF_TEMP_LOW_COMMAND_TEMPLATE,
-            CONF_TEMP_LOW_STATE_TOPIC,
-            "_attr_target_temperature_low",
-        )
-
-        changed |= await self._set_climate_attribute(
-            kwargs.get(ATTR_TARGET_TEMP_HIGH),
-            CONF_TEMP_HIGH_COMMAND_TOPIC,
-            CONF_TEMP_HIGH_COMMAND_TEMPLATE,
-            CONF_TEMP_HIGH_STATE_TOPIC,
-            "_attr_target_temperature_high",
-        )
-
-        if not changed:
-            return
-        self.async_write_ha_state()
 
 
 class MqttClimate(MqttTemperatureControlEntity, ClimateEntity):
     """Representation of an MQTT climate device."""
 
+    _attr_fan_mode: str | None = None
+    _attr_hvac_mode: HVACMode | None = None
+    _attr_swing_horizontal_mode: str | None = None
+    _attr_swing_mode: str | None = None
     _default_name = DEFAULT_NAME
     _entity_id_format = climate.ENTITY_ID_FORMAT
     _attributes_extra_blocked = MQTT_CLIMATE_ATTRIBUTES_BLOCKED
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        config: ConfigType,
-        config_entry: ConfigEntry,
-        discovery_data: DiscoveryInfoType | None,
-    ) -> None:
-        """Initialize the climate device."""
-        self._attr_fan_mode = None
-        self._attr_hvac_action = None
-        self._attr_hvac_mode = None
-        self._attr_is_aux_heat = None
-        self._attr_swing_mode = None
-        MqttTemperatureControlEntity.__init__(
-            self, hass, config, config_entry, discovery_data
-        )
+    _attr_native_target_temperature_low: float | None = None
+    _attr_native_target_temperature_high: float | None = None
+    _single_and_range_setpoints: bool
+    _parked_target_temperature: float | None = None
+    _parked_target_temperature_range: tuple[float | None, float | None] = (None, None)
 
     @staticmethod
-    def config_schema() -> vol.Schema:
+    @override
+    def config_schema() -> VolSchemaType:
         """Return the config schema."""
         return DISCOVERY_SCHEMA
 
+    @override
     def _setup_from_config(self, config: ConfigType) -> None:
         """(Re)Setup the entity."""
         self._attr_hvac_modes = config[CONF_MODE_LIST]
+        self._single_and_range_setpoints = (
+            HVACMode.HEAT_COOL in self._attr_hvac_modes
+            and (
+                HVACMode.HEAT in self._attr_hvac_modes
+                or HVACMode.COOL in self._attr_hvac_modes
+            )
+        )
         # Make sure the min an max temp is converted to the correct when not set
-        self._attr_temperature_unit = config.get(
+        self._attr_native_temperature_unit = config.get(
             CONF_TEMPERATURE_UNIT, self.hass.config.units.temperature_unit
         )
         if (min_temp := config.get(CONF_TEMP_MIN)) is not None:
@@ -654,6 +505,7 @@ class MqttClimate(MqttTemperatureControlEntity, ClimateEntity):
         if (precision := config.get(CONF_PRECISION)) is not None:
             self._attr_precision = precision
         self._attr_fan_modes = config[CONF_FAN_MODE_LIST]
+        self._attr_swing_horizontal_modes = config[CONF_SWING_HORIZONTAL_MODE_LIST]
         self._attr_swing_modes = config[CONF_SWING_MODE_LIST]
         self._attr_target_temperature_step = config[CONF_TEMP_STEP]
 
@@ -665,29 +517,29 @@ class MqttClimate(MqttTemperatureControlEntity, ClimateEntity):
         init_temp: float = config.get(
             CONF_TEMP_INITIAL,
             TemperatureConverter.convert(
-                DEFAULT_INITIAL_TEMPERATURE,
+                DEFAULT_CLIMATE_INITIAL_TEMPERATURE,
                 UnitOfTemperature.CELSIUS,
-                self.temperature_unit,
+                self.native_temperature_unit,
             ),
         )
         if self._topic[CONF_TEMP_STATE_TOPIC] is None or self._optimistic:
-            self._attr_target_temperature = init_temp
+            self._attr_native_target_temperature = init_temp
         if self._topic[CONF_TEMP_LOW_STATE_TOPIC] is None or self._optimistic:
-            self._attr_target_temperature_low = init_temp
+            self._attr_native_target_temperature_low = init_temp
         if self._topic[CONF_TEMP_HIGH_STATE_TOPIC] is None or self._optimistic:
-            self._attr_target_temperature_high = init_temp
+            self._attr_native_target_temperature_high = init_temp
 
         if self._topic[CONF_FAN_MODE_STATE_TOPIC] is None or self._optimistic:
             self._attr_fan_mode = FAN_LOW
+        if (
+            self._topic[CONF_SWING_HORIZONTAL_MODE_STATE_TOPIC] is None
+            or self._optimistic
+        ):
+            self._attr_swing_horizontal_mode = SWING_OFF
         if self._topic[CONF_SWING_MODE_STATE_TOPIC] is None or self._optimistic:
             self._attr_swing_mode = SWING_OFF
         if self._topic[CONF_MODE_STATE_TOPIC] is None or self._optimistic:
             self._attr_hvac_mode = HVACMode.OFF
-        # Options CONF_AUX_COMMAND_TOPIC, CONF_AUX_STATE_TOPIC
-        # and CONF_AUX_STATE_TEMPLATE were deprecated in HA Core 2023.9
-        # Support will be removed in HA Core 2024.3
-        if self._topic[CONF_AUX_STATE_TOPIC] is None or self._optimistic:
-            self._attr_is_aux_heat = False
         self._feature_preset_mode = CONF_PRESET_MODE_COMMAND_TOPIC in config
         if self._feature_preset_mode:
             presets = []
@@ -702,15 +554,12 @@ class MqttClimate(MqttTemperatureControlEntity, ClimateEntity):
             self._optimistic or CONF_PRESET_MODE_STATE_TOPIC not in config
         )
 
-        value_templates: dict[str, Template | None] = {}
-        for key in VALUE_TEMPLATE_KEYS:
-            value_templates[key] = None
-        if CONF_VALUE_TEMPLATE in config:
-            value_templates = {
-                key: config.get(CONF_VALUE_TEMPLATE) for key in VALUE_TEMPLATE_KEYS
-            }
-        for key in VALUE_TEMPLATE_KEYS & config.keys():
-            value_templates[key] = config[key]
+        value_templates: dict[str, Template | None] = {
+            key: config.get(CONF_VALUE_TEMPLATE) for key in VALUE_TEMPLATE_KEYS
+        }
+        value_templates.update(
+            {key: config[key] for key in VALUE_TEMPLATE_KEYS & config.keys()}
+        )
         self._value_templates = {
             key: MqttValueTemplate(
                 template,
@@ -719,13 +568,12 @@ class MqttClimate(MqttTemperatureControlEntity, ClimateEntity):
             for key, template in value_templates.items()
         }
 
-        self._command_templates = {}
-        for key in COMMAND_TEMPLATE_KEYS:
-            self._command_templates[key] = MqttCommandTemplate(
-                config.get(key), entity=self
-            ).async_render
+        self._command_templates = {
+            key: MqttCommandTemplate(config.get(key), entity=self).async_render
+            for key in COMMAND_TEMPLATE_KEYS
+        }
 
-        support = ClimateEntityFeature(0)
+        support = ClimateEntityFeature.TURN_ON | ClimateEntityFeature.TURN_OFF
         if (self._topic[CONF_TEMP_STATE_TOPIC] is not None) or (
             self._topic[CONF_TEMP_COMMAND_TOPIC] is not None
         ):
@@ -749,6 +597,11 @@ class MqttClimate(MqttTemperatureControlEntity, ClimateEntity):
         ):
             support |= ClimateEntityFeature.FAN_MODE
 
+        if (self._topic[CONF_SWING_HORIZONTAL_MODE_STATE_TOPIC] is not None) or (
+            self._topic[CONF_SWING_HORIZONTAL_MODE_COMMAND_TOPIC] is not None
+        ):
+            support |= ClimateEntityFeature.SWING_HORIZONTAL_MODE
+
         if (self._topic[CONF_SWING_MODE_STATE_TOPIC] is not None) or (
             self._topic[CONF_SWING_MODE_COMMAND_TOPIC] is not None
         ):
@@ -757,230 +610,287 @@ class MqttClimate(MqttTemperatureControlEntity, ClimateEntity):
         if self._feature_preset_mode:
             support |= ClimateEntityFeature.PRESET_MODE
 
-        # Options CONF_AUX_COMMAND_TOPIC, CONF_AUX_STATE_TOPIC
-        # and CONF_AUX_STATE_TEMPLATE were deprecated in HA Core 2023.9
-        # Support will be removed in HA Core 2024.3
-        if (self._topic[CONF_AUX_STATE_TOPIC] is not None) or (
-            self._topic[CONF_AUX_COMMAND_TOPIC] is not None
-        ):
-            support |= ClimateEntityFeature.AUX_HEAT
         self._attr_supported_features = support
 
-    async def mqtt_async_added_to_hass(self) -> None:
-        """Handle deprecation issues."""
-        if self._attr_supported_features & ClimateEntityFeature.AUX_HEAT:
-            async_create_issue(
-                self.hass,
-                DOMAIN,
-                "deprecated_climate_aux_property_{self.entity_id}",
-                breaks_in_ha_version="2024.3.0",
-                is_fixable=False,
-                translation_key="deprecated_climate_aux_property",
-                translation_placeholders={
-                    "entity_id": self.entity_id,
-                },
-                learn_more_url=MQTT_CLIMATE_AUX_DOCS,
-                severity=IssueSeverity.WARNING,
+    @callback
+    def _handle_action_received(self, msg: ReceiveMessage) -> None:
+        """Handle receiving action via MQTT."""
+        payload = self.render_template(msg, CONF_ACTION_TEMPLATE)
+        if not payload:
+            _LOGGER.debug(
+                "Invalid %s action: %s, ignoring",
+                [e.value for e in HVACAction],
+                payload,
             )
+            return
+        if payload == PAYLOAD_NONE:
+            self._attr_hvac_action = None
+            return
+        try:
+            self._attr_hvac_action = HVACAction(str(payload))
+        except ValueError:
+            _LOGGER.warning(
+                "Invalid %s action: %s",
+                [e.value for e in HVACAction],
+                payload,
+            )
+            return
 
-    def _prepare_subscribe_topics(self) -> None:  # noqa: C901
+    @callback
+    def _handle_mode_received(
+        self, template_name: str, attr: str, mode_list: str, msg: ReceiveMessage
+    ) -> None:
+        """Handle receiving listed mode via MQTT."""
+        payload = self.render_template(msg, template_name)
+
+        if payload == PAYLOAD_NONE:
+            setattr(self, attr, None)
+        elif payload not in self._config[mode_list]:
+            _LOGGER.warning("Invalid %s mode: %s", mode_list, payload)
+        else:
+            setattr(self, attr, payload)
+
+    @callback
+    def _handle_preset_mode_received(self, msg: ReceiveMessage) -> None:
+        """Handle receiving preset mode via MQTT."""
+        preset_mode = self.render_template(msg, CONF_PRESET_MODE_VALUE_TEMPLATE)
+        if preset_mode in [PRESET_NONE, PAYLOAD_NONE]:
+            self._attr_preset_mode = PRESET_NONE
+            return
+        if not preset_mode:
+            _LOGGER.debug("Ignoring empty preset_mode from '%s'", msg.topic)
+            return
+        if not self._attr_preset_modes or preset_mode not in self._attr_preset_modes:
+            _LOGGER.warning(
+                "'%s' received on topic %s. '%s' is not a valid preset mode",
+                msg.payload,
+                msg.topic,
+                preset_mode,
+            )
+        else:
+            self._attr_preset_mode = str(preset_mode)
+
+    @callback
+    def _handle_target_temperature_received(self, msg: ReceiveMessage) -> None:
+        """Handle receiving the target temperature via MQTT."""
+        if (
+            value := self._parse_float_payload(
+                msg, CONF_TEMP_STATE_TEMPLATE, "target temperature"
+            )
+        ) is UNDEFINED:
+            return
+        self._attr_native_target_temperature = value
+        if value is not None:
+            self._park_range_setpoints()
+
+    @callback
+    def _handle_target_temperature_low_received(self, msg: ReceiveMessage) -> None:
+        """Handle receiving the target temperature low via MQTT."""
+        if (
+            value := self._parse_float_payload(
+                msg, CONF_TEMP_LOW_STATE_TEMPLATE, "target temperature low"
+            )
+        ) is UNDEFINED:
+            return
+        self._attr_native_target_temperature_low = value
+        if value is not None:
+            self._park_single_setpoint()
+
+    @callback
+    def _handle_target_temperature_high_received(self, msg: ReceiveMessage) -> None:
+        """Handle receiving the target temperature high via MQTT."""
+        if (
+            value := self._parse_float_payload(
+                msg, CONF_TEMP_HIGH_STATE_TEMPLATE, "target temperature high"
+            )
+        ) is UNDEFINED:
+            return
+        self._attr_native_target_temperature_high = value
+        if value is not None:
+            self._park_single_setpoint()
+
+    @callback
+    def _handle_current_humidity_received(self, msg: ReceiveMessage) -> None:
+        """Handle receiving the current humidity via MQTT."""
+        if (
+            value := self._parse_float_payload(
+                msg, CONF_CURRENT_HUMIDITY_TEMPLATE, "current humidity"
+            )
+        ) is not UNDEFINED:
+            self._attr_current_humidity = value
+
+    @callback
+    def _handle_target_humidity_received(self, msg: ReceiveMessage) -> None:
+        """Handle receiving the target humidity via MQTT."""
+        if (
+            value := self._parse_float_payload(
+                msg, CONF_HUMIDITY_STATE_TEMPLATE, "target humidity"
+            )
+        ) is not UNDEFINED:
+            self._attr_target_humidity = value
+
+    @callback
+    @override
+    def _prepare_subscribe_topics(self) -> None:
         """(Re)Subscribe to topics."""
-        topics: dict[str, dict[str, Any]] = {}
-
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def handle_action_received(msg: ReceiveMessage) -> None:
-            """Handle receiving action via MQTT."""
-            payload = self.render_template(msg, CONF_ACTION_TEMPLATE)
-            if not payload or payload == PAYLOAD_NONE:
-                _LOGGER.debug(
-                    "Invalid %s action: %s, ignoring",
-                    [e.value for e in HVACAction],
-                    payload,
-                )
-                return
-            try:
-                self._attr_hvac_action = HVACAction(str(payload))
-            except ValueError:
-                _LOGGER.warning(
-                    "Invalid %s action: %s",
-                    [e.value for e in HVACAction],
-                    payload,
-                )
-                return
-            get_mqtt_data(self.hass).state_write_requests.write_state_request(self)
-
-        self.add_subscription(topics, CONF_ACTION_TOPIC, handle_action_received)
-
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def handle_current_humidity_received(msg: ReceiveMessage) -> None:
-            """Handle current humidity coming via MQTT."""
-            self.handle_climate_attribute_received(
-                msg, CONF_CURRENT_HUMIDITY_TEMPLATE, "_attr_current_humidity"
-            )
-
         self.add_subscription(
-            topics, CONF_CURRENT_HUMIDITY_TOPIC, handle_current_humidity_received
+            CONF_ACTION_TOPIC,
+            self._handle_action_received,
+            {"_attr_hvac_action"},
         )
-
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def handle_target_humidity_received(msg: ReceiveMessage) -> None:
-            """Handle target humidity coming via MQTT."""
-
-            self.handle_climate_attribute_received(
-                msg, CONF_HUMIDITY_STATE_TEMPLATE, "_attr_target_humidity"
-            )
-
         self.add_subscription(
-            topics, CONF_HUMIDITY_STATE_TOPIC, handle_target_humidity_received
+            CONF_CURRENT_HUMIDITY_TOPIC,
+            self._handle_current_humidity_received,
+            {"_attr_current_humidity"},
         )
-
-        @callback
-        def handle_mode_received(
-            msg: ReceiveMessage, template_name: str, attr: str, mode_list: str
-        ) -> None:
-            """Handle receiving listed mode via MQTT."""
-            payload = self.render_template(msg, template_name)
-
-            if payload not in self._config[mode_list]:
-                _LOGGER.error("Invalid %s mode: %s", mode_list, payload)
-            else:
-                setattr(self, attr, payload)
-                get_mqtt_data(self.hass).state_write_requests.write_state_request(self)
-
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def handle_current_mode_received(msg: ReceiveMessage) -> None:
-            """Handle receiving mode via MQTT."""
-            handle_mode_received(
-                msg, CONF_MODE_STATE_TEMPLATE, "_attr_hvac_mode", CONF_MODE_LIST
-            )
-
         self.add_subscription(
-            topics, CONF_MODE_STATE_TOPIC, handle_current_mode_received
+            CONF_HUMIDITY_STATE_TOPIC,
+            self._handle_target_humidity_received,
+            {"_attr_target_humidity"},
         )
-
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def handle_fan_mode_received(msg: ReceiveMessage) -> None:
-            """Handle receiving fan mode via MQTT."""
-            handle_mode_received(
-                msg,
+        self.add_subscription(
+            CONF_MODE_STATE_TOPIC,
+            partial(
+                self._handle_mode_received,
+                CONF_MODE_STATE_TEMPLATE,
+                "_attr_hvac_mode",
+                CONF_MODE_LIST,
+            ),
+            {"_attr_hvac_mode"},
+        )
+        self.add_subscription(
+            CONF_FAN_MODE_STATE_TOPIC,
+            partial(
+                self._handle_mode_received,
                 CONF_FAN_MODE_STATE_TEMPLATE,
                 "_attr_fan_mode",
                 CONF_FAN_MODE_LIST,
-            )
-
-        self.add_subscription(
-            topics, CONF_FAN_MODE_STATE_TOPIC, handle_fan_mode_received
+            ),
+            {"_attr_fan_mode"},
         )
-
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def handle_swing_mode_received(msg: ReceiveMessage) -> None:
-            """Handle receiving swing mode via MQTT."""
-            handle_mode_received(
-                msg,
+        self.add_subscription(
+            CONF_SWING_HORIZONTAL_MODE_STATE_TOPIC,
+            partial(
+                self._handle_mode_received,
+                CONF_SWING_HORIZONTAL_MODE_STATE_TEMPLATE,
+                "_attr_swing_horizontal_mode",
+                CONF_SWING_HORIZONTAL_MODE_LIST,
+            ),
+            {"_attr_swing_horizontal_mode"},
+        )
+        self.add_subscription(
+            CONF_SWING_MODE_STATE_TOPIC,
+            partial(
+                self._handle_mode_received,
                 CONF_SWING_MODE_STATE_TEMPLATE,
                 "_attr_swing_mode",
                 CONF_SWING_MODE_LIST,
-            )
-
+            ),
+            {"_attr_swing_mode"},
+        )
         self.add_subscription(
-            topics, CONF_SWING_MODE_STATE_TOPIC, handle_swing_mode_received
+            CONF_PRESET_MODE_STATE_TOPIC,
+            self._handle_preset_mode_received,
+            {"_attr_preset_mode"},
+        )
+        self.add_subscription(
+            CONF_CURRENT_TEMP_TOPIC,
+            self._handle_current_temperature_received,
+            {"_attr_native_current_temperature"},
+        )
+        setpoints = {
+            "_attr_native_target_temperature",
+            "_attr_native_target_temperature_low",
+            "_attr_native_target_temperature_high",
+        }
+        self.add_subscription(
+            CONF_TEMP_STATE_TOPIC,
+            self._handle_target_temperature_received,
+            setpoints,
+        )
+        self.add_subscription(
+            CONF_TEMP_LOW_STATE_TOPIC,
+            self._handle_target_temperature_low_received,
+            setpoints,
+        )
+        self.add_subscription(
+            CONF_TEMP_HIGH_STATE_TOPIC,
+            self._handle_target_temperature_high_received,
+            setpoints,
         )
 
-        @callback
-        def handle_onoff_mode_received(
-            msg: ReceiveMessage, template_name: str, attr: str
-        ) -> None:
-            """Handle receiving on/off mode via MQTT."""
-            payload = self.render_template(msg, template_name)
-            payload_on: str = self._config[CONF_PAYLOAD_ON]
-            payload_off: str = self._config[CONF_PAYLOAD_OFF]
-
-            if payload == "True":
-                payload = payload_on
-            elif payload == "False":
-                payload = payload_off
-
-            if payload == payload_on:
-                setattr(self, attr, True)
-            elif payload == payload_off:
-                setattr(self, attr, False)
-            else:
-                _LOGGER.error("Invalid %s mode: %s", attr, payload)
-
-            get_mqtt_data(self.hass).state_write_requests.write_state_request(self)
-
-        # Options CONF_AUX_COMMAND_TOPIC, CONF_AUX_STATE_TOPIC
-        # and CONF_AUX_STATE_TEMPLATE were deprecated in HA Core 2023.9
-        # Support will be removed in HA Core 2024.3
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def handle_aux_mode_received(msg: ReceiveMessage) -> None:
-            """Handle receiving aux mode via MQTT."""
-            handle_onoff_mode_received(
-                msg, CONF_AUX_STATE_TEMPLATE, "_attr_is_aux_heat"
-            )
-
-        self.add_subscription(topics, CONF_AUX_STATE_TOPIC, handle_aux_mode_received)
-
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def handle_preset_mode_received(msg: ReceiveMessage) -> None:
-            """Handle receiving preset mode via MQTT."""
-            preset_mode = self.render_template(msg, CONF_PRESET_MODE_VALUE_TEMPLATE)
-            if preset_mode in [PRESET_NONE, PAYLOAD_NONE]:
-                self._attr_preset_mode = PRESET_NONE
-                get_mqtt_data(self.hass).state_write_requests.write_state_request(self)
-                return
-            if not preset_mode:
-                _LOGGER.debug("Ignoring empty preset_mode from '%s'", msg.topic)
-                return
-            if (
-                not self._attr_preset_modes
-                or preset_mode not in self._attr_preset_modes
-            ):
-                _LOGGER.warning(
-                    "'%s' received on topic %s. '%s' is not a valid preset mode",
-                    msg.payload,
-                    msg.topic,
-                    preset_mode,
-                )
-            else:
-                self._attr_preset_mode = str(preset_mode)
-
-                get_mqtt_data(self.hass).state_write_requests.write_state_request(self)
-
-        self.add_subscription(
-            topics, CONF_PRESET_MODE_STATE_TOPIC, handle_preset_mode_received
-        )
-
-        self.prepare_subscribe_topics(topics)
-
+    @override
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperatures."""
         operation_mode: HVACMode | None
         if (operation_mode := kwargs.get(ATTR_HVAC_MODE)) is not None:
             await self.async_set_hvac_mode(operation_mode)
-        await super().async_set_temperature(**kwargs)
 
-    async def async_set_humidity(self, humidity: int) -> None:
+        optimistic_update = False
+        temperature: float | None
+        if (temperature := kwargs.get(ATTR_TEMPERATURE)) is not None:
+            if self._optimistic or self._topic[CONF_TEMP_STATE_TOPIC] is None:
+                optimistic_update = True
+                self._attr_native_target_temperature = temperature
+                # We reset low and high setpoints when a single setpoint is set
+                self._park_range_setpoints()
+            mqtt_payload = self._command_templates[CONF_TEMP_COMMAND_TEMPLATE](
+                temperature
+            )
+            await self._publish(CONF_TEMP_COMMAND_TOPIC, mqtt_payload)
+
+        target_temp_low: float | None
+        if (target_temp_low := kwargs.get(ATTR_TARGET_TEMP_LOW)) is not None:
+            if self._optimistic or self._topic[CONF_TEMP_LOW_STATE_TOPIC] is None:
+                optimistic_update = True
+                self._attr_native_target_temperature_low = target_temp_low
+                # We reset the single setpoint when a setpoint range is set
+                self._park_single_setpoint()
+            mqtt_payload = self._command_templates[CONF_TEMP_LOW_COMMAND_TEMPLATE](
+                target_temp_low
+            )
+            await self._publish(CONF_TEMP_LOW_COMMAND_TOPIC, mqtt_payload)
+
+        target_temp_high: float | None
+        if (target_temp_high := kwargs.get(ATTR_TARGET_TEMP_HIGH)) is not None:
+            if self._optimistic or self._topic[CONF_TEMP_HIGH_STATE_TOPIC] is None:
+                optimistic_update = True
+                self._attr_native_target_temperature_high = target_temp_high
+                self._park_single_setpoint()
+            mqtt_payload = self._command_templates[CONF_TEMP_HIGH_COMMAND_TEMPLATE](
+                target_temp_high
+            )
+            await self._publish(CONF_TEMP_HIGH_COMMAND_TOPIC, mqtt_payload)
+
+        if optimistic_update:
+            self.async_write_ha_state()
+
+    @override
+    async def async_set_humidity(self, humidity: float) -> None:
         """Set new target humidity."""
+        mqtt_payload = self._command_templates[CONF_HUMIDITY_COMMAND_TEMPLATE](humidity)
+        await self._publish(CONF_HUMIDITY_COMMAND_TOPIC, mqtt_payload)
 
-        await self._set_climate_attribute(
-            humidity,
-            CONF_HUMIDITY_COMMAND_TOPIC,
-            CONF_HUMIDITY_COMMAND_TEMPLATE,
-            CONF_HUMIDITY_STATE_TOPIC,
-            "_attr_target_humidity",
+        if self._optimistic or self._topic[CONF_HUMIDITY_STATE_TOPIC] is None:
+            self._attr_target_humidity = humidity
+            self.async_write_ha_state()
+
+    @override
+    async def async_set_swing_horizontal_mode(self, swing_horizontal_mode: str) -> None:
+        """Set new swing horizontal mode."""
+        payload = self._command_templates[CONF_SWING_HORIZONTAL_MODE_COMMAND_TEMPLATE](
+            swing_horizontal_mode
         )
+        await self._publish(CONF_SWING_HORIZONTAL_MODE_COMMAND_TOPIC, payload)
 
-        self.async_write_ha_state()
+        if (
+            self._optimistic
+            or self._topic[CONF_SWING_HORIZONTAL_MODE_STATE_TOPIC] is None
+        ):
+            self._attr_swing_horizontal_mode = swing_horizontal_mode
+            self.async_write_ha_state()
 
+    @override
     async def async_set_swing_mode(self, swing_mode: str) -> None:
         """Set new swing mode."""
         payload = self._command_templates[CONF_SWING_MODE_COMMAND_TEMPLATE](swing_mode)
@@ -990,6 +900,7 @@ class MqttClimate(MqttTemperatureControlEntity, ClimateEntity):
             self._attr_swing_mode = swing_mode
             self.async_write_ha_state()
 
+    @override
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set new target temperature."""
         payload = self._command_templates[CONF_FAN_MODE_COMMAND_TEMPLATE](fan_mode)
@@ -999,6 +910,7 @@ class MqttClimate(MqttTemperatureControlEntity, ClimateEntity):
             self._attr_fan_mode = fan_mode
             self.async_write_ha_state()
 
+    @override
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new operation mode."""
         payload = self._command_templates[CONF_MODE_COMMAND_TEMPLATE](hvac_mode)
@@ -1006,49 +918,80 @@ class MqttClimate(MqttTemperatureControlEntity, ClimateEntity):
 
         if self._optimistic or self._topic[CONF_MODE_STATE_TOPIC] is None:
             self._attr_hvac_mode = hvac_mode
+            self._swap_setpoints(hvac_mode)
             self.async_write_ha_state()
 
+    def _park_single_setpoint(self) -> None:
+        """Park and reset the single setpoint when a setpoint range is active."""
+        if (
+            not self._single_and_range_setpoints
+            or self.native_target_temperature is None
+        ):
+            return
+        self._parked_target_temperature = self.native_target_temperature
+        self._attr_native_target_temperature = None
+
+    def _park_range_setpoints(self) -> None:
+        """Park and reset the setpoint range when a single setpoint is active."""
+        temp_range = (
+            self.native_target_temperature_low,
+            self.native_target_temperature_high,
+        )
+        if not self._single_and_range_setpoints or temp_range == (None, None):
+            return
+        self._parked_target_temperature_range = temp_range
+        self._attr_native_target_temperature_low = None
+        self._attr_native_target_temperature_high = None
+
+    def _swap_setpoints(self, hvac_mode: HVACMode) -> None:
+        """Swap optimistic single and range setpoints on an HVAC mode change.
+
+        The inactive setpoints are parked, so they can be restored
+        when switching back, as the device is expected to remember them.
+        """
+        if not self._single_and_range_setpoints or hvac_mode not in (
+            HVACMode.COOL,
+            HVACMode.HEAT,
+            HVACMode.HEAT_COOL,
+        ):
+            return
+        uses_range = hvac_mode is HVACMode.HEAT_COOL
+        if self._optimistic or self._topic[CONF_TEMP_STATE_TOPIC] is None:
+            if uses_range:
+                self._park_single_setpoint()
+            elif self.native_target_temperature is None:
+                self._attr_native_target_temperature = self._parked_target_temperature
+        if self._optimistic or (
+            self._topic[CONF_TEMP_LOW_STATE_TOPIC] is None
+            and self._topic[CONF_TEMP_HIGH_STATE_TOPIC] is None
+        ):
+            if not uses_range:
+                self._park_range_setpoints()
+            elif (
+                self.native_target_temperature_low is None
+                and self.native_target_temperature_high is None
+            ):
+                (
+                    self._attr_native_target_temperature_low,
+                    self._attr_native_target_temperature_high,
+                ) = self._parked_target_temperature_range
+
+    @override
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set a preset mode."""
-        if self._feature_preset_mode and self.preset_modes:
-            if preset_mode not in self.preset_modes and preset_mode is not PRESET_NONE:
-                _LOGGER.warning("'%s' is not a valid preset mode", preset_mode)
-                return
-            mqtt_payload = self._command_templates[CONF_PRESET_MODE_COMMAND_TEMPLATE](
-                preset_mode
-            )
-            await self._publish(
-                CONF_PRESET_MODE_COMMAND_TOPIC,
-                mqtt_payload,
-            )
-
-            if self._optimistic_preset_mode:
-                self._attr_preset_mode = preset_mode
-                self.async_write_ha_state()
-
-            return
-
-    # Options CONF_AUX_COMMAND_TOPIC, CONF_AUX_STATE_TOPIC
-    # and CONF_AUX_STATE_TEMPLATE were deprecated in HA Core 2023.9
-    # Support will be removed in HA Core 2024.3
-    async def _set_aux_heat(self, state: bool) -> None:
+        mqtt_payload = self._command_templates[CONF_PRESET_MODE_COMMAND_TEMPLATE](
+            preset_mode
+        )
         await self._publish(
-            CONF_AUX_COMMAND_TOPIC,
-            self._config[CONF_PAYLOAD_ON] if state else self._config[CONF_PAYLOAD_OFF],
+            CONF_PRESET_MODE_COMMAND_TOPIC,
+            mqtt_payload,
         )
 
-        if self._optimistic or self._topic[CONF_AUX_STATE_TOPIC] is None:
-            self._attr_is_aux_heat = state
+        if self._optimistic_preset_mode:
+            self._attr_preset_mode = preset_mode
             self.async_write_ha_state()
 
-    async def async_turn_aux_heat_on(self) -> None:
-        """Turn auxiliary heater on."""
-        await self._set_aux_heat(True)
-
-    async def async_turn_aux_heat_off(self) -> None:
-        """Turn auxiliary heater off."""
-        await self._set_aux_heat(False)
-
+    @override
     async def async_turn_on(self) -> None:
         """Turn the entity on."""
         if CONF_POWER_COMMAND_TOPIC in self._config:
@@ -1060,6 +1003,7 @@ class MqttClimate(MqttTemperatureControlEntity, ClimateEntity):
         # Fall back to default behavior without power command topic
         await super().async_turn_on()
 
+    @override
     async def async_turn_off(self) -> None:
         """Turn the entity off."""
         if CONF_POWER_COMMAND_TOPIC in self._config:

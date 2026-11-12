@@ -5,6 +5,7 @@ service-label-index despite not being linked to a service-label.
 
 https://github.com/home-assistant/core/pull/39090
 """
+
 from homeassistant.components.sensor import SensorStateClass
 from homeassistant.const import PERCENTAGE, EntityCategory
 from homeassistant.core import HomeAssistant
@@ -23,10 +24,11 @@ from ..common import (
 async def test_aqara_switch_setup(hass: HomeAssistant) -> None:
     """Test that a Aqara Switch can be correctly setup in HA."""
     accessories = await setup_accessories_from_file(hass, "aqara_switch.json")
-    await setup_test_accessories(hass, accessories)
+    config_entry, _ = await setup_test_accessories(hass, accessories)
 
     await assert_devices_and_entities_created(
         hass,
+        config_entry.entry_id,
         DeviceTestInfo(
             unique_id=HUB_TEST_ACCESSORY_ID,
             name="Programmable Switch",

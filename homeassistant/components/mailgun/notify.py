@@ -1,28 +1,30 @@
 """Support for the Mailgun mail notifications."""
-from __future__ import annotations
 
 import logging
+from typing import Any, override
 
+import probatio
 from pymailgunner import (
     Client,
     MailgunCredentialsError,
     MailgunDomainError,
     MailgunError,
 )
-import voluptuous as vol
 
 from homeassistant.components.notify import (
     ATTR_DATA,
     ATTR_TITLE,
     ATTR_TITLE_DEFAULT,
-    PLATFORM_SCHEMA,
+    PLATFORM_SCHEMA as NOTIFY_PLATFORM_SCHEMA,
     BaseNotificationService,
 )
 from homeassistant.const import CONF_API_KEY, CONF_DOMAIN, CONF_RECIPIENT, CONF_SENDER
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from . import CONF_SANDBOX, DOMAIN as MAILGUN_DOMAIN
+from . import CONF_SANDBOX
+from .const import DATA_CONFIG, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,8 +33,11 @@ ATTR_IMAGES = "images"
 
 DEFAULT_SANDBOX = False
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {vol.Required(CONF_RECIPIENT): vol.Email(), vol.Optional(CONF_SENDER): vol.Email()}
+PLATFORM_SCHEMA = NOTIFY_PLATFORM_SCHEMA.extend(
+    {
+        probatio.Required(CONF_RECIPIENT): probatio.Email(),
+        probatio.Optional(CONF_SENDER): probatio.Email(),
+    }
 )
 
 
@@ -42,7 +47,7 @@ def get_service(
     discovery_info: DiscoveryInfoType | None = None,
 ) -> MailgunNotificationService | None:
     """Get the Mailgun notification service."""
-    data = hass.data[MAILGUN_DOMAIN]
+    data = hass.data[DATA_CONFIG]
     mailgun_service = MailgunNotificationService(
         data.get(CONF_DOMAIN),
         data.get(CONF_SANDBOX),
@@ -85,12 +90,13 @@ class MailgunNotificationService(BaseNotificationService):
         except MailgunCredentialsError:
             _LOGGER.exception("Invalid credentials")
             return False
-        except MailgunDomainError as mailgun_error:
-            _LOGGER.exception(mailgun_error)
+        except MailgunDomainError:
+            _LOGGER.exception("Unexpected exception")
             return False
         return True
 
-    def send_message(self, message="", **kwargs):
+    @override
+    def send_message(self, message: str = "", **kwargs: Any) -> None:
         """Send a mail to the recipient."""
 
         subject = kwargs.get(ATTR_TITLE, ATTR_TITLE_DEFAULT)
@@ -109,5 +115,8 @@ class MailgunNotificationService(BaseNotificationService):
                 files=files,
             )
             _LOGGER.debug("Message sent: %s", resp)
-        except MailgunError as mailgun_error:
-            _LOGGER.exception("Failed to send message: %s", mailgun_error)
+        except MailgunError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="send_message_failed",
+            ) from err

@@ -1,4 +1,5 @@
 """Tests for the motionEye switch platform."""
+
 import copy
 from datetime import timedelta
 from unittest.mock import AsyncMock, call, patch
@@ -12,6 +13,7 @@ from motioneye_client.const import (
     KEY_UPLOAD_ENABLED,
     KEY_VIDEO_STREAMING,
 )
+from pytest_homeassistant.common import async_fire_time_changed
 
 from homeassistant.components.motioneye import get_motioneye_device_identifier
 from homeassistant.components.motioneye.const import DEFAULT_SCAN_INTERVAL
@@ -30,8 +32,6 @@ from . import (
     create_mock_motioneye_client,
     setup_mock_motioneye_config_entry,
 )
-
-from tests.common import async_fire_time_changed
 
 
 async def test_switch_turn_on_off(
@@ -98,6 +98,43 @@ async def test_switch_turn_on_off(
     assert entity_state.state == "on"
 
 
+async def test_switch_state_updates_right_after_toggling(hass: HomeAssistant) -> None:
+    """Test the switch shows the new state without waiting for the next poll."""
+    client = create_mock_motioneye_client()
+    await setup_mock_motioneye_config_entry(hass, client=client)
+
+    client.async_get_camera = AsyncMock(return_value=copy.deepcopy(TEST_CAMERA))
+
+    updated_camera = copy.deepcopy(TEST_CAMERA)
+    updated_camera[KEY_MOTION_DETECTION] = False
+    client.async_get_cameras = AsyncMock(return_value={"cameras": [updated_camera]})
+
+    await hass.services.async_call(
+        SWITCH_DOMAIN,
+        SERVICE_TURN_OFF,
+        {ATTR_ENTITY_ID: TEST_SWITCH_MOTION_DETECTION_ENTITY_ID},
+        blocking=True,
+    )
+
+    assert (entity_state := hass.states.get(TEST_SWITCH_MOTION_DETECTION_ENTITY_ID))
+    assert entity_state.state == "off"
+
+    # Toggle again right away, within the cooldown of a requested refresh
+    client.async_get_cameras = AsyncMock(
+        return_value={"cameras": [copy.deepcopy(TEST_CAMERA)]}
+    )
+
+    await hass.services.async_call(
+        SWITCH_DOMAIN,
+        SERVICE_TURN_ON,
+        {ATTR_ENTITY_ID: TEST_SWITCH_MOTION_DETECTION_ENTITY_ID},
+        blocking=True,
+    )
+
+    assert (entity_state := hass.states.get(TEST_SWITCH_MOTION_DETECTION_ENTITY_ID))
+    assert entity_state.state == "on"
+
+
 async def test_switch_state_update_from_coordinator(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory
 ) -> None:
@@ -152,7 +189,9 @@ async def test_switch_has_correct_entities(hass: HomeAssistant) -> None:
 
 
 async def test_disabled_switches_can_be_enabled(
-    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     """Verify disabled switches can be enabled."""
     client = create_mock_motioneye_client()
@@ -165,7 +204,6 @@ async def test_disabled_switches_can_be_enabled(
 
     for switch_key in disabled_switch_keys:
         entity_id = f"{TEST_SWITCH_ENTITY_ID_BASE}_{switch_key}"
-        entity_registry = er.async_get(hass)
         entry = entity_registry.async_get(entity_id)
         assert entry
         assert entry.disabled
@@ -191,19 +229,23 @@ async def test_disabled_switches_can_be_enabled(
         assert entity_state
 
 
-async def test_switch_device_info(hass: HomeAssistant) -> None:
+async def test_switch_device_info(
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
+) -> None:
     """Verify device information includes expected details."""
     config_entry = await setup_mock_motioneye_config_entry(hass)
 
     device_identifer = get_motioneye_device_identifier(
         config_entry.entry_id, TEST_CAMERA_ID
     )
-    device_registry = dr.async_get(hass)
 
-    device = device_registry.async_get_device(identifiers={device_identifer})
+    device = device_registry.async_get_device_by_identifier(
+        device_identifer, config_entry.entry_id
+    )
     assert device
 
-    entity_registry = er.async_get(hass)
     entities_from_device = [
         entry.entity_id
         for entry in er.async_entries_for_device(entity_registry, device.id)

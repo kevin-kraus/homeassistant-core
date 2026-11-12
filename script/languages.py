@@ -1,11 +1,11 @@
 """Helper script to update language list from the frontend source."""
+
 import json
 from pathlib import Path
 import sys
 
+from hassfest.serializer import format_python_namespace
 import requests
-
-from .hassfest.serializer import format_python_namespace
 
 tag = sys.argv[1] if len(sys.argv) > 1 else "dev"
 
@@ -50,8 +50,8 @@ NATIVE_ENTITY_IDS = {
     "lb",  # Lëtzebuergesch
     "lt",  # Lietuvių
     "lv",  # Latviešu
-    "nb",  # Nederlands
-    "nl",  # Norsk Bokmål
+    "nb",  # Norsk Bokmål
+    "nl",  # Nederlands
     "nn",  # Norsk Nynorsk"
     "pl",  # Polski
     "pt",  # Português
@@ -59,6 +59,7 @@ NATIVE_ENTITY_IDS = {
     "ro",  # Română
     "sk",  # Slovenčina
     "sl",  # Slovenščina
+    "sq",  # Shqip
     "sr-Latn",  # Srpski
     "sv",  # Svenska
     "tr",  # Türkçe

@@ -1,13 +1,15 @@
 {
   "domain": "august",
   "name": "August",
+  "categories": [
+    "security_safety.locks_access",
+    "security_safety.doorbells_intercoms"
+  ],
   "codeowners": ["@bdraco"],
   "config_flow": true,
+  "connectivity": ["cloud"],
+  "dependencies": ["application_credentials", "cloud"],
   "dhcp": [
-    {
-      "hostname": "yale-connect-plus",
-      "macaddress": "00177A*"
-    },
     {
       "hostname": "connect",
       "macaddress": "D86162*"
@@ -21,12 +23,17 @@
       "macaddress": "2C9FFB*"
     },
     {
+      "hostname": "connect",
+      "macaddress": "789C85*"
+    },
+    {
       "hostname": "august*",
       "macaddress": "E076D0*"
     }
   ],
   "documentation": "https://www.home-assistant.io/integrations/august",
+  "integration_type": "hub",
   "iot_class": "cloud_push",
   "loggers": ["pubnub", "yalexs"],
-  "requirements": ["yalexs==1.9.0", "yalexs-ble==2.3.0"]
+  "requirements": ["yalexs==9.2.13", "yalexs-ble==4.1.2"]
 }

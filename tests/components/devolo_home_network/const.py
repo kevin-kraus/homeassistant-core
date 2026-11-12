@@ -1,5 +1,7 @@
 """Constants used for mocking data."""
 
+from ipaddress import ip_address
+
 from devolo_plc_api.device_api import (
     UPDATE_AVAILABLE,
     WIFI_BAND_2G,
@@ -10,16 +12,16 @@ from devolo_plc_api.device_api import (
     UpdateFirmwareCheck,
     WifiGuestAccessGet,
 )
-from devolo_plc_api.plcnet_api import LogicalNetwork
+from devolo_plc_api.plcnet_api import LOCAL, REMOTE, LogicalNetwork
 
-from homeassistant.components.zeroconf import ZeroconfServiceInfo
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 IP = "192.0.2.1"
 IP_ALT = "192.0.2.2"
 
 CONNECTED_STATIONS = [
     ConnectedStationInfo(
-        mac_address="AA:BB:CC:DD:EE:FF",
+        mac_address="00:00:5E:00:53:01",
         vap_type=WIFI_VAP_MAIN_AP,
         band=WIFI_BAND_5G,
         rx_rate=87800,
@@ -30,8 +32,8 @@ CONNECTED_STATIONS = [
 NO_CONNECTED_STATIONS = []
 
 DISCOVERY_INFO = ZeroconfServiceInfo(
-    host=IP,
-    addresses=[IP],
+    ip_address=ip_address(IP),
+    ip_addresses=[ip_address(IP)],
     port=14791,
     hostname="test.local.",
     type="_dvl-deviceapi._tcp.local.",
@@ -46,13 +48,13 @@ DISCOVERY_INFO = ZeroconfServiceInfo(
         "FirmwareVersion": "5.6.1",
         "FirmwareDate": "2020-10-23",
         "PS": "",
-        "PlcMacAddress": "AA:BB:CC:DD:EE:FF",
+        "PlcMacAddress": "00:00:5E:00:53:00",
     },
 )
 
 DISCOVERY_INFO_CHANGED = ZeroconfServiceInfo(
-    host=IP_ALT,
-    addresses=[IP_ALT],
+    ip_address=ip_address(IP_ALT),
+    ip_addresses=[ip_address(IP_ALT)],
     port=14791,
     hostname="test.local.",
     type="_dvl-deviceapi._tcp.local.",
@@ -67,13 +69,13 @@ DISCOVERY_INFO_CHANGED = ZeroconfServiceInfo(
         "FirmwareVersion": "5.6.1",
         "FirmwareDate": "2020-10-23",
         "PS": "",
-        "PlcMacAddress": "AA:BB:CC:DD:EE:FF",
+        "PlcMacAddress": "00:00:5E:00:53:00",
     },
 )
 
 DISCOVERY_INFO_WRONG_DEVICE = ZeroconfServiceInfo(
-    host="mock_host",
-    addresses=["mock_host"],
+    ip_address=ip_address("127.0.0.2"),
+    ip_addresses=[ip_address("127.0.0.2")],
     hostname="mock_hostname",
     name="mock_name",
     port=None,
@@ -101,7 +103,7 @@ GUEST_WIFI_CHANGED = WifiGuestAccessGet(
 
 NEIGHBOR_ACCESS_POINTS = [
     NeighborAPInfo(
-        mac_address="AA:BB:CC:DD:EE:FF",
+        mac_address="00:00:5E:00:53:04",
         ssid="wifi",
         band=WIFI_BAND_2G,
         channel=1,
@@ -113,16 +115,36 @@ NEIGHBOR_ACCESS_POINTS = [
 PLCNET = LogicalNetwork(
     devices=[
         {
-            "mac_address": "AA:BB:CC:DD:EE:FF",
+            "mac_address": "00:00:5E:00:53:00",
             "attached_to_router": False,
-        }
+            "topology": LOCAL,
+            "user_device_name": "test1",
+        },
+        {
+            "mac_address": "00:00:5E:00:53:02",
+            "attached_to_router": True,
+            "topology": REMOTE,
+            "user_device_name": "test2",
+        },
+        {
+            "mac_address": "00:00:5E:00:53:03",
+            "attached_to_router": False,
+            "topology": REMOTE,
+            "user_device_name": "test3",
+        },
     ],
     data_rates=[
         {
-            "mac_address_from": "AA:BB:CC:DD:EE:FF",
-            "mac_address_to": "11:22:33:44:55:66",
-            "rx_rate": 0.0,
-            "tx_rate": 0.0,
+            "mac_address_from": "00:00:5E:00:53:00",
+            "mac_address_to": "00:00:5E:00:53:02",
+            "rx_rate": 100.0,
+            "tx_rate": 100.0,
+        },
+        {
+            "mac_address_from": "00:00:5E:00:53:00",
+            "mac_address_to": "00:00:5E:00:53:03",
+            "rx_rate": 150.0,
+            "tx_rate": 150.0,
         },
     ],
 )
@@ -130,9 +152,55 @@ PLCNET = LogicalNetwork(
 PLCNET_ATTACHED = LogicalNetwork(
     devices=[
         {
-            "mac_address": "AA:BB:CC:DD:EE:FF",
+            "mac_address": "00:00:5E:00:53:00",
             "attached_to_router": True,
         }
     ],
-    data_rates=[],
+    data_rates=[
+        {
+            "mac_address_from": "00:00:5E:00:53:00",
+            "mac_address_to": "00:00:5E:00:53:02",
+            "rx_rate": 100.0,
+            "tx_rate": 100.0,
+        },
+        {
+            "mac_address_from": "00:00:5E:00:53:00",
+            "mac_address_to": "00:00:5E:00:53:03",
+            "rx_rate": 150.0,
+            "tx_rate": 150.0,
+        },
+    ],
 )
+
+PLCNET_MISSING_DATA_RATE = LogicalNetwork(
+    devices=[
+        {
+            "mac_address": "00:00:5E:00:53:00",
+            "attached_to_router": False,
+            "topology": LOCAL,
+            "user_device_name": "test1",
+        },
+        {
+            "mac_address": "00:00:5E:00:53:02",
+            "attached_to_router": True,
+            "topology": REMOTE,
+            "user_device_name": "test2",
+        },
+        {
+            "mac_address": "00:00:5E:00:53:03",
+            "attached_to_router": False,
+            "topology": REMOTE,
+            "user_device_name": "test3",
+        },
+    ],
+    data_rates=[
+        {
+            "mac_address_from": "00:00:5E:00:53:00",
+            "mac_address_to": "00:00:5E:00:53:03",
+            "rx_rate": 150.0,
+            "tx_rate": 150.0,
+        },
+    ],
+)
+
+UPTIME = 100

@@ -1,20 +1,22 @@
 """A risco entity base class."""
-from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
-from pyrisco.common import Zone
+from pyrisco import RiscoCloud
+from pyrisco.cloud.zone import Zone as CloudZone
+from pyrisco.local.zone import Zone as LocalZone
 
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import RiscoDataUpdateCoordinator, zone_update_signal
+from . import zone_update_signal
 from .const import DOMAIN
+from .coordinator import RiscoDataUpdateCoordinator
 
 
-def zone_unique_id(risco, zone_id: int) -> str:
+def zone_unique_id(risco: RiscoCloud, zone_id: int) -> str:
     """Return unique id for a cloud zone."""
     return f"{risco.site_uuid}_zone_{zone_id}"
 
@@ -22,27 +24,16 @@ def zone_unique_id(risco, zone_id: int) -> str:
 class RiscoCloudEntity(CoordinatorEntity[RiscoDataUpdateCoordinator]):
     """Risco cloud entity base class."""
 
-    def __init__(
-        self, *, coordinator: RiscoDataUpdateCoordinator, **kwargs: Any
-    ) -> None:
-        """Init the entity."""
-        super().__init__(coordinator=coordinator, **kwargs)
-
     def _get_data_from_coordinator(self) -> None:
         raise NotImplementedError
 
-    def _refresh_from_coordinator(self) -> None:
+    @override
+    def _handle_coordinator_update(self) -> None:
         self._get_data_from_coordinator()
         self.async_write_ha_state()
 
-    async def async_added_to_hass(self) -> None:
-        """When entity is added to hass."""
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self._refresh_from_coordinator)
-        )
-
     @property
-    def _risco(self):
+    def _risco(self) -> RiscoCloud:
         """Return the Risco API object."""
         return self.coordinator.risco
 
@@ -58,7 +49,7 @@ class RiscoCloudZoneEntity(RiscoCloudEntity):
         coordinator: RiscoDataUpdateCoordinator,
         suffix: str,
         zone_id: int,
-        zone: Zone,
+        zone: CloudZone,
         **kwargs: Any,
     ) -> None:
         """Init the zone."""
@@ -74,6 +65,7 @@ class RiscoCloudZoneEntity(RiscoCloudEntity):
         )
         self._attr_extra_state_attributes = {"zone_id": zone_id}
 
+    @override
     def _get_data_from_coordinator(self) -> None:
         self._zone = self.coordinator.data.zones[self._zone_id]
 
@@ -90,7 +82,7 @@ class RiscoLocalZoneEntity(Entity):
         system_id: str,
         suffix: str,
         zone_id: int,
-        zone: Zone,
+        zone: LocalZone,
         **kwargs: Any,
     ) -> None:
         """Init the zone."""
@@ -106,6 +98,7 @@ class RiscoLocalZoneEntity(Entity):
         )
         self._attr_extra_state_attributes = {"zone_id": zone_id}
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Subscribe to updates."""
         signal = zone_update_signal(self._zone_id)

@@ -30,7 +30,7 @@ class MockSwitchLinc(SwitchedLightingControl_SwitchLinc02):
 class MockDevices:
     """Mock devices class."""
 
-    def __init__(self, connected=True):
+    def __init__(self, connected=True) -> None:
         """Init the MockDevices class."""
         self._devices = {}
         self.modem = None
@@ -85,7 +85,7 @@ class MockDevices:
             )
 
             for device in [
-                self._devices[addr] for addr in [addr1, addr2, addr3, addr4, addr5]
+                self._devices[addr] for addr in (addr1, addr2, addr3, addr4, addr5)
             ]:
                 device.async_read_config = AsyncMock()
                 device.aldb.async_write = AsyncMock()
@@ -105,7 +105,7 @@ class MockDevices:
                 )
 
             for device in [
-                self._devices[addr] for addr in [addr2, addr3, addr4, addr5]
+                self._devices[addr] for addr in (addr2, addr3, addr4, addr5)
             ]:
                 device.async_status = AsyncMock()
             self._devices[addr1].async_status = AsyncMock(side_effect=AttributeError)
@@ -138,7 +138,8 @@ class MockDevices:
         device = self._devices[Address(address)]
         aldb_records = dict_to_aldb_record(records)
 
-        device.aldb.load_saved_records(ALDBStatus.LOADED, aldb_records)
+        with patch("pyinsteon.aldb.aldb_base.publish_topic", MagicMock()):
+            device.aldb.load_saved_records(ALDBStatus.LOADED, aldb_records)
 
     def fill_properties(self, address, props_dict):
         """Fill the operating flags and extended properties of a device."""
@@ -167,6 +168,14 @@ class MockDevices:
         if address:
             yield address
         await asyncio.sleep(0.01)
+
+    def values(self):
+        """Return the devices."""
+        return self._devices.values()
+
+    def items(self):
+        """Return the address, device pair."""
+        return self._devices.items()
 
     def subscribe(self, listener, force_strong_ref=False):
         """Mock the subscribe function."""

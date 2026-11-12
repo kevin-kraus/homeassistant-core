@@ -1,12 +1,14 @@
 """Support for sending data to a Graphite installation."""
+
 from contextlib import suppress
 import logging
 import queue
 import socket
 import threading
 import time
+from typing import override
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.const import (
     CONF_HOST,
@@ -18,8 +20,7 @@ from homeassistant.const import (
     EVENT_STATE_CHANGED,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import state
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv, state
 from homeassistant.helpers.typing import ConfigType
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,20 +33,20 @@ DEFAULT_PROTOCOL = PROTOCOL_TCP
 DEFAULT_PREFIX = "ha"
 DOMAIN = "graphite"
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        DOMAIN: vol.Schema(
+        DOMAIN: probatio.Schema(
             {
-                vol.Optional(CONF_HOST, default=DEFAULT_HOST): cv.string,
-                vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
-                vol.Optional(CONF_PROTOCOL, default=DEFAULT_PROTOCOL): vol.Any(
-                    PROTOCOL_TCP, PROTOCOL_UDP
-                ),
-                vol.Optional(CONF_PREFIX, default=DEFAULT_PREFIX): cv.string,
+                probatio.Optional(CONF_HOST, default=DEFAULT_HOST): cv.string,
+                probatio.Optional(CONF_PORT, default=DEFAULT_PORT): probatio.Port(),
+                probatio.Optional(
+                    CONF_PROTOCOL, default=DEFAULT_PROTOCOL
+                ): probatio.Any(PROTOCOL_TCP, PROTOCOL_UDP),
+                probatio.Optional(CONF_PREFIX, default=DEFAULT_PREFIX): cv.string,
             }
         )
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
 
 
@@ -137,8 +138,7 @@ class GraphiteFeeder(threading.Thread):
         with suppress(ValueError):
             things["state"] = state.state_as_number(new_state)
         lines = [
-            "%s.%s.%s %f %i"
-            % (self._prefix, entity_id, key.replace(" ", "_"), value, now)
+            f"{self._prefix}.{entity_id}.{key.replace(' ', '_')} {value:f} {now}"
             for key, value in things.items()
             if isinstance(value, (float, int))
         ]
@@ -152,6 +152,7 @@ class GraphiteFeeder(threading.Thread):
         except OSError:
             _LOGGER.exception("Failed to send data to graphite")
 
+    @override
     def run(self):
         """Run the process to export the data."""
         while True:
@@ -176,7 +177,7 @@ class GraphiteFeeder(threading.Thread):
                     self._report_attributes(
                         event.data["entity_id"], event.data["new_state"]
                     )
-                except Exception:  # pylint: disable=broad-except
+                except Exception:
                     # Catch this so we can avoid the thread dying and
                     # make it visible.
                     _LOGGER.exception("Failed to process STATE_CHANGED event")

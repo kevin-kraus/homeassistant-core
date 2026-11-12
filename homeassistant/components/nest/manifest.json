@@ -2,8 +2,14 @@
   "domain": "nest",
   "name": "Google Nest",
   "after_dependencies": ["media_source"],
+  "categories": [
+    "climate.thermostats_heating",
+    "security_safety.cameras",
+    "security_safety.doorbells_intercoms"
+  ],
   "codeowners": ["@allenporter"],
   "config_flow": true,
+  "connectivity": ["cloud"],
   "dependencies": ["ffmpeg", "http", "application_credentials"],
   "dhcp": [
     {
@@ -17,8 +23,8 @@
     }
   ],
   "documentation": "https://www.home-assistant.io/integrations/nest",
+  "integration_type": "hub",
   "iot_class": "cloud_push",
   "loggers": ["google_nest_sdm"],
-  "quality_scale": "platinum",
-  "requirements": ["google-nest-sdm==3.0.2"]
+  "requirements": ["google-nest-sdm==9.2.1"]
 }

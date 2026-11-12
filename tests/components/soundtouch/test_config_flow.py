@@ -1,4 +1,6 @@
 """Test config flow."""
+
+from ipaddress import ip_address
 from unittest.mock import patch
 
 from requests import RequestException
@@ -6,13 +8,13 @@ import requests_mock
 from requests_mock import ANY, Mocker
 
 from homeassistant.components.soundtouch.const import DOMAIN
-from homeassistant.components.zeroconf import ZeroconfServiceInfo
 from homeassistant.config_entries import SOURCE_USER, SOURCE_ZEROCONF
 from homeassistant.const import CONF_HOST, CONF_SOURCE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
-from .conftest import DEVICE_1_ID, DEVICE_1_IP, DEVICE_1_NAME
+from .conftest import DEVICE_1_ID, DEVICE_1_IP, DEVICE_1_NAME, DEVICE_1_URL
 
 
 async def test_user_flow_create_entry(
@@ -24,11 +26,11 @@ async def test_user_flow_create_entry(
         context={CONF_SOURCE: SOURCE_USER},
     )
 
-    assert result.get("type") == FlowResultType.FORM
+    assert result.get("type") is FlowResultType.FORM
     assert result.get("step_id") == "user"
 
     with patch(
-        "homeassistant.components.soundtouch.async_setup_entry", return_value=True
+        "homeassistant.components.soundtouch.async_setup_entry", return_value=None
     ) as mock_setup_entry:
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
@@ -39,7 +41,7 @@ async def test_user_flow_create_entry(
 
     assert len(mock_setup_entry.mock_calls) == 1
 
-    assert result.get("type") == FlowResultType.CREATE_ENTRY
+    assert result.get("type") is FlowResultType.CREATE_ENTRY
     assert result.get("title") == DEVICE_1_NAME
     assert result.get("data") == {
         CONF_HOST: DEVICE_1_IP,
@@ -50,7 +52,7 @@ async def test_user_flow_create_entry(
 
 
 async def test_user_flow_cannot_connect(
-    hass: HomeAssistant, requests_mock: requests_mock.Mocker
+    hass: HomeAssistant, requests_mock: requests_mock.Mocker, device1_info: str
 ) -> None:
     """Test a manual user flow with an invalid host."""
     requests_mock.get(ANY, exc=RequestException())
@@ -63,8 +65,18 @@ async def test_user_flow_cannot_connect(
         },
     )
 
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "cannot_connect"}
+
+    requests_mock.get(f"{DEVICE_1_URL}/info", text=device1_info)
+    with patch(
+        "homeassistant.components.soundtouch.async_setup_entry", return_value=None
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={CONF_HOST: DEVICE_1_IP}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_zeroconf_flow_create_entry(
@@ -75,8 +87,8 @@ async def test_zeroconf_flow_create_entry(
         DOMAIN,
         context={CONF_SOURCE: SOURCE_ZEROCONF},
         data=ZeroconfServiceInfo(
-            host=DEVICE_1_IP,
-            addresses=[DEVICE_1_IP],
+            ip_address=ip_address(DEVICE_1_IP),
+            ip_addresses=[ip_address(DEVICE_1_IP)],
             port=8090,
             hostname="Bose-SM2-060000000001.local.",
             type="_soundtouch._tcp.local.",
@@ -90,12 +102,12 @@ async def test_zeroconf_flow_create_entry(
         ),
     )
 
-    assert result.get("type") == FlowResultType.FORM
+    assert result.get("type") is FlowResultType.FORM
     assert result.get("step_id") == "zeroconf_confirm"
     assert result.get("description_placeholders") == {"name": DEVICE_1_NAME}
 
     with patch(
-        "homeassistant.components.soundtouch.async_setup_entry", return_value=True
+        "homeassistant.components.soundtouch.async_setup_entry", return_value=None
     ) as mock_setup_entry:
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input={}
@@ -103,7 +115,7 @@ async def test_zeroconf_flow_create_entry(
 
     assert len(mock_setup_entry.mock_calls) == 1
 
-    assert result.get("type") == FlowResultType.CREATE_ENTRY
+    assert result.get("type") is FlowResultType.CREATE_ENTRY
     assert result.get("title") == DEVICE_1_NAME
     assert result.get("data") == {
         CONF_HOST: DEVICE_1_IP,

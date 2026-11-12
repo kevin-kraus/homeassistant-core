@@ -1,13 +1,15 @@
 """The tests for Climate device conditions."""
-import pytest
-from pytest_unordered import unordered
-import voluptuous_serialize
 
-import homeassistant.components.automation as automation
+from probatio import Invalid, to_field_list
+import pytest
+from pytest_homeassistant.common import MockConfigEntry, async_get_device_automations
+from pytest_unordered import unordered
+
+from homeassistant.components import automation
 from homeassistant.components.climate import DOMAIN, HVACMode, const, device_condition
 from homeassistant.components.device_automation import DeviceAutomationType
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import (
     config_validation as cv,
     device_registry as dr,
@@ -15,23 +17,6 @@ from homeassistant.helpers import (
 )
 from homeassistant.helpers.entity_registry import RegistryEntryHider
 from homeassistant.setup import async_setup_component
-
-from tests.common import (
-    MockConfigEntry,
-    async_get_device_automations,
-    async_mock_service,
-)
-
-
-@pytest.fixture(autouse=True, name="stub_blueprint_populate")
-def stub_blueprint_populate_autouse(stub_blueprint_populate: None) -> None:
-    """Stub copying the blueprints to the config folder."""
-
-
-@pytest.fixture
-def calls(hass):
-    """Track calls to a mock service."""
-    return async_mock_service(hass, "test", "automation")
 
 
 @pytest.mark.parametrize(
@@ -78,7 +63,9 @@ async def test_get_conditions(
     )
     if set_state:
         hass.states.async_set(
-            f"{DOMAIN}.test_5678", "attributes", {"supported_features": features_state}
+            entity_entry.entity_id,
+            "attributes",
+            {"supported_features": features_state},
         )
     expected_conditions = []
     expected_conditions += [
@@ -100,12 +87,12 @@ async def test_get_conditions(
 
 @pytest.mark.parametrize(
     ("hidden_by", "entity_category"),
-    (
+    [
         (RegistryEntryHider.INTEGRATION, None),
         (RegistryEntryHider.USER, None),
         (None, EntityCategory.CONFIG),
         (None, EntityCategory.DIAGNOSTIC),
-    ),
+    ],
 )
 async def test_get_conditions_hidden_auxiliary(
     hass: HomeAssistant,
@@ -138,7 +125,7 @@ async def test_get_conditions_hidden_auxiliary(
             "entity_id": entity_entry.id,
             "metadata": {"secondary": True},
         }
-        for condition in ["is_hvac_mode"]
+        for condition in ("is_hvac_mode",)
     ]
     conditions = await async_get_device_automations(
         hass, DeviceAutomationType.CONDITION, device_entry.id
@@ -147,10 +134,21 @@ async def test_get_conditions_hidden_auxiliary(
 
 
 async def test_if_state(
-    hass: HomeAssistant, entity_registry: er.EntityRegistry, calls
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
+    service_calls: list[ServiceCall],
 ) -> None:
     """Test for turn_on and turn_off conditions."""
-    entry = entity_registry.async_get_or_create(DOMAIN, "test", "5678")
+    config_entry = MockConfigEntry(domain="test", data={})
+    config_entry.add_to_hass(hass)
+    device_entry = device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, "12:34:56:AB:CD:EF")},
+    )
+    entry = entity_registry.async_get_or_create(
+        DOMAIN, "test", "5678", device_id=device_entry.id
+    )
 
     assert await async_setup_component(
         hass,
@@ -163,7 +161,7 @@ async def test_if_state(
                         {
                             "condition": "device",
                             "domain": DOMAIN,
-                            "device_id": "",
+                            "device_id": device_entry.id,
                             "entity_id": entry.id,
                             "type": "is_hvac_mode",
                             "hvac_mode": "cool",
@@ -185,7 +183,7 @@ async def test_if_state(
                         {
                             "condition": "device",
                             "domain": DOMAIN,
-                            "device_id": "",
+                            "device_id": device_entry.id,
                             "entity_id": entry.id,
                             "type": "is_preset_mode",
                             "preset_mode": "away",
@@ -208,7 +206,7 @@ async def test_if_state(
     # Should not fire, entity doesn't exist yet
     hass.bus.async_fire("test_event1")
     await hass.async_block_till_done()
-    assert len(calls) == 0
+    assert len(service_calls) == 0
 
     hass.states.async_set(
         entry.entity_id,
@@ -220,8 +218,8 @@ async def test_if_state(
 
     hass.bus.async_fire("test_event1")
     await hass.async_block_till_done()
-    assert len(calls) == 1
-    assert calls[0].data["some"] == "is_hvac_mode - event - test_event1"
+    assert len(service_calls) == 1
+    assert service_calls[0].data["some"] == "is_hvac_mode - event - test_event1"
 
     hass.states.async_set(
         entry.entity_id,
@@ -234,13 +232,13 @@ async def test_if_state(
     # Should not fire
     hass.bus.async_fire("test_event1")
     await hass.async_block_till_done()
-    assert len(calls) == 1
+    assert len(service_calls) == 1
 
     hass.bus.async_fire("test_event2")
     await hass.async_block_till_done()
 
-    assert len(calls) == 2
-    assert calls[1].data["some"] == "is_preset_mode - event - test_event2"
+    assert len(service_calls) == 2
+    assert service_calls[1].data["some"] == "is_preset_mode - event - test_event2"
 
     hass.states.async_set(
         entry.entity_id,
@@ -253,14 +251,25 @@ async def test_if_state(
     # Should not fire
     hass.bus.async_fire("test_event2")
     await hass.async_block_till_done()
-    assert len(calls) == 2
+    assert len(service_calls) == 2
 
 
 async def test_if_state_legacy(
-    hass: HomeAssistant, entity_registry: er.EntityRegistry, calls
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
+    service_calls: list[ServiceCall],
 ) -> None:
     """Test for turn_on and turn_off conditions."""
-    entry = entity_registry.async_get_or_create(DOMAIN, "test", "5678")
+    config_entry = MockConfigEntry(domain="test", data={})
+    config_entry.add_to_hass(hass)
+    device_entry = device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, "12:34:56:AB:CD:EF")},
+    )
+    entry = entity_registry.async_get_or_create(
+        DOMAIN, "test", "5678", device_id=device_entry.id
+    )
 
     assert await async_setup_component(
         hass,
@@ -273,7 +282,7 @@ async def test_if_state_legacy(
                         {
                             "condition": "device",
                             "domain": DOMAIN,
-                            "device_id": "",
+                            "device_id": device_entry.id,
                             "entity_id": entry.entity_id,
                             "type": "is_hvac_mode",
                             "hvac_mode": "cool",
@@ -300,8 +309,8 @@ async def test_if_state_legacy(
 
     hass.bus.async_fire("test_event1")
     await hass.async_block_till_done()
-    assert len(calls) == 1
-    assert calls[0].data["some"] == "is_hvac_mode - event - test_event1"
+    assert len(service_calls) == 1
+    assert service_calls[0].data["some"] == "is_hvac_mode - event - test_event1"
 
 
 @pytest.mark.parametrize(
@@ -416,7 +425,7 @@ async def test_capabilities(
     assert capabilities and "extra_fields" in capabilities
 
     assert (
-        voluptuous_serialize.convert(
+        to_field_list(
             capabilities["extra_fields"], custom_serializer=cv.custom_serializer
         )
         == expected_capabilities
@@ -535,7 +544,7 @@ async def test_capabilities_legacy(
     assert capabilities and "extra_fields" in capabilities
 
     assert (
-        voluptuous_serialize.convert(
+        to_field_list(
             capabilities["extra_fields"], custom_serializer=cv.custom_serializer
         )
         == expected_capabilities
@@ -576,8 +585,22 @@ async def test_capabilities_missing_entity(
     assert capabilities and "extra_fields" in capabilities
 
     assert (
-        voluptuous_serialize.convert(
+        to_field_list(
             capabilities["extra_fields"], custom_serializer=cv.custom_serializer
         )
         == expected_capabilities
     )
+
+
+def test_is_preset_mode_without_preset_mode_is_invalid() -> None:
+    """Test the condition type selects the schema that reports the error."""
+    with pytest.raises(Invalid, match="required key not provided at 'preset_mode'"):
+        device_condition.CONDITION_SCHEMA(
+            {
+                "condition": "device",
+                "domain": DOMAIN,
+                "device_id": "abcdefgh",
+                "entity_id": "climate.test",
+                "type": "is_preset_mode",
+            }
+        )

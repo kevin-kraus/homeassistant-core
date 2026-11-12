@@ -1,30 +1,52 @@
 """The tests for the Template image platform."""
+
 from http import HTTPStatus
 from io import BytesIO
 from typing import Any
 
-import httpx
+import httpx2
 from PIL import Image
 import pytest
+from pytest_homeassistant.common import MockConfigEntry, assert_setup_component
+from pytest_homeassistant.typing import ClientSessionGenerator
 import respx
+from syrupy.assertion import SnapshotAssertion
 
 from homeassistant import setup
+from homeassistant.components import image
 from homeassistant.components.input_text import (
     ATTR_VALUE as INPUT_TEXT_ATTR_VALUE,
     DOMAIN as INPUT_TEXT_DOMAIN,
     SERVICE_SET_VALUE as INPUT_TEXT_SERVICE_SET_VALUE,
 )
+from homeassistant.components.template import DOMAIN
+from homeassistant.components.template.image import DEFAULT_NAME
 from homeassistant.const import ATTR_ENTITY_PICTURE, CONF_ENTITY_ID, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_registry import async_get
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util
 
-from tests.common import assert_setup_component
-from tests.typing import ClientSessionGenerator
+from .conftest import (
+    ConfigurationStyle,
+    TemplatePlatformSetup,
+    assert_attributes_template,
+    assert_extra_template_attributes,
+    async_trigger,
+    make_test_trigger,
+    setup_entity,
+)
 
 _DEFAULT = object()
 _TEST_IMAGE = "image.template_image"
 _URL_INPUT_TEXT = "input_text.url"
+
+TEST_STATE_ENTITY_ID = "sensor.test_state"
+
+TEST_IMAGE = TemplatePlatformSetup(
+    image.DOMAIN,
+    "test_template_image",
+    make_test_trigger(TEST_STATE_ENTITY_ID, _TEST_IMAGE, _URL_INPUT_TEXT),
+)
 
 
 @pytest.fixture
@@ -74,6 +96,39 @@ async def _assert_state(
 
 
 @respx.mock
+@pytest.mark.freeze_time("2024-07-09 00:00:00+00:00")
+async def test_setup_config_entry(
+    hass: HomeAssistant,
+    snapshot: SnapshotAssertion,
+    imgbytes_jpg,
+) -> None:
+    """Test the config flow."""
+
+    respx.get("http://example.com").respond(
+        stream=imgbytes_jpg, content_type="image/jpeg"
+    )
+
+    template_config_entry = MockConfigEntry(
+        data={},
+        domain=DOMAIN,
+        options={
+            "name": "My template",
+            "template_type": "image",
+            "url": "http://example.com",
+        },
+        title="My template",
+    )
+    template_config_entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(template_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("image.my_template")
+    assert state is not None
+    assert state.state == "2024-07-09T00:00:00+00:00"
+
+
+@respx.mock
 @pytest.mark.freeze_time("2023-04-01 00:00:00+00:00")
 async def test_platform_config(
     hass: HomeAssistant, hass_client: ClientSessionGenerator, imgbytes_jpg
@@ -115,7 +170,7 @@ async def test_missing_optional_config(
     with assert_setup_component(1, "template"):
         assert await setup.async_setup_component(
             hass,
-            "template",
+            DOMAIN,
             {
                 "template": {
                     "image": {
@@ -157,7 +212,7 @@ async def test_multiple_configs(
     with assert_setup_component(1, "template"):
         assert await setup.async_setup_component(
             hass,
-            "template",
+            DOMAIN,
             {
                 "template": {
                     "image": [
@@ -193,7 +248,7 @@ async def test_missing_required_keys(hass: HomeAssistant) -> None:
     with assert_setup_component(0, "template"):
         assert await setup.async_setup_component(
             hass,
-            "template",
+            DOMAIN,
             {
                 "template": {
                     "image": {
@@ -210,12 +265,14 @@ async def test_missing_required_keys(hass: HomeAssistant) -> None:
     assert hass.states.async_all("image") == []
 
 
-async def test_unique_id(hass: HomeAssistant) -> None:
+async def test_unique_id(
+    hass: HomeAssistant, entity_registry: er.EntityRegistry
+) -> None:
     """Test unique_id configuration."""
     with assert_setup_component(1, "template"):
         assert await setup.async_setup_component(
             hass,
-            "template",
+            DOMAIN,
             {
                 "template": {
                     "unique_id": "b",
@@ -231,8 +288,7 @@ async def test_unique_id(hass: HomeAssistant) -> None:
     await hass.async_start()
     await hass.async_block_till_done()
 
-    ent_reg = async_get(hass)
-    entry = ent_reg.async_get(_TEST_IMAGE)
+    entry = entity_registry.async_get(_TEST_IMAGE)
     assert entry
     assert entry.unique_id == "b-a"
 
@@ -250,7 +306,7 @@ async def test_custom_entity_picture(
     with assert_setup_component(1, "template"):
         assert await setup.async_setup_component(
             hass,
-            "template",
+            DOMAIN,
             {
                 "template": {
                     "image": {
@@ -280,12 +336,12 @@ async def test_template_error(
     hass: HomeAssistant, hass_client: ClientSessionGenerator
 ) -> None:
     """Test handling template error."""
-    respx.get("http://example.com").side_effect = httpx.TimeoutException
+    respx.get("http://example.com").side_effect = httpx2.TimeoutException
 
     with assert_setup_component(1, "template"):
         assert await setup.async_setup_component(
             hass,
-            "template",
+            DOMAIN,
             {
                 "template": {
                     "image": {
@@ -342,7 +398,7 @@ async def test_templates_with_entities(
     with assert_setup_component(1, "template"):
         assert await setup.async_setup_component(
             hass,
-            "template",
+            DOMAIN,
             {
                 "template": {
                     "image": {
@@ -398,7 +454,7 @@ async def test_trigger_image(
 
     assert await setup.async_setup_component(
         hass,
-        "template",
+        DOMAIN,
         {
             "template": [
                 {
@@ -460,7 +516,7 @@ async def test_trigger_image_custom_entity_picture(
 
     assert await setup.async_setup_component(
         hass,
-        "template",
+        DOMAIN,
         {
             "template": [
                 {
@@ -501,3 +557,138 @@ async def test_trigger_image_custom_entity_picture(
         imgbytes_jpg,
         expected_entity_picture="http://example2.com",
     )
+
+
+@respx.mock
+async def test_device_id(
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """Test for device for image template."""
+
+    device_config_entry = MockConfigEntry()
+    device_config_entry.add_to_hass(hass)
+    device_entry = device_registry.async_get_or_create(
+        config_entry_id=device_config_entry.entry_id,
+        identifiers={("test", "identifier_test")},
+        connections={("mac", "30:31:32:33:34:35")},
+    )
+    await hass.async_block_till_done()
+    assert device_entry is not None
+    assert device_entry.id is not None
+
+    respx.get("http://example.com").respond(
+        stream=imgbytes_jpg, content_type="image/jpeg"
+    )
+
+    template_config_entry = MockConfigEntry(
+        data={},
+        domain=DOMAIN,
+        options={
+            "name": "My template",
+            "template_type": "image",
+            "url": "http://example.com",
+            "device_id": device_entry.id,
+        },
+        title="My template",
+    )
+    template_config_entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(template_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    template_entity = entity_registry.async_get("image.mock_title_my_template")
+    assert template_entity is not None
+    assert template_entity.device_id == device_entry.id
+
+
+@pytest.mark.parametrize(
+    "style", [ConfigurationStyle.MODERN, ConfigurationStyle.TRIGGER]
+)
+async def test_extra_template_attributes(
+    hass: HomeAssistant, style: ConfigurationStyle
+) -> None:
+    """Test extra attributes."""
+    await assert_extra_template_attributes(
+        hass,
+        TEST_IMAGE,
+        style,
+        {
+            "url": "{{ 'http://example.com' }}",
+        },
+    )
+
+
+@pytest.mark.parametrize("attribute", list(image.ImageEntityStateAttribute))
+@pytest.mark.parametrize(
+    "style", [ConfigurationStyle.MODERN, ConfigurationStyle.TRIGGER]
+)
+async def test_blocked_template_attributes(
+    hass: HomeAssistant,
+    style: ConfigurationStyle,
+    attribute: image.ImageEntityStateAttribute,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test blocked extra attributes."""
+    await setup_entity(
+        hass,
+        TEST_IMAGE,
+        style,
+        0,
+        {
+            "url": "{{ 'http://example.com' }}",
+            "attributes": {str(attribute): "{{ 'does not matter' }}"},
+        },
+    )
+    assert (
+        f"Unsupported attribute(s) found for {DEFAULT_NAME}: {attribute}" in caplog.text
+    )
+
+
+@pytest.mark.parametrize(
+    "style", [ConfigurationStyle.MODERN, ConfigurationStyle.TRIGGER]
+)
+async def test_attributes_template(
+    hass: HomeAssistant,
+    style: ConfigurationStyle,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test attributes as a single template."""
+    await assert_attributes_template(
+        hass,
+        TEST_IMAGE,
+        style,
+        {
+            "url": "{{ 'http://example.com' }}",
+        },
+        caplog,
+    )
+
+
+@pytest.mark.parametrize("attribute", list(image.ImageEntityStateAttribute))
+@pytest.mark.parametrize(
+    "style", [ConfigurationStyle.MODERN, ConfigurationStyle.TRIGGER]
+)
+async def test_attributes_template_with_blocked_attributes(
+    hass: HomeAssistant,
+    style: ConfigurationStyle,
+    attribute: image.ImageEntityStateAttribute,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test blocked attributes for a single attributes template."""
+    await setup_entity(
+        hass,
+        TEST_IMAGE,
+        style,
+        1,
+        {
+            "url": "{{ 'http://example.com' }}",
+            "attributes": f"{{{{ dict({attribute}='does not matter') }}}}",
+        },
+    )
+
+    await async_trigger(hass, "sensor.test_extra_attributes", "anything")
+
+    error = f"Unsupported attribute(s) found for {TEST_IMAGE.entity_id}: {attribute}"
+    assert error in caplog.text

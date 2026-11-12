@@ -1,10 +1,11 @@
 """Config flow to configure the Venstar integration."""
-from typing import Any
 
+from typing import Any, override
+
+import probatio
 from venstarcolortouch import VenstarColorTouch
-import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import (
     CONF_HOST,
     CONF_PASSWORD,
@@ -13,11 +14,9 @@ from homeassistant.const import (
     CONF_USERNAME,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.typing import ConfigType
 
-from .const import _LOGGER, DOMAIN, VENSTAR_TIMEOUT
+from .const import DOMAIN, LOGGER, VENSTAR_TIMEOUT
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> str:
@@ -52,9 +51,10 @@ class VenstarConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Create config entry. Show the setup form to the user."""
         errors = {}
 
@@ -65,27 +65,27 @@ class VenstarConfigFlow(ConfigFlow, domain=DOMAIN):
                 title = await validate_input(self.hass, user_input)
             except CannotConnect:
                 errors["base"] = "cannot_connect"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception")
+            except Exception:  # noqa: BLE001
+                LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
                 return self.async_create_entry(title=title, data=user_input)
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_HOST): str,
-                    vol.Optional(CONF_USERNAME): str,
-                    vol.Optional(CONF_PASSWORD): str,
-                    vol.Optional(CONF_PIN): str,
-                    vol.Optional(CONF_SSL, default=False): bool,
+                    probatio.Required(CONF_HOST): str,
+                    probatio.Optional(CONF_USERNAME): str,
+                    probatio.Optional(probatio.Secret(CONF_PASSWORD)): str,
+                    probatio.Optional(probatio.Secret(CONF_PIN)): str,
+                    probatio.Optional(CONF_SSL, default=False): bool,
                 }
             ),
             errors=errors,
         )
 
-    async def async_step_import(self, import_data: ConfigType) -> FlowResult:
+    async def async_step_import(self, import_data: dict[str, Any]) -> ConfigFlowResult:
         """Import entry from configuration.yaml."""
         self._async_abort_entries_match({CONF_HOST: import_data[CONF_HOST]})
         return await self.async_step_user(

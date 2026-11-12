@@ -1,8 +1,7 @@
 """Support for Azure Event Hubs."""
-from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 import json
 import logging
@@ -11,18 +10,19 @@ from typing import Any
 from azure.eventhub import EventData, EventDataBatch
 from azure.eventhub.aio import EventHubProducerClient
 from azure.eventhub.exceptions import EventHubError
-import voluptuous as vol
+import probatio
 
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.const import MATCH_ALL
 from homeassistant.core import Event, HomeAssistant, State
 from homeassistant.exceptions import ConfigEntryNotReady
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.entityfilter import FILTER_SCHEMA
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.entityfilter import FILTER_SCHEMA, EntityFilter
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.json import JSONEncoder
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util.dt import utcnow
+from homeassistant.util.hass_dict import HassKey
 
 from .client import AzureEventHubClient
 from .const import (
@@ -34,32 +34,35 @@ from .const import (
     CONF_FILTER,
     CONF_MAX_DELAY,
     CONF_SEND_INTERVAL,
-    DATA_FILTER,
-    DATA_HUB,
     DEFAULT_MAX_DELAY,
     DOMAIN,
     FILTER_STATES,
 )
 
+type AzureEventHubConfigEntry = ConfigEntry[AzureEventHub]
+
 _LOGGER = logging.getLogger(__name__)
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        DOMAIN: vol.Schema(
+        DOMAIN: probatio.Schema(
             {
-                vol.Optional(CONF_EVENT_HUB_INSTANCE_NAME): cv.string,
-                vol.Optional(CONF_EVENT_HUB_CON_STRING): cv.string,
-                vol.Optional(CONF_EVENT_HUB_NAMESPACE): cv.string,
-                vol.Optional(CONF_EVENT_HUB_SAS_POLICY): cv.string,
-                vol.Optional(CONF_EVENT_HUB_SAS_KEY): cv.string,
-                vol.Optional(CONF_SEND_INTERVAL): cv.positive_int,
-                vol.Optional(CONF_MAX_DELAY): cv.positive_int,
-                vol.Optional(CONF_FILTER, default={}): FILTER_SCHEMA,
+                probatio.Optional(CONF_EVENT_HUB_INSTANCE_NAME): cv.string,
+                probatio.Optional(
+                    probatio.Secret(CONF_EVENT_HUB_CON_STRING)
+                ): cv.string,
+                probatio.Optional(CONF_EVENT_HUB_NAMESPACE): cv.string,
+                probatio.Optional(CONF_EVENT_HUB_SAS_POLICY): cv.string,
+                probatio.Optional(probatio.Secret(CONF_EVENT_HUB_SAS_KEY)): cv.string,
+                probatio.Optional(CONF_SEND_INTERVAL): cv.positive_int,
+                probatio.Optional(CONF_MAX_DELAY): cv.positive_int,
+                probatio.Optional(CONF_FILTER, default={}): FILTER_SCHEMA,
             },
         )
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
+DATA_COMPONENT: HassKey[EntityFilter] = HassKey(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, yaml_config: ConfigType) -> bool:
@@ -70,10 +73,10 @@ async def async_setup(hass: HomeAssistant, yaml_config: ConfigType) -> bool:
     If config is empty after getting the filter, return, otherwise emit
     deprecated warning and pass the rest to the config flow.
     """
-    hass.data.setdefault(DOMAIN, {DATA_FILTER: FILTER_SCHEMA({})})
     if DOMAIN not in yaml_config:
+        hass.data[DATA_COMPONENT] = FILTER_SCHEMA({})
         return True
-    hass.data[DOMAIN][DATA_FILTER] = yaml_config[DOMAIN].pop(CONF_FILTER)
+    hass.data[DATA_COMPONENT] = yaml_config[DOMAIN].pop(CONF_FILTER)
 
     if not yaml_config[DOMAIN]:
         return True
@@ -91,34 +94,36 @@ async def async_setup(hass: HomeAssistant, yaml_config: ConfigType) -> bool:
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(
+    hass: HomeAssistant, entry: AzureEventHubConfigEntry
+) -> None:
     """Do the setup based on the config entry and the filter from yaml."""
-    hass.data.setdefault(DOMAIN, {DATA_FILTER: FILTER_SCHEMA({})})
     hub = AzureEventHub(
         hass,
         entry,
-        hass.data[DOMAIN][DATA_FILTER],
+        hass.data[DATA_COMPONENT],
     )
     try:
         await hub.async_test_connection()
     except EventHubError as err:
         raise ConfigEntryNotReady("Could not connect to Azure Event Hub") from err
-    hass.data[DOMAIN][DATA_HUB] = hub
+    entry.runtime_data = hub
+    entry.async_on_unload(hub.async_stop)
     entry.async_on_unload(entry.add_update_listener(async_update_listener))
     await hub.async_start()
-    return True
 
 
-async def async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def async_update_listener(
+    hass: HomeAssistant, entry: AzureEventHubConfigEntry
+) -> None:
     """Update listener for options."""
-    hass.data[DOMAIN][DATA_HUB].update_options(entry.options)
+    entry.runtime_data.update_options(entry.options)
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(
+    hass: HomeAssistant, entry: AzureEventHubConfigEntry
+) -> None:
     """Unload a config entry."""
-    hub = hass.data[DOMAIN].pop(DATA_HUB)
-    await hub.async_stop()
-    return True
 
 
 class AzureEventHub:
@@ -128,7 +133,7 @@ class AzureEventHub:
         self,
         hass: HomeAssistant,
         entry: ConfigEntry,
-        entities_filter: vol.Schema,
+        entities_filter: EntityFilter,
     ) -> None:
         """Initialize the listener."""
         self.hass = hass
@@ -171,7 +176,7 @@ class AzureEventHub:
         await self.async_send(None)
         await self._queue.join()
 
-    def update_options(self, new_options: dict[str, Any]) -> None:
+    def update_options(self, new_options: Mapping[str, Any]) -> None:
         """Update options."""
         self._send_interval = new_options[CONF_SEND_INTERVAL]
 

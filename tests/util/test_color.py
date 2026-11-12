@@ -1,8 +1,12 @@
 """Test Home Assistant color util methods."""
-import pytest
-import voluptuous as vol
 
-import homeassistant.util.color as color_util
+import math
+
+import probatio
+import pytest
+from syrupy.assertion import SnapshotAssertion
+
+from homeassistant.util import color as color_util
 
 GAMUT = color_util.GamutType(
     color_util.XYPoint(0.704, 0.296),
@@ -113,6 +117,24 @@ def test_color_xy_to_RGB() -> None:
     assert color_util.color_xy_to_RGB(0, 0, GAMUT) == (9, 85, 255)
 
 
+@pytest.mark.parametrize(
+    ("x", "expected"),
+    [
+        pytest.param(1.0, (255, 0, 60), id="x_1"),
+        pytest.param(0.5, (255, 0, 227), id="x_0.5"),
+        pytest.param(0.3, (181, 0, 255), id="x_0.3"),
+    ],
+)
+@pytest.mark.parametrize("y", [5e-324, 1e-320, 5e-309])
+def test_color_xy_brightness_to_RGB_tiny_y(
+    x: float, y: float, expected: tuple[int, int, int]
+) -> None:
+    """Test a tiny nonzero y is handled like y == 0 instead of producing NaN."""
+    assert color_util.color_xy_brightness_to_RGB(x, y, 255) == expected
+    assert color_util.color_xy_brightness_to_RGB(x, 0, 255) == expected
+    assert color_util.color_xy_to_hs(x, y) == color_util.color_xy_to_hs(x, 0)
+
+
 def test_color_RGB_to_hsv() -> None:
     """Test color_RGB_to_hsv."""
     assert color_util.color_RGB_to_hsv(0, 0, 0) == (0, 0, 0)
@@ -152,6 +174,23 @@ def test_color_hsb_to_RGB() -> None:
     assert color_util.color_hsb_to_RGB(0, 1.0, 1.0) == (255, 0, 0)
 
 
+@pytest.mark.parametrize(
+    ("hue", "saturation", "brightness", "expected"),
+    [
+        pytest.param(360, 1.0, 1.0, (255, 0, 0), id="red"),
+        pytest.param(360, 0.5, 1.0, (255, 127, 127), id="half_saturation"),
+        pytest.param(360, 1.0, 0.5, (127, 0, 0), id="half_brightness"),
+        pytest.param(720, 1.0, 1.0, (255, 0, 0), id="two_turns"),
+    ],
+)
+def test_color_hsb_to_RGB_full_turn(
+    hue: float, saturation: float, brightness: float, expected: tuple[int, int, int]
+) -> None:
+    """Test color_hsb_to_RGB treats a full turn of hue like hue 0."""
+    assert color_util.color_hsb_to_RGB(hue, saturation, brightness) == expected
+    assert color_util.color_hsb_to_RGB(0, saturation, brightness) == expected
+
+
 def test_color_xy_to_hs() -> None:
     """Test color_xy_to_hs."""
     assert color_util.color_xy_to_hs(1, 1) == (47.294, 100)
@@ -177,7 +216,7 @@ def test_color_hs_to_xy() -> None:
 
     assert color_util.color_hs_to_xy(350, 12.5) == (0.356, 0.321)
 
-    assert color_util.color_hs_to_xy(140, 50) == (0.229, 0.474)
+    assert color_util.color_hs_to_xy(140, 50) == (0.23, 0.474)
 
     assert color_util.color_hs_to_xy(0, 40) == (0.474, 0.317)
 
@@ -196,17 +235,17 @@ def test_color_hs_to_xy() -> None:
 
 def test_rgb_hex_to_rgb_list() -> None:
     """Test rgb_hex_to_rgb_list."""
-    assert [255, 255, 255] == color_util.rgb_hex_to_rgb_list("ffffff")
+    assert color_util.rgb_hex_to_rgb_list("ffffff") == [255, 255, 255]
 
-    assert [0, 0, 0] == color_util.rgb_hex_to_rgb_list("000000")
+    assert color_util.rgb_hex_to_rgb_list("000000") == [0, 0, 0]
 
-    assert [255, 255, 255, 255] == color_util.rgb_hex_to_rgb_list("ffffffff")
+    assert color_util.rgb_hex_to_rgb_list("ffffffff") == [255, 255, 255, 255]
 
-    assert [0, 0, 0, 0] == color_util.rgb_hex_to_rgb_list("00000000")
+    assert color_util.rgb_hex_to_rgb_list("00000000") == [0, 0, 0, 0]
 
-    assert [51, 153, 255] == color_util.rgb_hex_to_rgb_list("3399ff")
+    assert color_util.rgb_hex_to_rgb_list("3399ff") == [51, 153, 255]
 
-    assert [51, 153, 255, 0] == color_util.rgb_hex_to_rgb_list("3399ff00")
+    assert color_util.rgb_hex_to_rgb_list("3399ff00") == [51, 153, 255, 0]
 
 
 def test_color_name_to_rgb_valid_name() -> None:
@@ -270,12 +309,21 @@ def test_color_rgbw_to_rgb() -> None:
     assert color_util.color_rgbw_to_rgb(0, 0, 0, 127) == (127, 127, 127)
 
 
+def test_color_xy_to_temperature() -> None:
+    """Test color_xy_to_temperature."""
+    assert color_util.color_xy_to_temperature(0.5119, 0.4147) == 2136
+    assert color_util.color_xy_to_temperature(0.368, 0.3686) == 4302
+    assert color_util.color_xy_to_temperature(0.4448, 0.4066) == 2893
+    assert color_util.color_xy_to_temperature(0.1, 0.8) == 8645
+    assert color_util.color_xy_to_temperature(0.5, 0.4) == 2140
+
+
 def test_color_rgb_to_hex() -> None:
     """Test color_rgb_to_hex."""
     assert color_util.color_rgb_to_hex(255, 255, 255) == "ffffff"
     assert color_util.color_rgb_to_hex(0, 0, 0) == "000000"
     assert color_util.color_rgb_to_hex(51, 153, 255) == "3399ff"
-    assert color_util.color_rgb_to_hex(255, 67.9204190, 0) == "ff4400"
+    assert color_util.color_rgb_to_hex(255, 68, 0) == "ff4400"
 
 
 def test_match_max_scale() -> None:
@@ -356,11 +404,11 @@ def test_color_below_6600_should_have_more_red_than_blue_or_green() -> None:
     assert rgb[0] > rgb[2]
 
 
-def test_get_color_in_voluptuous() -> None:
+def test_get_color_in_probatio() -> None:
     """Test using the get method in color validation."""
-    schema = vol.Schema(color_util.color_name_to_rgb)
+    schema = probatio.Schema(color_util.color_name_to_rgb)
 
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         schema("not a color")
 
     assert schema("red") == (255, 0, 0)
@@ -376,7 +424,8 @@ def test_color_rgb_to_rgbww() -> None:
         255,
         255,
     )
-    # Light with mid point at ~5500K (less warm white) -> output compensated by adding less blue
+    # Light with mid point at ~5500K (less warm white)
+    # -> output compensated by adding less blue
     assert color_util.color_rgb_to_rgbww(255, 255, 255, 1000, 10000) == (
         255,
         255,
@@ -384,7 +433,8 @@ def test_color_rgb_to_rgbww() -> None:
         0,
         0,
     )
-    # Light with mid point at ~1MK (unrealistically cold white) -> output compensated by adding red
+    # Light with mid point at ~1MK (unrealistically cold white)
+    # -> output compensated by adding red
     assert color_util.color_rgb_to_rgbww(255, 255, 255, 1000, 1000000) == (
         0,
         118,
@@ -499,6 +549,39 @@ def test_color_temperature_to_rgbww() -> None:
         56,
         72,
     )
+    # Color temperatures outside the range -> clamped to the range
+    assert color_util.color_temperature_to_rgbww(1000, 255, 2000, 6535) == (
+        0,
+        0,
+        0,
+        0,
+        255,
+    )
+    assert color_util.color_temperature_to_rgbww(9000, 255, 2000, 6535) == (
+        0,
+        0,
+        0,
+        255,
+        0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("temperature", "min_kelvin", "max_kelvin"),
+    [
+        pytest.param(2000, 2000, 2000, id="equal_min_max"),
+        pytest.param(6535, 6500, 6501, id="same_mired"),
+        pytest.param(9000, 6500, 6501, id="same_mired_clamped"),
+    ],
+)
+@pytest.mark.parametrize("brightness", [0, 128, 255])
+def test_color_temperature_to_rgbww_zero_mired_range(
+    temperature: int, brightness: int, min_kelvin: int, max_kelvin: int
+) -> None:
+    """Test a kelvin range spanning a single mired puts brightness on warm white."""
+    assert color_util.color_temperature_to_rgbww(
+        temperature, brightness, min_kelvin, max_kelvin
+    ) == (0, 0, 0, 0, brightness)
 
 
 def test_rgbww_to_color_temperature() -> None:
@@ -578,3 +661,137 @@ def test_white_levels_to_color_temperature() -> None:
         2000,
         0,
     )
+
+
+@pytest.mark.parametrize(
+    ("value", "brightness"),
+    [
+        (530, 255),  # test min==255 clamp
+        (511, 255),
+        (255, 127),
+        (49, 24),
+        (1, 1),
+        (0, 1),  # test max==1 clamp
+    ],
+)
+async def test_ranged_value_to_brightness_large(value: float, brightness: int) -> None:
+    """Test a large scale and clamping and convert a single value to a brightness."""
+    scale = (1, 511)
+
+    assert color_util.value_to_brightness(scale, value) == brightness
+
+
+@pytest.mark.parametrize(
+    ("brightness", "value", "math_ceil"),
+    [
+        (255, 511.0, 511),
+        (127, 254.49803921568628, 255),
+        (24, 48.09411764705882, 49),
+    ],
+)
+async def test_brightness_to_ranged_value_large(
+    brightness: int, value: float, math_ceil: int
+) -> None:
+    """Test a large scale and convert a brightness to a single value."""
+    scale = (1, 511)
+
+    assert color_util.brightness_to_value(scale, brightness) == value
+
+    assert math.ceil(color_util.brightness_to_value(scale, brightness)) == math_ceil
+
+
+@pytest.mark.parametrize(
+    ("scale", "value", "brightness"),
+    [
+        ((1, 4), 1, 64),
+        ((1, 4), 2, 128),
+        ((1, 4), 3, 191),
+        ((1, 4), 4, 255),
+        ((1, 6), 1, 42),
+        ((1, 6), 2, 85),
+        ((1, 6), 3, 128),
+        ((1, 6), 4, 170),
+        ((1, 6), 5, 212),
+        ((1, 6), 6, 255),
+    ],
+)
+async def test_ranged_value_to_brightness_small(
+    scale: tuple[float, float], value: float, brightness: int
+) -> None:
+    """Test a small scale and convert a single value to a brightness."""
+    assert color_util.value_to_brightness(scale, value) == brightness
+
+
+@pytest.mark.parametrize(
+    ("scale", "brightness", "value"),
+    [
+        ((1, 4), 63, 1),
+        ((1, 4), 127, 2),
+        ((1, 4), 191, 3),
+        ((1, 4), 255, 4),
+        ((1, 6), 42, 1),
+        ((1, 6), 85, 2),
+        ((1, 6), 127, 3),
+        ((1, 6), 170, 4),
+        ((1, 6), 212, 5),
+        ((1, 6), 255, 6),
+    ],
+)
+async def test_brightness_to_ranged_value_small(
+    scale: tuple[float, float], brightness: int, value: float
+) -> None:
+    """Test a small scale and convert a brightness to a single value."""
+    assert math.ceil(color_util.brightness_to_value(scale, brightness)) == value
+
+
+@pytest.mark.parametrize(
+    ("value", "brightness"),
+    [
+        (101, 2),
+        (139, 64),
+        (178, 128),
+        (217, 192),
+        (255, 255),
+    ],
+)
+async def test_ranged_value_to_brightness_starting_high(
+    value: float, brightness: int
+) -> None:
+    """Test a range that does not start with 1."""
+    scale = (101, 255)
+
+    assert color_util.value_to_brightness(scale, value) == brightness
+
+
+@pytest.mark.parametrize(
+    ("value", "brightness"),
+    [
+        (0, 64),
+        (1, 128),
+        (2, 191),
+        (3, 255),
+    ],
+)
+async def test_ranged_value_to_brightness_starting_zero(
+    value: float, brightness: int
+) -> None:
+    """Test a range that starts with 0."""
+    scale = (0, 3)
+
+    assert color_util.value_to_brightness(scale, value) == brightness
+
+
+async def test_brightness_to_254_range(snapshot: SnapshotAssertion) -> None:
+    """Test brightness scaling to a 254 range and back."""
+    brightness_range = range(1, 256)  # (1..255)
+    scale = (1, 254)
+    scaled_values = {
+        brightness: color_util.brightness_to_value(scale, brightness)
+        for brightness in brightness_range
+    }
+    assert scaled_values == snapshot
+    restored_values = {}
+    for expected_brightness, value in scaled_values.items():
+        restored_values[value] = color_util.value_to_brightness(scale, value)
+        assert color_util.value_to_brightness(scale, value) == expected_brightness
+    assert restored_values == snapshot

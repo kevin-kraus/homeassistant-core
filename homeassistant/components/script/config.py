@@ -1,19 +1,19 @@
 """Config validation helper for the script integration."""
-from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import suppress
+from enum import StrEnum
 from typing import Any
 
-import voluptuous as vol
-from voluptuous.humanize import humanize_error
+import probatio
+from probatio.humanize import humanize_error
 
 from homeassistant.components.blueprint import (
     BlueprintException,
     is_blueprint_instance_config,
 )
 from homeassistant.components.trace import TRACE_CONFIG_SCHEMA
-from homeassistant.config import config_without_domain
+from homeassistant.config import config_per_platform, config_without_domain
 from homeassistant.const import (
     CONF_ALIAS,
     CONF_DEFAULT,
@@ -23,14 +23,10 @@ from homeassistant.const import (
     CONF_SELECTOR,
     CONF_SEQUENCE,
     CONF_VARIABLES,
-    SERVICE_RELOAD,
-    SERVICE_TOGGLE,
-    SERVICE_TURN_OFF,
-    SERVICE_TURN_ON,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_per_platform, config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.script import (
     SCRIPT_MODE_SINGLE,
     async_validate_actions_config,
@@ -48,29 +44,30 @@ from .const import (
     CONF_TRACE,
     DOMAIN,
     LOGGER,
+    ScriptService,
 )
 from .helpers import async_get_blueprints
 
 PACKAGE_MERGE_HINT = "dict"
 
-_MINIMAL_SCRIPT_ENTITY_SCHEMA = vol.Schema(
+_MINIMAL_SCRIPT_ENTITY_SCHEMA = probatio.Schema(
     {
         CONF_ALIAS: cv.string,
-        vol.Optional(CONF_DESCRIPTION): cv.string,
+        probatio.Optional(CONF_DESCRIPTION): cv.string,
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
 
 _INVALID_OBJECT_IDS = {
-    SERVICE_RELOAD,
-    SERVICE_TURN_OFF,
-    SERVICE_TURN_ON,
-    SERVICE_TOGGLE,
+    ScriptService.RELOAD,
+    ScriptService.TURN_OFF,
+    ScriptService.TURN_ON,
+    ScriptService.TOGGLE,
 }
 
-_SCRIPT_OBJECT_ID_SCHEMA = vol.All(
+_SCRIPT_OBJECT_ID_SCHEMA = probatio.All(
     cv.slug,
-    vol.NotIn(
+    probatio.NotIn(
         _INVALID_OBJECT_IDS,
         (
             "A script's object_id must not be one of "
@@ -81,21 +78,21 @@ _SCRIPT_OBJECT_ID_SCHEMA = vol.All(
 
 SCRIPT_ENTITY_SCHEMA = make_script_schema(
     {
-        vol.Optional(CONF_ALIAS): cv.string,
-        vol.Optional(CONF_TRACE, default={}): TRACE_CONFIG_SCHEMA,
-        vol.Optional(CONF_ICON): cv.icon,
-        vol.Required(CONF_SEQUENCE): cv.SCRIPT_SCHEMA,
-        vol.Optional(CONF_DESCRIPTION, default=""): cv.string,
-        vol.Optional(CONF_VARIABLES): cv.SCRIPT_VARIABLES_SCHEMA,
-        vol.Optional(CONF_FIELDS, default={}): {
+        probatio.Optional(CONF_ALIAS): cv.string,
+        probatio.Optional(CONF_TRACE, default={}): TRACE_CONFIG_SCHEMA,
+        probatio.Optional(CONF_ICON): cv.icon,
+        probatio.Required(CONF_SEQUENCE): cv.SCRIPT_SCHEMA,
+        probatio.Optional(CONF_DESCRIPTION, default=""): cv.string,
+        probatio.Optional(CONF_VARIABLES): cv.SCRIPT_VARIABLES_SCHEMA,
+        probatio.Optional(CONF_FIELDS, default={}): {
             cv.string: {
-                vol.Optional(CONF_ADVANCED, default=False): cv.boolean,
-                vol.Optional(CONF_DEFAULT): cv.match_all,
-                vol.Optional(CONF_DESCRIPTION): cv.string,
-                vol.Optional(CONF_EXAMPLE): cv.string,
-                vol.Optional(CONF_NAME): cv.string,
-                vol.Optional(CONF_REQUIRED, default=False): cv.boolean,
-                vol.Optional(CONF_SELECTOR): validate_selector,
+                probatio.Optional(CONF_ADVANCED, default=False): cv.boolean,
+                probatio.Optional(CONF_DEFAULT): cv.match_all,
+                probatio.Optional(CONF_DESCRIPTION): cv.string,
+                probatio.Optional(CONF_EXAMPLE): cv.string,
+                probatio.Optional(CONF_NAME): cv.string,
+                probatio.Optional(CONF_REQUIRED, default=False): cv.boolean,
+                probatio.Optional(CONF_SELECTOR): validate_selector,
             }
         },
     },
@@ -117,6 +114,12 @@ async def _async_validate_config_item(
     with suppress(ValueError):  # Invalid config
         raw_config = dict(config)
 
+    def _humanize(err: Exception, data: Any) -> str:
+        """Humanize probatio.Invalid, stringify other exceptions."""
+        if isinstance(err, probatio.Invalid):
+            return humanize_error(data, err)
+        return str(err)
+
     def _log_invalid_script(
         err: Exception,
         script_name: str,
@@ -132,7 +135,7 @@ async def _async_validate_config_item(
                 "Blueprint '%s' generated invalid script with inputs %s: %s",
                 blueprint_inputs.blueprint.name,
                 blueprint_inputs.inputs,
-                humanize_error(data, err) if isinstance(err, vol.Invalid) else err,
+                _humanize(err, data),
             )
             return
 
@@ -140,17 +143,35 @@ async def _async_validate_config_item(
             "%s %s and has been disabled: %s",
             script_name,
             problem,
-            humanize_error(data, err) if isinstance(err, vol.Invalid) else err,
+            _humanize(err, data),
         )
         return
 
-    def _minimal_config() -> ScriptConfig:
+    def _set_validation_status(
+        script_config: ScriptConfig,
+        validation_status: ValidationStatus,
+        validation_error: Exception,
+        config: ConfigType,
+    ) -> None:
+        """Set validation status."""
+        if uses_blueprint:
+            validation_status = ValidationStatus.FAILED_BLUEPRINT
+        script_config.validation_status = validation_status
+        script_config.validation_error = _humanize(validation_error, config)
+
+    def _minimal_config(
+        validation_status: ValidationStatus,
+        validation_error: Exception,
+        config: ConfigType,
+    ) -> ScriptConfig:
         """Try validating id, alias and description."""
         minimal_config = _MINIMAL_SCRIPT_ENTITY_SCHEMA(config)
         script_config = ScriptConfig(minimal_config)
         script_config.raw_blueprint_inputs = raw_blueprint_inputs
         script_config.raw_config = raw_config
-        script_config.validation_failed = True
+        _set_validation_status(
+            script_config, validation_status, validation_error, config
+        )
         return script_config
 
     if is_blueprint_instance_config(config):
@@ -166,7 +187,7 @@ async def _async_validate_config_item(
                 )
             if raise_on_errors:
                 raise
-            return _minimal_config()
+            return _minimal_config(ValidationStatus.FAILED_BLUEPRINT, err, config)
 
         raw_blueprint_inputs = blueprint_inputs.config_with_inputs
 
@@ -183,7 +204,7 @@ async def _async_validate_config_item(
                 )
             if raise_on_errors:
                 raise HomeAssistantError(err) from err
-            return _minimal_config()
+            return _minimal_config(ValidationStatus.FAILED_BLUEPRINT, err, config)
 
     script_name = f"Script with object id '{object_id}'"
     if isinstance(config, Mapping):
@@ -192,16 +213,16 @@ async def _async_validate_config_item(
 
     try:
         _SCRIPT_OBJECT_ID_SCHEMA(object_id)
-    except vol.Invalid as err:
+    except probatio.Invalid as err:
         _log_invalid_script(err, script_name, "has invalid object id", object_id)
         raise
     try:
         validated_config = SCRIPT_ENTITY_SCHEMA(config)
-    except vol.Invalid as err:
+    except probatio.Invalid as err:
         _log_invalid_script(err, script_name, "could not be validated", config)
         if raise_on_errors:
             raise
-        return _minimal_config()
+        return _minimal_config(ValidationStatus.FAILED_SCHEMA, err, config)
 
     script_config = ScriptConfig(validated_config)
     script_config.raw_blueprint_inputs = raw_blueprint_inputs
@@ -212,18 +233,29 @@ async def _async_validate_config_item(
             hass, validated_config[CONF_SEQUENCE]
         )
     except (
-        vol.Invalid,
+        probatio.Invalid,
         HomeAssistantError,
     ) as err:
         _log_invalid_script(
-            err, script_name, "failed to setup actions", validated_config
+            err, script_name, "failed to setup sequence", validated_config
         )
         if raise_on_errors:
             raise
-        script_config.validation_failed = True
+        _set_validation_status(
+            script_config, ValidationStatus.FAILED_SEQUENCE, err, validated_config
+        )
         return script_config
 
     return script_config
+
+
+class ValidationStatus(StrEnum):
+    """What was changed in a config entry."""
+
+    FAILED_BLUEPRINT = "failed_blueprint"
+    FAILED_SCHEMA = "failed_schema"
+    FAILED_SEQUENCE = "failed_sequence"
+    OK = "ok"
 
 
 class ScriptConfig(dict):
@@ -231,7 +263,8 @@ class ScriptConfig(dict):
 
     raw_config: ConfigType | None = None
     raw_blueprint_inputs: ConfigType | None = None
-    validation_failed: bool = False
+    validation_status: ValidationStatus = ValidationStatus.OK
+    validation_error: str | None = None
 
 
 async def _try_async_validate_config_item(
@@ -242,7 +275,7 @@ async def _try_async_validate_config_item(
     """Validate config item."""
     try:
         return await _async_validate_config_item(hass, object_id, config, False, True)
-    except (vol.Invalid, HomeAssistantError):
+    except probatio.Invalid, HomeAssistantError:
         return None
 
 
@@ -255,7 +288,7 @@ async def async_validate_config_item(
     return await _async_validate_config_item(hass, object_id, config, True, False)
 
 
-async def async_validate_config(hass, config):
+async def async_validate_config(hass: HomeAssistant, config: ConfigType) -> ConfigType:
     """Validate config."""
     scripts = {}
     for _, p_config in config_per_platform(config, DOMAIN):

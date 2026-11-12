@@ -51,4 +51,11 @@ create:
         - light.ceiling
         - light.kitchen
       selector:
-        object:
+        entity:
+          multiple: true
+
+delete:
+  target:
+    entity:
+      - integration: homeassistant
+        domain: scene

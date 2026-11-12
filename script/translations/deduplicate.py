@@ -1,15 +1,13 @@
 """Deduplicate translations in strings.json."""
 
-
 import argparse
 import json
 from pathlib import Path
 
 from homeassistant.const import Platform
+from script.hassfest.translation_data import generate_upload_data
 
-from . import upload
-from .develop import flatten_translations
-from .util import get_base_arg_parser
+from .util import flatten_translations, get_base_arg_parser, load_json_from_path
 
 
 def get_arguments() -> argparse.Namespace:
@@ -31,7 +29,7 @@ ENTITY_COMPONENT_PREFIX = tuple(f"component::{domain}::" for domain in Platform)
 def run():
     """Clean translations."""
     args = get_arguments()
-    translations = upload.generate_upload_data()
+    translations = generate_upload_data(Path.cwd())
     flattened_translations = flatten_translations(translations)
     flattened_translations = {
         key: value
@@ -72,8 +70,10 @@ def run():
         # If we want to only add references to own integrations
         # but not include entity integrations
         if (
-            args.limit_reference
-            and (key_integration != key_to_reference_integration and not is_common)
+            (
+                args.limit_reference
+                and (key_integration != key_to_reference_integration and not is_common)
+            )
             # Do not create self-references in entity integrations
             or key_integration in Platform.__members__.values()
         ):
@@ -101,7 +101,7 @@ def run():
 
     for component in components:
         comp_strings_path = Path(STRINGS_PATH.format(component))
-        strings[component] = json.loads(comp_strings_path.read_text(encoding="utf-8"))
+        strings[component] = load_json_from_path(comp_strings_path)
 
     for path, value in update_keys.items():
         parts = path.split("::")

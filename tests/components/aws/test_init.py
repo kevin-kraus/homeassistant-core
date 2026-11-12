@@ -1,7 +1,15 @@
 """Tests for the aws component config and setup."""
+
+from collections import OrderedDict
 import json
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch as async_patch
 
+from pytest_homeassistant.common import MockConfigEntry
+
+from homeassistant.components.aws import DOMAIN, AWSData
+from homeassistant.components.aws.const import DATA_AWS
+from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
@@ -9,7 +17,7 @@ from homeassistant.setup import async_setup_component
 class MockAioSession:
     """Mock AioSession."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Init a mock session."""
         self.get_user = AsyncMock()
         self.invoke = AsyncMock()
@@ -43,7 +51,7 @@ async def test_empty_config(hass: HomeAssistant) -> None:
     with async_patch(
         "homeassistant.components.aws.AioSession", return_value=mock_session
     ):
-        await async_setup_component(hass, "aws", {"aws": {}})
+        await async_setup_component(hass, DOMAIN, {"aws": {}})
         await hass.async_block_till_done()
 
     # we don't validate auto-created default profile
@@ -58,7 +66,7 @@ async def test_empty_credential(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "notify": [
@@ -88,7 +96,7 @@ async def test_profile_credential(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "credentials": {"name": "test", "profile_name": "test-profile"},
@@ -123,7 +131,7 @@ async def test_access_key_credential(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "credentials": [
@@ -160,14 +168,17 @@ async def test_access_key_credential(hass: HomeAssistant) -> None:
 async def test_notify_credential(hass: HomeAssistant) -> None:
     """Test notify service can use access key directly."""
     mock_session = MockAioSession()
-    with async_patch(
-        "homeassistant.components.aws.AioSession", return_value=mock_session
-    ), async_patch(
-        "homeassistant.components.aws.notify.AioSession", return_value=mock_session
+    with (
+        async_patch(
+            "homeassistant.components.aws.AioSession", return_value=mock_session
+        ),
+        async_patch(
+            "homeassistant.components.aws.notify.AioSession", return_value=mock_session
+        ),
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "notify": [
@@ -194,14 +205,17 @@ async def test_notify_credential(hass: HomeAssistant) -> None:
 async def test_notify_credential_profile(hass: HomeAssistant) -> None:
     """Test notify service can use profile directly."""
     mock_session = MockAioSession()
-    with async_patch(
-        "homeassistant.components.aws.AioSession", return_value=mock_session
-    ), async_patch(
-        "homeassistant.components.aws.notify.AioSession", return_value=mock_session
+    with (
+        async_patch(
+            "homeassistant.components.aws.AioSession", return_value=mock_session
+        ),
+        async_patch(
+            "homeassistant.components.aws.notify.AioSession", return_value=mock_session
+        ),
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "notify": [
@@ -231,7 +245,7 @@ async def test_credential_skip_validate(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "credentials": [
@@ -250,6 +264,59 @@ async def test_credential_skip_validate(hass: HomeAssistant) -> None:
     mock_session.get_user.assert_not_awaited()
 
 
+async def test_config_removed(hass: HomeAssistant) -> None:
+    """Test setup fails and the entry is removed when the YAML config is gone."""
+    entry = MockConfigEntry(domain=DOMAIN, source=SOURCE_IMPORT, data={})
+    entry.add_to_hass(hass)
+    hass.data[DATA_AWS] = AWSData(hass_config={}, config=None, sessions=OrderedDict())
+
+    with (
+        async_patch(
+            "homeassistant.components.aws.async_setup", AsyncMock(return_value=True)
+        ),
+        async_patch.object(
+            hass.config_entries, "async_remove", AsyncMock()
+        ) as mock_remove,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id) is False
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.reason == (
+        "The AWS configuration has been removed from configuration.yaml"
+    )
+    mock_remove.assert_awaited_once_with(entry.entry_id)
+
+
+async def test_credential_validation_failed(hass: HomeAssistant) -> None:
+    """Test setup fails when a credential can't be validated."""
+    mock_session = MockAioSession()
+    mock_session.create_client = MagicMock(side_effect=Exception("Invalid credentials"))
+    with async_patch(
+        "homeassistant.components.aws.AioSession", return_value=mock_session
+    ):
+        await async_setup_component(
+            hass,
+            DOMAIN,
+            {
+                "aws": {
+                    "credentials": [
+                        {
+                            "name": "key",
+                            "aws_access_key_id": "not-valid",
+                            "aws_secret_access_key": "dont-care",
+                        }
+                    ]
+                }
+            },
+        )
+        await hass.async_block_till_done()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.reason == "Failed to validate one or more AWS credentials"
+
+
 async def test_service_call_extra_data(hass: HomeAssistant) -> None:
     """Test service call extra data are parsed properly."""
     mock_session = MockAioSession()
@@ -258,7 +325,7 @@ async def test_service_call_extra_data(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "notify": [
@@ -302,7 +369,7 @@ async def test_events_service_call(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "notify": [
@@ -355,7 +422,7 @@ async def test_events_service_call_10_targets(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "notify": [

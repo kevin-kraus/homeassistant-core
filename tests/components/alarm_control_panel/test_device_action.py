@@ -1,38 +1,27 @@
 """The tests for Alarm control panel device actions."""
+
 import pytest
+from pytest_homeassistant.common import (
+    MockConfigEntry,
+    async_get_device_automation_capabilities,
+    async_get_device_automations,
+    setup_test_component_platform,
+)
 from pytest_unordered import unordered
 
+from homeassistant.components import automation
 from homeassistant.components.alarm_control_panel import (
     DOMAIN,
     AlarmControlPanelEntityFeature,
+    AlarmControlPanelState,
 )
-import homeassistant.components.automation as automation
 from homeassistant.components.device_automation import DeviceAutomationType
-from homeassistant.const import (
-    CONF_PLATFORM,
-    STATE_ALARM_ARMED_AWAY,
-    STATE_ALARM_ARMED_HOME,
-    STATE_ALARM_ARMED_NIGHT,
-    STATE_ALARM_ARMED_VACATION,
-    STATE_ALARM_DISARMED,
-    STATE_ALARM_TRIGGERED,
-    STATE_UNKNOWN,
-    EntityCategory,
-)
+from homeassistant.const import CONF_PLATFORM, STATE_UNKNOWN, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.setup import async_setup_component
 
-from tests.common import (
-    MockConfigEntry,
-    async_get_device_automation_capabilities,
-    async_get_device_automations,
-)
-
-
-@pytest.fixture(autouse=True, name="stub_blueprint_populate")
-def stub_blueprint_populate_autouse(stub_blueprint_populate: None) -> None:
-    """Stub copying the blueprints to the config folder."""
+from .common import MockAlarm
 
 
 @pytest.mark.parametrize(
@@ -111,7 +100,9 @@ async def test_get_actions(
     )
     if set_state:
         hass.states.async_set(
-            f"{DOMAIN}.test_5678", "attributes", {"supported_features": features_state}
+            entity_entry.entity_id,
+            "attributes",
+            {"supported_features": features_state},
         )
     expected_actions = [
         {
@@ -131,12 +122,12 @@ async def test_get_actions(
 
 @pytest.mark.parametrize(
     ("hidden_by", "entity_category"),
-    (
+    [
         (er.RegistryEntryHider.INTEGRATION, None),
         (er.RegistryEntryHider.USER, None),
         (None, EntityCategory.CONFIG),
         (None, EntityCategory.DIAGNOSTIC),
-    ),
+    ],
 )
 async def test_get_actions_hidden_auxiliary(
     hass: HomeAssistant,
@@ -170,7 +161,7 @@ async def test_get_actions_hidden_auxiliary(
             "entity_id": entity_entry.id,
             "metadata": {"secondary": True},
         }
-        for action in ["disarm", "arm_away"]
+        for action in ("disarm", "arm_away")
     ]
     actions = await async_get_device_automations(
         hass, DeviceAutomationType.ACTION, device_entry.id
@@ -194,7 +185,7 @@ async def test_get_actions_arm_night_only(
         DOMAIN, "test", "5678", device_id=device_entry.id
     )
     hass.states.async_set(
-        "alarm_control_panel.test_5678", "attributes", {"supported_features": 4}
+        entity_entry.entity_id, "attributes", {"supported_features": 4}
     )
     expected_actions = [
         {
@@ -222,11 +213,12 @@ async def test_get_action_capabilities(
     hass: HomeAssistant,
     device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
+    mock_alarm_control_panel_entities: dict[str, MockAlarm],
 ) -> None:
     """Test we get the expected capabilities from a sensor trigger."""
-    platform = getattr(hass.components, f"test.{DOMAIN}")
-    platform.init()
+    setup_test_component_platform(
+        hass, DOMAIN, mock_alarm_control_panel_entities.values()
+    )
     assert await async_setup_component(hass, DOMAIN, {DOMAIN: {CONF_PLATFORM: "test"}})
     await hass.async_block_till_done()
 
@@ -239,7 +231,7 @@ async def test_get_action_capabilities(
     entity_registry.async_get_or_create(
         DOMAIN,
         "test",
-        platform.ENTITIES["no_arm_code"].unique_id,
+        mock_alarm_control_panel_entities["no_arm_code"].unique_id,
         device_id=device_entry.id,
     )
 
@@ -249,7 +241,9 @@ async def test_get_action_capabilities(
         "arm_night": {"extra_fields": []},
         "arm_vacation": {"extra_fields": []},
         "disarm": {
-            "extra_fields": [{"name": "code", "optional": True, "type": "string"}]
+            "extra_fields": [
+                {"name": "code", "optional": True, "required": False, "type": "string"}
+            ]
         },
         "trigger": {"extra_fields": []},
     }
@@ -269,11 +263,12 @@ async def test_get_action_capabilities_legacy(
     hass: HomeAssistant,
     device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
+    mock_alarm_control_panel_entities: dict[str, MockAlarm],
 ) -> None:
     """Test we get the expected capabilities from a sensor trigger."""
-    platform = getattr(hass.components, f"test.{DOMAIN}")
-    platform.init()
+    setup_test_component_platform(
+        hass, DOMAIN, mock_alarm_control_panel_entities.values()
+    )
     assert await async_setup_component(hass, DOMAIN, {DOMAIN: {CONF_PLATFORM: "test"}})
     await hass.async_block_till_done()
 
@@ -286,7 +281,7 @@ async def test_get_action_capabilities_legacy(
     entity_registry.async_get_or_create(
         DOMAIN,
         "test",
-        platform.ENTITIES["no_arm_code"].unique_id,
+        mock_alarm_control_panel_entities["no_arm_code"].unique_id,
         device_id=device_entry.id,
     )
 
@@ -296,7 +291,9 @@ async def test_get_action_capabilities_legacy(
         "arm_night": {"extra_fields": []},
         "arm_vacation": {"extra_fields": []},
         "disarm": {
-            "extra_fields": [{"name": "code", "optional": True, "type": "string"}]
+            "extra_fields": [
+                {"name": "code", "optional": True, "required": False, "type": "string"}
+            ]
         },
         "trigger": {"extra_fields": []},
     }
@@ -317,11 +314,12 @@ async def test_get_action_capabilities_arm_code(
     hass: HomeAssistant,
     device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
+    mock_alarm_control_panel_entities: dict[str, MockAlarm],
 ) -> None:
     """Test we get the expected capabilities from a sensor trigger."""
-    platform = getattr(hass.components, f"test.{DOMAIN}")
-    platform.init()
+    setup_test_component_platform(
+        hass, DOMAIN, mock_alarm_control_panel_entities.values()
+    )
     assert await async_setup_component(hass, DOMAIN, {DOMAIN: {CONF_PLATFORM: "test"}})
     await hass.async_block_till_done()
 
@@ -334,25 +332,35 @@ async def test_get_action_capabilities_arm_code(
     entity_registry.async_get_or_create(
         DOMAIN,
         "test",
-        platform.ENTITIES["arm_code"].unique_id,
+        mock_alarm_control_panel_entities["arm_code"].unique_id,
         device_id=device_entry.id,
     )
 
     expected_capabilities = {
         "arm_away": {
-            "extra_fields": [{"name": "code", "optional": True, "type": "string"}]
+            "extra_fields": [
+                {"name": "code", "optional": True, "required": False, "type": "string"}
+            ]
         },
         "arm_home": {
-            "extra_fields": [{"name": "code", "optional": True, "type": "string"}]
+            "extra_fields": [
+                {"name": "code", "optional": True, "required": False, "type": "string"}
+            ]
         },
         "arm_night": {
-            "extra_fields": [{"name": "code", "optional": True, "type": "string"}]
+            "extra_fields": [
+                {"name": "code", "optional": True, "required": False, "type": "string"}
+            ]
         },
         "arm_vacation": {
-            "extra_fields": [{"name": "code", "optional": True, "type": "string"}]
+            "extra_fields": [
+                {"name": "code", "optional": True, "required": False, "type": "string"}
+            ]
         },
         "disarm": {
-            "extra_fields": [{"name": "code", "optional": True, "type": "string"}]
+            "extra_fields": [
+                {"name": "code", "optional": True, "required": False, "type": "string"}
+            ]
         },
         "trigger": {"extra_fields": []},
     }
@@ -372,11 +380,12 @@ async def test_get_action_capabilities_arm_code_legacy(
     hass: HomeAssistant,
     device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
+    mock_alarm_control_panel_entities: dict[str, MockAlarm],
 ) -> None:
     """Test we get the expected capabilities from a sensor trigger."""
-    platform = getattr(hass.components, f"test.{DOMAIN}")
-    platform.init()
+    setup_test_component_platform(
+        hass, DOMAIN, mock_alarm_control_panel_entities.values()
+    )
     assert await async_setup_component(hass, DOMAIN, {DOMAIN: {CONF_PLATFORM: "test"}})
     await hass.async_block_till_done()
 
@@ -389,25 +398,35 @@ async def test_get_action_capabilities_arm_code_legacy(
     entity_registry.async_get_or_create(
         DOMAIN,
         "test",
-        platform.ENTITIES["arm_code"].unique_id,
+        mock_alarm_control_panel_entities["arm_code"].unique_id,
         device_id=device_entry.id,
     )
 
     expected_capabilities = {
         "arm_away": {
-            "extra_fields": [{"name": "code", "optional": True, "type": "string"}]
+            "extra_fields": [
+                {"name": "code", "optional": True, "required": False, "type": "string"}
+            ]
         },
         "arm_home": {
-            "extra_fields": [{"name": "code", "optional": True, "type": "string"}]
+            "extra_fields": [
+                {"name": "code", "optional": True, "required": False, "type": "string"}
+            ]
         },
         "arm_night": {
-            "extra_fields": [{"name": "code", "optional": True, "type": "string"}]
+            "extra_fields": [
+                {"name": "code", "optional": True, "required": False, "type": "string"}
+            ]
         },
         "arm_vacation": {
-            "extra_fields": [{"name": "code", "optional": True, "type": "string"}]
+            "extra_fields": [
+                {"name": "code", "optional": True, "required": False, "type": "string"}
+            ]
         },
         "disarm": {
-            "extra_fields": [{"name": "code", "optional": True, "type": "string"}]
+            "extra_fields": [
+                {"name": "code", "optional": True, "required": False, "type": "string"}
+            ]
         },
         "trigger": {"extra_fields": []},
     }
@@ -426,17 +445,26 @@ async def test_get_action_capabilities_arm_code_legacy(
 
 async def test_action(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
+    mock_alarm_control_panel_entities: dict[str, MockAlarm],
 ) -> None:
     """Test for turn_on and turn_off actions."""
-    platform = getattr(hass.components, f"test.{DOMAIN}")
-    platform.init()
+    setup_test_component_platform(
+        hass, DOMAIN, mock_alarm_control_panel_entities.values()
+    )
 
+    config_entry = MockConfigEntry(domain="test", data={})
+    config_entry.add_to_hass(hass)
+    device_entry = device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, "12:34:56:AB:CD:EF")},
+    )
     entity_entry = entity_registry.async_get_or_create(
         DOMAIN,
         "test",
-        platform.ENTITIES["no_arm_code"].unique_id,
+        mock_alarm_control_panel_entities["no_arm_code"].unique_id,
+        device_id=device_entry.id,
     )
 
     assert await async_setup_component(
@@ -451,7 +479,7 @@ async def test_action(
                     },
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entity_entry.id,
                         "type": "arm_away",
                     },
@@ -463,7 +491,7 @@ async def test_action(
                     },
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entity_entry.id,
                         "type": "arm_home",
                     },
@@ -475,7 +503,7 @@ async def test_action(
                     },
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entity_entry.id,
                         "type": "arm_night",
                     },
@@ -487,7 +515,7 @@ async def test_action(
                     },
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entity_entry.id,
                         "type": "arm_vacation",
                     },
@@ -496,7 +524,7 @@ async def test_action(
                     "trigger": {"platform": "event", "event_type": "test_event_disarm"},
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entity_entry.id,
                         "type": "disarm",
                         "code": "1234",
@@ -509,7 +537,7 @@ async def test_action(
                     },
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entity_entry.id,
                         "type": "trigger",
                     },
@@ -524,42 +552,68 @@ async def test_action(
 
     hass.bus.async_fire("test_event_arm_away")
     await hass.async_block_till_done()
-    assert hass.states.get(entity_entry.entity_id).state == STATE_ALARM_ARMED_AWAY
+    assert (
+        hass.states.get(entity_entry.entity_id).state
+        == AlarmControlPanelState.ARMED_AWAY
+    )
 
     hass.bus.async_fire("test_event_arm_home")
     await hass.async_block_till_done()
-    assert hass.states.get(entity_entry.entity_id).state == STATE_ALARM_ARMED_HOME
+    assert (
+        hass.states.get(entity_entry.entity_id).state
+        == AlarmControlPanelState.ARMED_HOME
+    )
 
     hass.bus.async_fire("test_event_arm_vacation")
     await hass.async_block_till_done()
-    assert hass.states.get(entity_entry.entity_id).state == STATE_ALARM_ARMED_VACATION
+    assert (
+        hass.states.get(entity_entry.entity_id).state
+        == AlarmControlPanelState.ARMED_VACATION
+    )
 
     hass.bus.async_fire("test_event_arm_night")
     await hass.async_block_till_done()
-    assert hass.states.get(entity_entry.entity_id).state == STATE_ALARM_ARMED_NIGHT
+    assert (
+        hass.states.get(entity_entry.entity_id).state
+        == AlarmControlPanelState.ARMED_NIGHT
+    )
 
     hass.bus.async_fire("test_event_disarm")
     await hass.async_block_till_done()
-    assert hass.states.get(entity_entry.entity_id).state == STATE_ALARM_DISARMED
+    assert (
+        hass.states.get(entity_entry.entity_id).state == AlarmControlPanelState.DISARMED
+    )
 
     hass.bus.async_fire("test_event_trigger")
     await hass.async_block_till_done()
-    assert hass.states.get(entity_entry.entity_id).state == STATE_ALARM_TRIGGERED
+    assert (
+        hass.states.get(entity_entry.entity_id).state
+        == AlarmControlPanelState.TRIGGERED
+    )
 
 
 async def test_action_legacy(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
+    mock_alarm_control_panel_entities: dict[str, MockAlarm],
 ) -> None:
     """Test for turn_on and turn_off actions."""
-    platform = getattr(hass.components, f"test.{DOMAIN}")
-    platform.init()
+    setup_test_component_platform(
+        hass, DOMAIN, mock_alarm_control_panel_entities.values()
+    )
 
+    config_entry = MockConfigEntry(domain="test", data={})
+    config_entry.add_to_hass(hass)
+    device_entry = device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, "12:34:56:AB:CD:EF")},
+    )
     entity_entry = entity_registry.async_get_or_create(
         DOMAIN,
         "test",
-        platform.ENTITIES["no_arm_code"].unique_id,
+        mock_alarm_control_panel_entities["no_arm_code"].unique_id,
+        device_id=device_entry.id,
     )
 
     assert await async_setup_component(
@@ -574,7 +628,7 @@ async def test_action_legacy(
                     },
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entity_entry.entity_id,
                         "type": "arm_away",
                     },
@@ -589,4 +643,7 @@ async def test_action_legacy(
 
     hass.bus.async_fire("test_event_arm_away")
     await hass.async_block_till_done()
-    assert hass.states.get(entity_entry.entity_id).state == STATE_ALARM_ARMED_AWAY
+    assert (
+        hass.states.get(entity_entry.entity_id).state
+        == AlarmControlPanelState.ARMED_AWAY
+    )

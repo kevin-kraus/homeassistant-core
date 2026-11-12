@@ -1,41 +1,44 @@
 """The tests for the Input text component."""
+
+from typing import Any
 from unittest.mock import patch
 
 import pytest
+from pytest_homeassistant.common import MockUser, mock_restore_cache
+from pytest_homeassistant.typing import WebSocketGenerator
 
 from homeassistant.components.input_text import (
-    ATTR_MAX,
-    ATTR_MIN,
-    ATTR_MODE,
-    ATTR_VALUE,
     CONF_INITIAL,
     CONF_MAX_VALUE,
     CONF_MIN_VALUE,
     DOMAIN,
     MODE_TEXT,
-    SERVICE_SET_VALUE,
 )
+from homeassistant.components.input_text.const import (
+    CONF_MAX,
+    CONF_MIN,
+    InputTextEntityStateAttribute,
+    InputTextService,
+    InputTextServiceArgument,
+)
+from homeassistant.components.text import TextEntityCapabilityAttribute
 from homeassistant.const import (
-    ATTR_EDITABLE,
     ATTR_ENTITY_ID,
-    ATTR_FRIENDLY_NAME,
-    ATTR_NAME,
-    SERVICE_RELOAD,
+    CONF_MODE,
+    CONF_NAME,
+    EntityStateAttribute,
 )
 from homeassistant.core import Context, CoreState, HomeAssistant, State
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 
-from tests.common import MockUser, mock_restore_cache
-from tests.typing import WebSocketGenerator
-
 TEST_VAL_MIN = 2
 TEST_VAL_MAX = 22
 
 
 @pytest.fixture
-def storage_setup(hass, hass_storage):
+def storage_setup(hass: HomeAssistant, hass_storage: dict[str, Any]):
     """Storage setup."""
 
     async def _storage(items=None, config=None):
@@ -49,9 +52,9 @@ def storage_setup(hass, hass_storage):
                             "id": "from_storage",
                             "name": "from storage",
                             "initial": "loaded from storage",
-                            ATTR_MAX: TEST_VAL_MAX,
-                            ATTR_MIN: TEST_VAL_MIN,
-                            ATTR_MODE: MODE_TEXT,
+                            CONF_MAX: TEST_VAL_MAX,
+                            CONF_MIN: TEST_VAL_MIN,
+                            CONF_MODE: MODE_TEXT,
                         }
                     ]
                 },
@@ -69,26 +72,31 @@ def storage_setup(hass, hass_storage):
     return _storage
 
 
-async def async_set_value(hass, entity_id, value):
+async def async_set_value(hass: HomeAssistant, entity_id: str, value: str) -> None:
     """Set input_text to value."""
     await hass.services.async_call(
         DOMAIN,
-        SERVICE_SET_VALUE,
-        {ATTR_ENTITY_ID: entity_id, ATTR_VALUE: value},
+        InputTextService.SET_VALUE,
+        {ATTR_ENTITY_ID: entity_id, InputTextServiceArgument.VALUE: value},
         blocking=True,
     )
 
 
-async def test_config(hass: HomeAssistant) -> None:
-    """Test config."""
-    invalid_configs = [
+@pytest.mark.parametrize(
+    "invalid_config",
+    [
         None,
-        {},
         {"name with space": None},
-        {"test_1": {"min": 50, "max": 50}},
-    ]
-    for cfg in invalid_configs:
-        assert not await async_setup_component(hass, DOMAIN, {DOMAIN: cfg})
+        {"test_1": {"min": 51, "max": 50}},
+        {"test_1": {"min": -1, "max": 100}},
+        {"test_1": {"min": 0, "max": 256}},
+        {"test_1": {"min": 0, "max": 3, "initial": "aaaaa"}},
+    ],
+)
+async def test_config(hass: HomeAssistant, invalid_config) -> None:
+    """Test config."""
+
+    assert not await async_setup_component(hass, DOMAIN, {DOMAIN: invalid_config})
 
 
 async def test_set_value(hass: HomeAssistant) -> None:
@@ -165,7 +173,7 @@ async def test_restore_state(hass: HomeAssistant) -> None:
         (State("input_text.b1", "test"), State("input_text.b2", "testing too long")),
     )
 
-    hass.state = CoreState.starting
+    hass.set_state(CoreState.starting)
 
     assert await async_setup_component(
         hass, DOMAIN, {DOMAIN: {"b1": None, "b2": {"min": 0, "max": 10}}}
@@ -187,7 +195,7 @@ async def test_initial_state_overrules_restore_state(hass: HomeAssistant) -> Non
         (State("input_text.b1", "testing"), State("input_text.b2", "testing too long")),
     )
 
-    hass.state = CoreState.starting
+    hass.set_state(CoreState.starting)
 
     await async_setup_component(
         hass,
@@ -211,7 +219,7 @@ async def test_initial_state_overrules_restore_state(hass: HomeAssistant) -> Non
 
 async def test_no_initial_state_and_no_restore_state(hass: HomeAssistant) -> None:
     """Ensure that entity is create without initial and restore feature."""
-    hass.state = CoreState.starting
+    hass.set_state(CoreState.starting)
 
     await async_setup_component(hass, DOMAIN, {DOMAIN: {"b1": {"min": 0, "max": 100}}})
 
@@ -225,7 +233,7 @@ async def test_input_text_context(
 ) -> None:
     """Test that input_text context works."""
     assert await async_setup_component(
-        hass, "input_text", {"input_text": {"t1": {"initial": "bla"}}}
+        hass, DOMAIN, {"input_text": {"t1": {"initial": "bla"}}}
     )
 
     state = hass.states.get("input_text.t1")
@@ -254,9 +262,9 @@ async def test_config_none(hass: HomeAssistant) -> None:
     assert str(state.state) == "unknown"
 
     # with empty config we still should have the defaults
-    assert state.attributes[ATTR_MODE] == MODE_TEXT
-    assert state.attributes[ATTR_MAX] == CONF_MAX_VALUE
-    assert state.attributes[ATTR_MIN] == CONF_MIN_VALUE
+    assert state.attributes[TextEntityCapabilityAttribute.MODE] == MODE_TEXT
+    assert state.attributes[TextEntityCapabilityAttribute.MAX] == CONF_MAX_VALUE
+    assert state.attributes[TextEntityCapabilityAttribute.MIN] == CONF_MIN_VALUE
 
 
 async def test_reload(
@@ -282,29 +290,29 @@ async def test_reload(
     assert state_3 is None
     assert state_1.state == "test 1"
     assert state_2.state == "test 2"
-    assert state_1.attributes[ATTR_MIN] == 0
-    assert state_2.attributes[ATTR_MAX] == 100
+    assert state_1.attributes[TextEntityCapabilityAttribute.MIN] == 0
+    assert state_2.attributes[TextEntityCapabilityAttribute.MAX] == 100
 
     with patch(
         "homeassistant.config.load_yaml_config_file",
         autospec=True,
         return_value={
             DOMAIN: {
-                "test_2": {"initial": "test reloaded", ATTR_MIN: 12},
-                "test_3": {"initial": "test 3", ATTR_MAX: 21},
+                "test_2": {"initial": "test reloaded", CONF_MIN: 6},
+                "test_3": {"initial": "test 3", CONF_MAX: 21},
             }
         },
     ):
         with pytest.raises(Unauthorized):
             await hass.services.async_call(
                 DOMAIN,
-                SERVICE_RELOAD,
+                InputTextService.RELOAD,
                 blocking=True,
                 context=Context(user_id=hass_read_only_user.id),
             )
         await hass.services.async_call(
             DOMAIN,
-            SERVICE_RELOAD,
+            InputTextService.RELOAD,
             blocking=True,
             context=Context(user_id=hass_admin_user.id),
         )
@@ -319,8 +327,8 @@ async def test_reload(
     assert state_1 is None
     assert state_2 is not None
     assert state_3 is not None
-    assert state_2.attributes[ATTR_MIN] == 12
-    assert state_3.attributes[ATTR_MAX] == 21
+    assert state_2.attributes[TextEntityCapabilityAttribute.MIN] == 6
+    assert state_3.attributes[TextEntityCapabilityAttribute.MAX] == 21
 
 
 async def test_load_from_storage(hass: HomeAssistant, storage_setup) -> None:
@@ -328,9 +336,9 @@ async def test_load_from_storage(hass: HomeAssistant, storage_setup) -> None:
     assert await storage_setup()
     state = hass.states.get(f"{DOMAIN}.from_storage")
     assert state.state == "loaded from storage"
-    assert state.attributes.get(ATTR_EDITABLE)
-    assert state.attributes[ATTR_MAX] == TEST_VAL_MAX
-    assert state.attributes[ATTR_MIN] == TEST_VAL_MIN
+    assert state.attributes.get(InputTextEntityStateAttribute.EDITABLE)
+    assert state.attributes[TextEntityCapabilityAttribute.MAX] == TEST_VAL_MAX
+    assert state.attributes[TextEntityCapabilityAttribute.MIN] == TEST_VAL_MIN
 
 
 async def test_editable_state_attribute(hass: HomeAssistant, storage_setup) -> None:
@@ -340,10 +348,10 @@ async def test_editable_state_attribute(hass: HomeAssistant, storage_setup) -> N
             DOMAIN: {
                 "from_yaml": {
                     "initial": "yaml initial value",
-                    ATTR_MODE: MODE_TEXT,
-                    ATTR_MAX: 33,
-                    ATTR_MIN: 3,
-                    ATTR_NAME: "yaml friendly name",
+                    CONF_MODE: MODE_TEXT,
+                    CONF_MAX: 33,
+                    CONF_MIN: 3,
+                    CONF_NAME: "yaml friendly name",
                 }
             }
         }
@@ -351,15 +359,15 @@ async def test_editable_state_attribute(hass: HomeAssistant, storage_setup) -> N
 
     state = hass.states.get(f"{DOMAIN}.from_storage")
     assert state.state == "loaded from storage"
-    assert state.attributes.get(ATTR_EDITABLE)
-    assert state.attributes[ATTR_MAX] == TEST_VAL_MAX
-    assert state.attributes[ATTR_MIN] == TEST_VAL_MIN
+    assert state.attributes.get(InputTextEntityStateAttribute.EDITABLE)
+    assert state.attributes[TextEntityCapabilityAttribute.MAX] == TEST_VAL_MAX
+    assert state.attributes[TextEntityCapabilityAttribute.MIN] == TEST_VAL_MIN
 
     state = hass.states.get(f"{DOMAIN}.from_yaml")
     assert state.state == "yaml initial value"
-    assert not state.attributes[ATTR_EDITABLE]
-    assert state.attributes[ATTR_MAX] == 33
-    assert state.attributes[ATTR_MIN] == 3
+    assert not state.attributes[InputTextEntityStateAttribute.EDITABLE]
+    assert state.attributes[TextEntityCapabilityAttribute.MAX] == 33
+    assert state.attributes[TextEntityCapabilityAttribute.MIN] == 3
 
 
 async def test_ws_list(
@@ -371,10 +379,10 @@ async def test_ws_list(
             DOMAIN: {
                 "from_yaml": {
                     "initial": "yaml initial value",
-                    ATTR_MODE: MODE_TEXT,
-                    ATTR_MAX: 33,
-                    ATTR_MIN: 3,
-                    ATTR_NAME: "yaml friendly name",
+                    CONF_MODE: MODE_TEXT,
+                    CONF_MAX: 33,
+                    CONF_MIN: 3,
+                    CONF_NAME: "yaml friendly name",
                 }
             }
         }
@@ -393,22 +401,24 @@ async def test_ws_list(
     assert len(result) == 1
     assert storage_ent in result
     assert yaml_ent not in result
-    assert result[storage_ent][ATTR_NAME] == "from storage"
+    assert result[storage_ent][CONF_NAME] == "from storage"
 
 
 async def test_ws_delete(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, storage_setup
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    hass_ws_client: WebSocketGenerator,
+    storage_setup,
 ) -> None:
     """Test WS delete cleans up entity registry."""
     assert await storage_setup()
 
     input_id = "from_storage"
     input_entity_id = f"{DOMAIN}.{input_id}"
-    ent_reg = er.async_get(hass)
 
     state = hass.states.get(input_entity_id)
     assert state is not None
-    assert ent_reg.async_get_entity_id(DOMAIN, DOMAIN, input_id) is not None
+    assert entity_registry.async_get_entity_id(DOMAIN, DOMAIN, input_id) is not None
 
     client = await hass_ws_client(hass)
 
@@ -420,11 +430,14 @@ async def test_ws_delete(
 
     state = hass.states.get(input_entity_id)
     assert state is None
-    assert ent_reg.async_get_entity_id(DOMAIN, DOMAIN, input_id) is None
+    assert entity_registry.async_get_entity_id(DOMAIN, DOMAIN, input_id) is None
 
 
 async def test_update(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, storage_setup
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    hass_ws_client: WebSocketGenerator,
+    storage_setup,
 ) -> None:
     """Test updating min/max updates the state."""
 
@@ -432,22 +445,21 @@ async def test_update(
 
     input_id = "from_storage"
     input_entity_id = f"{DOMAIN}.{input_id}"
-    ent_reg = er.async_get(hass)
 
     state = hass.states.get(input_entity_id)
-    assert state.attributes[ATTR_FRIENDLY_NAME] == "from storage"
-    assert state.attributes[ATTR_MODE] == MODE_TEXT
+    assert state.attributes[EntityStateAttribute.FRIENDLY_NAME] == "from storage"
+    assert state.attributes[TextEntityCapabilityAttribute.MODE] == MODE_TEXT
     assert state.state == "loaded from storage"
-    assert ent_reg.async_get_entity_id(DOMAIN, DOMAIN, input_id) is not None
+    assert entity_registry.async_get_entity_id(DOMAIN, DOMAIN, input_id) is not None
 
     client = await hass_ws_client(hass)
 
     updated_settings = {
-        ATTR_NAME: "even newer name",
+        CONF_NAME: "even newer name",
         CONF_INITIAL: "newer option",
-        ATTR_MAX: TEST_VAL_MAX,
-        ATTR_MIN: 6,
-        ATTR_MODE: "password",
+        CONF_MAX: TEST_VAL_MAX,
+        CONF_MIN: 6,
+        CONF_MODE: "password",
     }
     await client.send_json(
         {
@@ -463,25 +475,27 @@ async def test_update(
 
     state = hass.states.get(input_entity_id)
     assert state.state == "loaded from storage"
-    assert state.attributes[ATTR_FRIENDLY_NAME] == "even newer name"
-    assert state.attributes[ATTR_MODE] == "password"
-    assert state.attributes[ATTR_MIN] == 6
-    assert state.attributes[ATTR_MAX] == TEST_VAL_MAX
+    assert state.attributes[EntityStateAttribute.FRIENDLY_NAME] == "even newer name"
+    assert state.attributes[TextEntityCapabilityAttribute.MODE] == "password"
+    assert state.attributes[TextEntityCapabilityAttribute.MIN] == 6
+    assert state.attributes[TextEntityCapabilityAttribute.MAX] == TEST_VAL_MAX
 
 
 async def test_ws_create(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, storage_setup
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    hass_ws_client: WebSocketGenerator,
+    storage_setup,
 ) -> None:
     """Test create WS."""
     assert await storage_setup(items=[])
 
     input_id = "new_input"
     input_entity_id = f"{DOMAIN}.{input_id}"
-    ent_reg = er.async_get(hass)
 
     state = hass.states.get(input_entity_id)
     assert state is None
-    assert ent_reg.async_get_entity_id(DOMAIN, DOMAIN, input_id) is None
+    assert entity_registry.async_get_entity_id(DOMAIN, DOMAIN, input_id) is None
 
     client = await hass_ws_client(hass)
 
@@ -491,7 +505,7 @@ async def test_ws_create(
             "type": f"{DOMAIN}/create",
             "name": "New Input",
             "initial": "even newer option",
-            ATTR_MAX: 44,
+            CONF_MAX: 44,
         }
     )
     resp = await client.receive_json()
@@ -499,10 +513,10 @@ async def test_ws_create(
 
     state = hass.states.get(input_entity_id)
     assert state.state == "even newer option"
-    assert state.attributes[ATTR_FRIENDLY_NAME] == "New Input"
-    assert state.attributes[ATTR_EDITABLE]
-    assert state.attributes[ATTR_MAX] == 44
-    assert state.attributes[ATTR_MIN] == 0
+    assert state.attributes[EntityStateAttribute.FRIENDLY_NAME] == "New Input"
+    assert state.attributes[InputTextEntityStateAttribute.EDITABLE]
+    assert state.attributes[TextEntityCapabilityAttribute.MAX] == 44
+    assert state.attributes[TextEntityCapabilityAttribute.MIN] == 0
 
 
 async def test_setup_no_config(hass: HomeAssistant, hass_admin_user: MockUser) -> None:
@@ -515,7 +529,7 @@ async def test_setup_no_config(hass: HomeAssistant, hass_admin_user: MockUser) -
     ):
         await hass.services.async_call(
             DOMAIN,
-            SERVICE_RELOAD,
+            InputTextService.RELOAD,
             blocking=True,
             context=Context(user_id=hass_admin_user.id),
         )

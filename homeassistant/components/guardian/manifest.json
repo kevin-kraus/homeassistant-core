@@ -1,8 +1,10 @@
 {
   "domain": "guardian",
   "name": "Elexa Guardian",
+  "categories": ["water.meters_leak_detection"],
   "codeowners": ["@bachya"],
   "config_flow": true,
+  "connectivity": ["network"],
   "dhcp": [
     {
       "hostname": "gvc*",
@@ -21,6 +23,6 @@
   "integration_type": "device",
   "iot_class": "local_polling",
   "loggers": ["aioguardian"],
-  "requirements": ["aioguardian==2022.07.0"],
+  "requirements": ["aioguardian==2026.01.1"],
   "zeroconf": ["_api._udp.local."]
 }

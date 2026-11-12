@@ -1,10 +1,9 @@
 """Support for IPP sensors."""
-from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import datetime
+from typing import Any, override
 
 from pyipp import Marker, Printer
 
@@ -12,13 +11,12 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
+    SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_LOCATION, PERCENTAGE, EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
-from homeassistant.util.dt import utcnow
 
 from .const import (
     ATTR_COMMAND_SET,
@@ -30,26 +28,18 @@ from .const import (
     ATTR_STATE_MESSAGE,
     ATTR_STATE_REASON,
     ATTR_URI_SUPPORTED,
-    DOMAIN,
 )
-from .coordinator import IPPDataUpdateCoordinator
+from .coordinator import IPPConfigEntry
 from .entity import IPPEntity
 
 
-@dataclass
-class IPPSensorEntityDescriptionMixin:
-    """Mixin for required keys."""
-
-    value_fn: Callable[[Printer], StateType | datetime]
-
-
-@dataclass
-class IPPSensorEntityDescription(
-    SensorEntityDescription, IPPSensorEntityDescriptionMixin
-):
+@dataclass(frozen=True, kw_only=True)
+class IPPSensorEntityDescription(SensorEntityDescription):
     """Describes IPP sensor entity."""
 
+    value_fn: Callable[[Printer], StateType | datetime]
     attributes_fn: Callable[[Printer], dict[Any, StateType]] = lambda _: {}
+    exists_fn: Callable[[Printer], bool] = lambda _: True
 
 
 def _get_marker_attributes_fn(
@@ -69,7 +59,6 @@ PRINTER_SENSORS: tuple[IPPSensorEntityDescription, ...] = (
         key="printer",
         name=None,
         translation_key="printer",
-        icon="mdi:printer",
         device_class=SensorDeviceClass.ENUM,
         options=["idle", "printing", "stopped"],
         attributes_fn=lambda printer: {
@@ -86,22 +75,74 @@ PRINTER_SENSORS: tuple[IPPSensorEntityDescription, ...] = (
     IPPSensorEntityDescription(
         key="uptime",
         translation_key="uptime",
-        icon="mdi:clock-outline",
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda printer: (utcnow() - timedelta(seconds=printer.info.uptime)),
+        value_fn=lambda printer: printer.booted_at,
+    ),
+)
+
+PAGE_COUNT_SENSORS: tuple[IPPSensorEntityDescription, ...] = (
+    IPPSensorEntityDescription(
+        key="pages_completed",
+        translation_key="pages_completed",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        exists_fn=lambda printer: "pages_completed" in printer.counters.supported,
+        value_fn=lambda printer: printer.counters.pages_completed,
+    ),
+    IPPSensorEntityDescription(
+        key="impressions_completed",
+        translation_key="impressions_completed",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        exists_fn=lambda printer: "impressions_completed" in printer.counters.supported,
+        value_fn=lambda printer: printer.counters.impressions_completed,
+    ),
+    IPPSensorEntityDescription(
+        key="media_sheets_completed",
+        translation_key="media_sheets_completed",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        exists_fn=lambda printer: (
+            "media_sheets_completed" in printer.counters.supported
+        ),
+        value_fn=lambda printer: printer.counters.media_sheets_completed,
+    ),
+    IPPSensorEntityDescription(
+        key="impressions_completed_monochrome",
+        translation_key="impressions_completed_monochrome",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        exists_fn=lambda printer: (
+            "monochrome" in printer.counters.impressions_completed_col
+        ),
+        value_fn=lambda printer: printer.counters.impressions_completed_col.get(
+            "monochrome"
+        ),
+    ),
+    IPPSensorEntityDescription(
+        key="impressions_completed_full_color",
+        translation_key="impressions_completed_full_color",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        exists_fn=lambda printer: (
+            "full-color" in printer.counters.impressions_completed_col
+        ),
+        value_fn=lambda printer: printer.counters.impressions_completed_col.get(
+            "full-color"
+        ),
     ),
 )
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: IPPConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up IPP sensor based on a config entry."""
-    coordinator: IPPDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     sensors: list[SensorEntity] = [
         IPPSensor(
             coordinator,
@@ -117,8 +158,9 @@ async def async_setup_entry(
                 IPPSensorEntityDescription(
                     key=f"marker_{index}",
                     name=marker.name,
-                    icon="mdi:water",
+                    translation_key="marker",
                     native_unit_of_measurement=PERCENTAGE,
+                    state_class=SensorStateClass.MEASUREMENT,
                     attributes_fn=_get_marker_attributes_fn(
                         index,
                         lambda marker: {
@@ -127,10 +169,19 @@ async def async_setup_entry(
                             ATTR_MARKER_TYPE: marker.marker_type,
                         },
                     ),
-                    value_fn=_get_marker_value_fn(index, lambda marker: marker.level),
+                    value_fn=_get_marker_value_fn(
+                        index,
+                        lambda marker: marker.level if marker.level >= 0 else None,
+                    ),
                 ),
             )
         )
+
+    sensors.extend(
+        IPPSensor(coordinator, description)
+        for description in PAGE_COUNT_SENSORS
+        if description.exists_fn(coordinator.data)
+    )
 
     async_add_entities(sensors, True)
 
@@ -141,11 +192,13 @@ class IPPSensor(IPPEntity, SensorEntity):
     entity_description: IPPSensorEntityDescription
 
     @property
+    @override
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes of the entity."""
         return self.entity_description.attributes_fn(self.coordinator.data)
 
     @property
+    @override
     def native_value(self) -> StateType | datetime:
         """Return the state of the sensor."""
         return self.entity_description.value_fn(self.coordinator.data)

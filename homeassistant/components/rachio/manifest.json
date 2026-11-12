@@ -2,8 +2,10 @@
   "domain": "rachio",
   "name": "Rachio",
   "after_dependencies": ["cloud"],
-  "codeowners": ["@bdraco"],
+  "categories": ["garden_plants"],
+  "codeowners": ["@bdraco", "@rfverbruggen"],
   "config_flow": true,
+  "connectivity": ["cloud"],
   "dependencies": ["http"],
   "dhcp": [
     {
@@ -23,13 +25,14 @@
   "homekit": {
     "models": ["Rachio"]
   },
+  "integration_type": "hub",
   "iot_class": "cloud_push",
   "loggers": ["rachiopy"],
-  "requirements": ["RachioPy==1.0.3"],
+  "requirements": ["RachioPy==1.1.0"],
   "zeroconf": [
     {
-      "type": "_http._tcp.local.",
-      "name": "rachio*"
+      "name": "rachio*",
+      "type": "_http._tcp.local."
     }
   ]
 }

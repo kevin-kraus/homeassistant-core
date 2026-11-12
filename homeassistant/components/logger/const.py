@@ -1,9 +1,10 @@
 """Constants for the Logger integration."""
+
+from enum import StrEnum
 import logging
 
 DOMAIN = "logger"
 
-SERVICE_SET_DEFAULT_LEVEL = "set_default_level"
 SERVICE_SET_LEVEL = "set_level"
 
 LOGSEVERITY_NOTSET = "NOTSET"
@@ -20,7 +21,7 @@ LOGSEVERITY = {
     LOGSEVERITY_FATAL: logging.FATAL,
     LOGSEVERITY_ERROR: logging.ERROR,
     LOGSEVERITY_WARNING: logging.WARNING,
-    LOGSEVERITY_WARN: logging.WARN,
+    LOGSEVERITY_WARN: logging.WARNING,
     LOGSEVERITY_INFO: logging.INFO,
     LOGSEVERITY_DEBUG: logging.DEBUG,
     LOGSEVERITY_NOTSET: logging.NOTSET,
@@ -33,10 +34,19 @@ LOGGER_DEFAULT = "default"
 LOGGER_LOGS = "logs"
 LOGGER_FILTERS = "filters"
 
-ATTR_LEVEL = "level"
-
-EVENT_LOGGING_CHANGED = "logging_changed"
-
 STORAGE_KEY = "core.logger"
 STORAGE_LOG_KEY = "logs"
 STORAGE_VERSION = 1
+
+
+class LoggerService(StrEnum):
+    """Store keys for logger services."""
+
+    SET_DEFAULT_LEVEL = "set_default_level"
+    SET_LEVEL = "set_level"
+
+
+class LoggerServiceArgument(StrEnum):
+    """Store keys for logger service arguments."""
+
+    LEVEL = "level"

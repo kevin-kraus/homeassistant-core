@@ -1,112 +1,129 @@
 """Define tests for the Notion config flow."""
+
 from unittest.mock import AsyncMock, patch
 
 from aionotion.errors import InvalidCredentialsError, NotionError
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
-from homeassistant import data_entry_flow
-from homeassistant.components.notion import DOMAIN
-from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
+from homeassistant.components.notion.const import (
+    CONF_REFRESH_TOKEN,
+    CONF_USER_UUID,
+    DOMAIN,
+)
+from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
 
-from .conftest import TEST_PASSWORD, TEST_USERNAME
+from .conftest import TEST_PASSWORD, TEST_REFRESH_TOKEN, TEST_USER_UUID, TEST_USERNAME
 
 pytestmark = pytest.mark.usefixtures("mock_setup_entry")
 
 
 @pytest.mark.parametrize(
-    ("get_client_with_exception", "errors"),
+    ("side_effect", "errors"),
     [
-        (AsyncMock(side_effect=Exception), {"base": "unknown"}),
-        (AsyncMock(side_effect=InvalidCredentialsError), {"base": "invalid_auth"}),
-        (AsyncMock(side_effect=NotionError), {"base": "unknown"}),
+        (Exception, "unknown"),
+        (InvalidCredentialsError, "invalid_auth"),
+        (NotionError, "unknown"),
     ],
 )
+@pytest.mark.usefixtures("client", "mock_aionotion")
 async def test_create_entry(
     hass: HomeAssistant,
-    client,
-    config,
-    errors,
-    get_client_with_exception,
-    mock_aionotion,
+    errors: str,
+    side_effect: type[Exception],
 ) -> None:
     """Test creating an etry (including recovery from errors)."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
     )
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
+    assert not result["errors"]
 
     # Test errors that can arise when getting a Notion API client:
     with patch(
-        "homeassistant.components.notion.config_flow.async_get_client",
-        get_client_with_exception,
+        "homeassistant.components.notion.config_flow.async_get_client_with_credentials",
+        AsyncMock(side_effect=side_effect),
     ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}, data=config
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_USERNAME: TEST_USERNAME,
+                CONF_PASSWORD: TEST_PASSWORD,
+            },
         )
-        assert result["type"] == data_entry_flow.FlowResultType.FORM
-        assert result["errors"] == errors
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": errors}
 
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], user_input=config
+        result["flow_id"],
+        user_input={
+            CONF_USERNAME: TEST_USERNAME,
+            CONF_PASSWORD: TEST_PASSWORD,
+        },
     )
-    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == TEST_USERNAME
     assert result["data"] == {
+        CONF_REFRESH_TOKEN: TEST_REFRESH_TOKEN,
         CONF_USERNAME: TEST_USERNAME,
-        CONF_PASSWORD: TEST_PASSWORD,
+        CONF_USER_UUID: TEST_USER_UUID,
     }
 
 
-async def test_duplicate_error(hass: HomeAssistant, config, config_entry) -> None:
+@pytest.mark.usefixtures("config_entry")
+async def test_duplicate_error(hass: HomeAssistant) -> None:
     """Test that errors are shown when duplicates are added."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}, data=config
+        DOMAIN, context={"source": SOURCE_USER}
     )
-    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert not result["errors"]
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_USERNAME: TEST_USERNAME,
+            CONF_PASSWORD: TEST_PASSWORD,
+        },
+    )
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
 
 
 @pytest.mark.parametrize(
-    ("get_client_with_exception", "errors"),
+    ("side_effect", "errors"),
     [
-        (AsyncMock(side_effect=Exception), {"base": "unknown"}),
-        (AsyncMock(side_effect=InvalidCredentialsError), {"base": "invalid_auth"}),
-        (AsyncMock(side_effect=NotionError), {"base": "unknown"}),
+        (Exception, "unknown"),
+        (InvalidCredentialsError, "invalid_auth"),
+        (NotionError, "unknown"),
     ],
 )
+@pytest.mark.usefixtures("mock_aionotion")
 async def test_reauth(
     hass: HomeAssistant,
-    config,
-    config_entry,
-    errors,
-    get_client_with_exception,
-    mock_aionotion,
+    config_entry: MockConfigEntry,
+    errors: str,
+    side_effect: type[Exception],
 ) -> None:
     """Test that re-auth works."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={
-            "source": SOURCE_REAUTH,
-            "entry_id": config_entry.entry_id,
-            "unique_id": config_entry.unique_id,
-        },
-        data=config,
-    )
+    result = await config_entry.start_reauth_flow(hass)
     assert result["step_id"] == "reauth_confirm"
 
     # Test errors that can arise when getting a Notion API client:
     with patch(
-        "homeassistant.components.notion.config_flow.async_get_client",
-        get_client_with_exception,
+        "homeassistant.components.notion.config_flow.async_get_client_with_credentials",
+        AsyncMock(side_effect=side_effect),
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input={CONF_PASSWORD: "password"}
         )
-        assert result["type"] == data_entry_flow.FlowResultType.FORM
-        assert result["errors"] == errors
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": errors}
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={CONF_PASSWORD: "password"}
@@ -116,6 +133,6 @@ async def test_reauth(
     # to setup the config entry via reload.
     await hass.async_block_till_done()
 
-    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reauth_successful"
     assert len(hass.config_entries.async_entries()) == 1

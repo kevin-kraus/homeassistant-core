@@ -1,20 +1,22 @@
 """Test discovery helpers."""
+
 from unittest.mock import patch
 
 import pytest
+from pytest_homeassistant.common import (
+    MockModule,
+    MockPlatform,
+    mock_integration,
+    mock_platform,
+)
 
 from homeassistant import setup
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import discovery
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-
-from tests.common import (
-    MockModule,
-    MockPlatform,
-    mock_entity_platform,
-    mock_integration,
-)
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 
 @pytest.fixture
@@ -119,7 +121,7 @@ async def test_circular_import(hass: HomeAssistant) -> None:
     component_calls = []
     platform_calls = []
 
-    def component_setup(hass, config):
+    def component_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         """Set up mock component."""
         discovery.load_platform(
             hass, Platform.SWITCH, "test_circular", {"key": "value"}, config
@@ -127,7 +129,12 @@ async def test_circular_import(hass: HomeAssistant) -> None:
         component_calls.append(1)
         return True
 
-    def setup_platform(hass, config, add_entities_callback, discovery_info=None):
+    def setup_platform(
+        hass: HomeAssistant,
+        config: ConfigType,
+        add_entities_callback: AddEntitiesCallback,
+        discovery_info: DiscoveryInfoType | None = None,
+    ) -> None:
         """Set up mock platform."""
         platform_calls.append("disc" if discovery_info else "component")
 
@@ -136,7 +143,9 @@ async def test_circular_import(hass: HomeAssistant) -> None:
     # dependencies are only set in component level
     # since we are using manifest to hold them
     mock_integration(hass, MockModule("test_circular", dependencies=["test_component"]))
-    mock_entity_platform(hass, "switch.test_circular", MockPlatform(setup_platform))
+    mock_platform(
+        hass, "test_circular.switch", MockPlatform(setup_platform=setup_platform)
+    )
 
     await setup.async_setup_component(
         hass,
@@ -164,14 +173,14 @@ async def test_1st_discovers_2nd_component(hass: HomeAssistant) -> None:
     """
     component_calls = []
 
-    async def component1_setup(hass, config):
+    async def component1_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         """Set up mock component."""
         await discovery.async_discover(
             hass, "test_component2", {}, "test_component2", {}
         )
         return True
 
-    def component2_setup(hass, config):
+    def component2_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         """Set up mock component."""
         component_calls.append(1)
         return True

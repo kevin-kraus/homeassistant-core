@@ -1,15 +1,23 @@
 """The Compensation integration."""
+
 import logging
 from operator import itemgetter
 
 import numpy as np
-import voluptuous as vol
+import probatio
 
-from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
+from homeassistant.components.sensor import (
+    CONF_STATE_CLASS,
+    DEVICE_CLASSES_SCHEMA as SENSOR_DEVICE_CLASSES_SCHEMA,
+    DOMAIN as SENSOR_DOMAIN,
+    STATE_CLASSES_SCHEMA as SENSOR_STATE_CLASSES_SCHEMA,
+)
 from homeassistant.const import (
     CONF_ATTRIBUTE,
+    CONF_DEVICE_CLASS,
     CONF_MAXIMUM,
     CONF_MINIMUM,
+    CONF_NAME,
     CONF_SOURCE,
     CONF_UNIQUE_ID,
     CONF_UNIT_OF_MEASUREMENT,
@@ -39,46 +47,54 @@ _LOGGER = logging.getLogger(__name__)
 def datapoints_greater_than_degree(value: dict) -> dict:
     """Validate data point list is greater than polynomial degrees."""
     if len(value[CONF_DATAPOINTS]) <= value[CONF_DEGREE]:
-        raise vol.Invalid(
+        raise probatio.Invalid(
             f"{CONF_DATAPOINTS} must have at least"
-            f" {value[CONF_DEGREE]+1} {CONF_DATAPOINTS}"
+            f" {value[CONF_DEGREE] + 1} {CONF_DATAPOINTS}"
         )
 
     return value
 
 
-COMPENSATION_SCHEMA = vol.Schema(
+COMPENSATION_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_SOURCE): cv.entity_id,
-        vol.Required(CONF_DATAPOINTS): [
-            vol.ExactSequence([vol.Coerce(float), vol.Coerce(float)])
+        probatio.Optional(CONF_ATTRIBUTE): cv.string,
+        probatio.Required(CONF_DATAPOINTS): [
+            probatio.ExactSequence([probatio.Coerce(float), probatio.Coerce(float)])
         ],
-        vol.Optional(CONF_UNIQUE_ID): cv.string,
-        vol.Optional(CONF_ATTRIBUTE): cv.string,
-        vol.Optional(CONF_UPPER_LIMIT, default=False): cv.boolean,
-        vol.Optional(CONF_LOWER_LIMIT, default=False): cv.boolean,
-        vol.Optional(CONF_PRECISION, default=DEFAULT_PRECISION): cv.positive_int,
-        vol.Optional(CONF_DEGREE, default=DEFAULT_DEGREE): vol.All(
-            vol.Coerce(int),
-            vol.Range(min=1, max=7),
+        probatio.Optional(CONF_DEGREE, default=DEFAULT_DEGREE): probatio.All(
+            probatio.Coerce(int),
+            probatio.Range(min=1, max=7),
         ),
-        vol.Optional(CONF_UNIT_OF_MEASUREMENT): cv.string,
+        probatio.Optional(CONF_DEVICE_CLASS): SENSOR_DEVICE_CLASSES_SCHEMA,
+        probatio.Optional(CONF_LOWER_LIMIT, default=False): cv.boolean,
+        probatio.Optional(CONF_NAME): cv.string,
+        probatio.Optional(CONF_PRECISION, default=DEFAULT_PRECISION): cv.positive_int,
+        probatio.Required(CONF_SOURCE): cv.entity_id,
+        probatio.Optional(CONF_STATE_CLASS): SENSOR_STATE_CLASSES_SCHEMA,
+        probatio.Optional(CONF_UNIQUE_ID): cv.string,
+        probatio.Optional(CONF_UNIT_OF_MEASUREMENT): cv.string,
+        probatio.Optional(CONF_UPPER_LIMIT, default=False): cv.boolean,
     }
 )
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        DOMAIN: vol.Schema(
-            {cv.slug: vol.All(COMPENSATION_SCHEMA, datapoints_greater_than_degree)}
+        DOMAIN: probatio.Schema(
+            {cv.slug: probatio.All(COMPENSATION_SCHEMA, datapoints_greater_than_degree)}
         )
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the Compensation sensor."""
     hass.data[DATA_COMPENSATION] = {}
+
+    # Exit early if no compensations are configured using the compensation: key in configuration.yaml.
+    # This allows us to create an issue if platform: compensation is present in the sensor: section.
+    if DOMAIN not in config:
+        return True
 
     for compensation, conf in config[DOMAIN].items():
         _LOGGER.debug("Setup %s.%s", DOMAIN, compensation)
@@ -89,7 +105,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         sorted_coefficients = sorted(initial_coefficients, key=itemgetter(0))
 
         # get x values and y values from the x,y point pairs
-        x_values, y_values = zip(*initial_coefficients)
+        x_values, y_values = zip(*initial_coefficients, strict=False)
 
         # try to get valid coefficients for a polynomial
         coefficients = None

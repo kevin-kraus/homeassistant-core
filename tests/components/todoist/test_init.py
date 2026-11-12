@@ -1,24 +1,23 @@
 """Unit tests for the Todoist integration."""
-from collections.abc import Generator
+
 from http import HTTPStatus
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
-from homeassistant.components.todoist.const import DOMAIN
+from homeassistant.components.todoist.const import (
+    ASSIGNEE,
+    CONTENT,
+    DOMAIN,
+    LABELS,
+    PROJECT_NAME,
+    SERVICE_NEW_TASK,
+)
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 
-from tests.common import MockConfigEntry
-
-
-@pytest.fixture(autouse=True)
-def mock_platforms() -> Generator[AsyncMock, None, None]:
-    """Override async_setup_entry."""
-    with patch(
-        "homeassistant.components.todoist.PLATFORMS", return_value=[]
-    ) as mock_setup_entry:
-        yield mock_setup_entry
+from .conftest import PROJECT_ID
 
 
 async def test_load_unload(
@@ -30,10 +29,28 @@ async def test_load_unload(
     entries = hass.config_entries.async_entries(DOMAIN)
     assert len(entries) == 1
 
-    assert todoist_config_entry.state == ConfigEntryState.LOADED
+    assert todoist_config_entry.state is ConfigEntryState.LOADED
 
     assert await hass.config_entries.async_unload(todoist_config_entry.entry_id)
-    assert todoist_config_entry.state == ConfigEntryState.NOT_LOADED
+    assert todoist_config_entry.state is ConfigEntryState.NOT_LOADED
+
+
+@pytest.mark.usefixtures("setup_integration")
+async def test_new_task_service_uses_config_entry(
+    hass: HomeAssistant,
+    api: AsyncMock,
+) -> None:
+    """Test the new_task service reaches the config entry coordinator."""
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_NEW_TASK,
+        {ASSIGNEE: "user", CONTENT: "task", LABELS: ["Label1"], PROJECT_NAME: "Name"},
+        blocking=True,
+    )
+
+    api.add_task.assert_called_with(
+        "task", project_id=PROJECT_ID, labels=["Label1"], assignee_id="1"
+    )
 
 
 @pytest.mark.parametrize("todoist_api_status", [HTTPStatus.INTERNAL_SERVER_ERROR])
@@ -44,4 +61,4 @@ async def test_init_failure(
     todoist_config_entry: MockConfigEntry | None,
 ) -> None:
     """Test an initialization error on integration load."""
-    assert todoist_config_entry.state == ConfigEntryState.SETUP_RETRY
+    assert todoist_config_entry.state is ConfigEntryState.SETUP_RETRY

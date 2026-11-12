@@ -1,10 +1,9 @@
 """Generate ssdp file."""
-from __future__ import annotations
 
 from collections import defaultdict
 
-from .model import Config, Integration
-from .serializer import format_python_namespace
+from hassfest.model import Config, Integration
+from hassfest.serializer import format_python_namespace
 
 
 def generate_and_validate(integrations: dict[str, Integration]) -> str:
@@ -32,17 +31,15 @@ def validate(integrations: dict[str, Integration], config: Config) -> None:
     if config.specific_integrations:
         return
 
-    with open(str(ssdp_path)) as fp:
-        if fp.read() != content:
-            config.add_error(
-                "ssdp",
-                "File ssdp.py is not up to date. Run python3 -m script.hassfest",
-                fixable=True,
-            )
+    if ssdp_path.read_text() != content:
+        config.add_error(
+            "ssdp",
+            "File ssdp.py is not up to date. Run python3 -m script.hassfest",
+            fixable=True,
+        )
 
 
 def generate(integrations: dict[str, Integration], config: Config) -> None:
     """Generate ssdp file."""
     ssdp_path = config.root / "homeassistant/generated/ssdp.py"
-    with open(str(ssdp_path), "w") as fp:
-        fp.write(f"{config.cache['ssdp']}")
+    ssdp_path.write_text(f"{config.cache['ssdp']}")

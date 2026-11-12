@@ -1,7 +1,8 @@
 """The tests for the Rfxtrx sensor platform."""
-import pytest
 
-from homeassistant.components.rfxtrx import DOMAIN
+import pytest
+from pytest_homeassistant.common import mock_restore_cache
+
 from homeassistant.components.rfxtrx.const import ATTR_EVENT
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
@@ -11,16 +12,12 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, State
 
-from .conftest import create_rfx_test_cfg
-
-from tests.common import MockConfigEntry, mock_restore_cache
+from .conftest import create_rfx_test_entry
 
 
 async def test_default_config(hass: HomeAssistant, rfxtrx) -> None:
     """Test with 0 sensor."""
-    entry_data = create_rfx_test_cfg(devices={})
-    mock_entry = MockConfigEntry(domain="rfxtrx", unique_id=DOMAIN, data=entry_data)
-
+    mock_entry = create_rfx_test_entry(devices={})
     mock_entry.add_to_hass(hass)
 
     await hass.config_entries.async_setup(mock_entry.entry_id)
@@ -31,9 +28,7 @@ async def test_default_config(hass: HomeAssistant, rfxtrx) -> None:
 
 async def test_one_sensor(hass: HomeAssistant, rfxtrx) -> None:
     """Test with 1 sensor."""
-    entry_data = create_rfx_test_cfg(devices={"0a52080705020095220269": {}})
-    mock_entry = MockConfigEntry(domain="rfxtrx", unique_id=DOMAIN, data=entry_data)
-
+    mock_entry = create_rfx_test_entry(devices={"0a52080705020095220269": {}})
     mock_entry.add_to_hass(hass)
 
     await hass.config_entries.async_setup(mock_entry.entry_id)
@@ -51,7 +46,7 @@ async def test_one_sensor(hass: HomeAssistant, rfxtrx) -> None:
 
 @pytest.mark.parametrize(
     ("state", "event"),
-    [["18.4", "0a520801070100b81b0279"], ["17.9", "0a52085e070100b31b0279"]],
+    [("18.4", "0a520801070100b81b0279"), ("17.9", "0a52085e070100b31b0279")],
 )
 async def test_state_restore(hass: HomeAssistant, rfxtrx, state, event) -> None:
     """State restoration."""
@@ -60,9 +55,7 @@ async def test_state_restore(hass: HomeAssistant, rfxtrx, state, event) -> None:
 
     mock_restore_cache(hass, [State(entity_id, state, attributes={ATTR_EVENT: event})])
 
-    entry_data = create_rfx_test_cfg(devices={"0a520801070100b81b0279": {}})
-    mock_entry = MockConfigEntry(domain="rfxtrx", unique_id=DOMAIN, data=entry_data)
-
+    mock_entry = create_rfx_test_entry(devices={"0a520801070100b81b0279": {}})
     mock_entry.add_to_hass(hass)
 
     await hass.config_entries.async_setup(mock_entry.entry_id)
@@ -73,9 +66,7 @@ async def test_state_restore(hass: HomeAssistant, rfxtrx, state, event) -> None:
 
 async def test_one_sensor_no_datatype(hass: HomeAssistant, rfxtrx) -> None:
     """Test with 1 sensor."""
-    entry_data = create_rfx_test_cfg(devices={"0a52080705020095220269": {}})
-    mock_entry = MockConfigEntry(domain="rfxtrx", unique_id=DOMAIN, data=entry_data)
-
+    mock_entry = create_rfx_test_entry(devices={"0a52080705020095220269": {}})
     mock_entry.add_to_hass(hass)
 
     await hass.config_entries.async_setup(mock_entry.entry_id)
@@ -120,14 +111,12 @@ async def test_one_sensor_no_datatype(hass: HomeAssistant, rfxtrx) -> None:
 
 async def test_several_sensors(hass: HomeAssistant, rfxtrx) -> None:
     """Test with 3 sensors."""
-    entry_data = create_rfx_test_cfg(
+    mock_entry = create_rfx_test_entry(
         devices={
             "0a52080705020095220269": {},
             "0a520802060100ff0e0269": {},
         }
     )
-    mock_entry = MockConfigEntry(domain="rfxtrx", unique_id=DOMAIN, data=entry_data)
-
     mock_entry.add_to_hass(hass)
 
     await hass.config_entries.async_setup(mock_entry.entry_id)
@@ -267,14 +256,12 @@ async def test_discover_sensor(hass: HomeAssistant, rfxtrx_automatic) -> None:
 
 async def test_update_of_sensors(hass: HomeAssistant, rfxtrx) -> None:
     """Test with 3 sensors."""
-    entry_data = create_rfx_test_cfg(
+    mock_entry = create_rfx_test_entry(
         devices={
             "0a52080705020095220269": {},
             "0a520802060100ff0e0269": {},
         }
     )
-    mock_entry = MockConfigEntry(domain="rfxtrx", unique_id=DOMAIN, data=entry_data)
-
     mock_entry.add_to_hass(hass)
 
     await hass.config_entries.async_setup(mock_entry.entry_id)
@@ -311,7 +298,7 @@ async def test_update_of_sensors(hass: HomeAssistant, rfxtrx) -> None:
 
 async def test_rssi_sensor(hass: HomeAssistant, rfxtrx) -> None:
     """Test with 1 sensor."""
-    entry_data = create_rfx_test_cfg(
+    mock_entry = create_rfx_test_entry(
         devices={
             "0913000022670e013b70": {
                 "data_bits": 4,
@@ -321,18 +308,16 @@ async def test_rssi_sensor(hass: HomeAssistant, rfxtrx) -> None:
             "0b1100cd0213c7f230010f71": {},
         }
     )
-    mock_entry = MockConfigEntry(domain="rfxtrx", unique_id=DOMAIN, data=entry_data)
-
     mock_entry.add_to_hass(hass)
 
     await hass.config_entries.async_setup(mock_entry.entry_id)
     await hass.async_block_till_done()
     await hass.async_start()
 
-    state = hass.states.get("sensor.pt2262_22670e_signal_strength")
+    state = hass.states.get("sensor.pt2262_226700_signal_strength")
     assert state
     assert state.state == "unknown"
-    assert state.attributes.get("friendly_name") == "PT2262 22670e Signal strength"
+    assert state.attributes.get("friendly_name") == "PT2262 226700 Signal strength"
     assert (
         state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
         == SIGNAL_STRENGTH_DECIBELS_MILLIWATT
@@ -350,7 +335,7 @@ async def test_rssi_sensor(hass: HomeAssistant, rfxtrx) -> None:
     await rfxtrx.signal("0913000022670e013b70")
     await rfxtrx.signal("0b1100cd0213c7f230010f71")
 
-    state = hass.states.get("sensor.pt2262_22670e_signal_strength")
+    state = hass.states.get("sensor.pt2262_226700_signal_strength")
     assert state
     assert state.state == "-64"
 
@@ -361,7 +346,7 @@ async def test_rssi_sensor(hass: HomeAssistant, rfxtrx) -> None:
     await rfxtrx.signal("0913000022670e013b60")
     await rfxtrx.signal("0b1100cd0213c7f230010f61")
 
-    state = hass.states.get("sensor.pt2262_22670e_signal_strength")
+    state = hass.states.get("sensor.pt2262_226700_signal_strength")
     assert state
     assert state.state == "-72"
 

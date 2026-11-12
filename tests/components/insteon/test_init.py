@@ -1,19 +1,23 @@
 """Test the init file for the Insteon component."""
-import asyncio
-from unittest.mock import patch
+
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components import insteon
-from homeassistant.components.insteon.const import CONF_DEV_PATH, DOMAIN
+from homeassistant.components.insteon.const import (
+    CONF_DEV_PATH,
+    DOMAIN,
+    SRV_PRINT_IM_ALDB,
+)
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.setup import async_setup_component
 
-from .const import MOCK_USER_INPUT_PLM, PATCH_CONNECTION
+from .const import MOCK_USER_INPUT_PLM
 from .mock_devices import MockDevices
-
-from tests.common import MockConfigEntry
 
 
 async def mock_successful_connection(*args, **kwargs):
@@ -31,10 +35,10 @@ async def test_setup_entry(hass: HomeAssistant) -> None:
     config_entry = MockConfigEntry(domain=DOMAIN, data=MOCK_USER_INPUT_PLM)
     config_entry.add_to_hass(hass)
 
-    with patch.object(
-        insteon, "async_connect", new=mock_successful_connection
-    ), patch.object(insteon, "async_close") as mock_close, patch.object(
-        insteon, "devices", new=MockDevices()
+    with (
+        patch.object(insteon, "async_connect", new=mock_successful_connection),
+        patch.object(insteon, "async_close") as mock_close,
+        patch.object(insteon, "devices", new=MockDevices()),
     ):
         assert await async_setup_component(
             hass,
@@ -55,9 +59,10 @@ async def test_setup_entry_failed_connection(
     config_entry = MockConfigEntry(domain=DOMAIN, data=MOCK_USER_INPUT_PLM)
     config_entry.add_to_hass(hass)
 
-    with patch.object(
-        insteon, "async_connect", new=mock_failed_connection
-    ), patch.object(insteon, "devices", new=MockDevices(connected=False)):
+    with (
+        patch.object(insteon, "async_connect", new=mock_failed_connection),
+        patch.object(insteon, "devices", new=MockDevices(connected=False)),
+    ):
         assert await async_setup_component(
             hass,
             insteon.DOMAIN,
@@ -68,20 +73,35 @@ async def test_setup_entry_failed_connection(
 
 async def test_import_frontend_dev_url(hass: HomeAssistant) -> None:
     """Test importing a dev_url config entry."""
-    config = {}
-    config[DOMAIN] = {CONF_DEV_PATH: "/some/path"}
+    config_entry = MockConfigEntry(
+        domain=DOMAIN, data=MOCK_USER_INPUT_PLM, options={CONF_DEV_PATH: "/some/path"}
+    )
+    config_entry.add_to_hass(hass)
 
-    with patch.object(
-        insteon, "async_connect", new=mock_successful_connection
-    ), patch.object(insteon, "close_insteon_connection"), patch.object(
-        insteon, "devices", new=MockDevices()
-    ), patch(
-        PATCH_CONNECTION, new=mock_successful_connection
+    with (
+        patch.object(insteon, "async_connect", new=mock_successful_connection),
+        patch.object(insteon, "async_close") as mock_close,
+        patch.object(insteon, "devices", new=MockDevices()),
+        patch.object(
+            insteon.api, "async_register_insteon_frontend", new=AsyncMock()
+        ) as mock_register_frontend,
     ):
         assert await async_setup_component(
             hass,
             insteon.DOMAIN,
-            config,
+            {},
         )
         await hass.async_block_till_done()
-        await asyncio.sleep(0.01)
+        mock_register_frontend.assert_awaited_once_with(hass, "/some/path")
+        hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+        await hass.async_block_till_done()
+        assert insteon.devices.async_save.call_count == 1
+        assert mock_close.called
+
+
+async def test_action_not_loaded(hass: HomeAssistant) -> None:
+    """Test calling an action when the config entry is not loaded."""
+    assert await async_setup_component(hass, DOMAIN, {})
+
+    with pytest.raises(ServiceValidationError, match="Insteon is not loaded"):
+        await hass.services.async_call(DOMAIN, SRV_PRINT_IM_ALDB, {}, blocking=True)

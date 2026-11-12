@@ -1,8 +1,13 @@
 """The tests for the persistent notification component triggers."""
+
 from typing import Any
 
-import homeassistant.components.persistent_notification as pn
+from homeassistant.components import persistent_notification as pn
 from homeassistant.components.persistent_notification import trigger
+from homeassistant.components.persistent_notification.services import (
+    PersistentNotificationService,
+    PersistentNotificationServiceArgument,
+)
 from homeassistant.core import Context, HomeAssistant, callback
 
 
@@ -56,8 +61,11 @@ async def test_automation_with_pn_trigger(hass: HomeAssistant) -> None:
 
     await hass.services.async_call(
         pn.DOMAIN,
-        "create",
-        {"notification_id": "test_notification", "message": "test"},
+        PersistentNotificationService.CREATE,
+        {
+            PersistentNotificationServiceArgument.NOTIFICATION_ID: "test_notification",
+            PersistentNotificationServiceArgument.MESSAGE: "test",
+        },
         blocking=True,
     )
 
@@ -72,8 +80,8 @@ async def test_automation_with_pn_trigger(hass: HomeAssistant) -> None:
 
     await hass.services.async_call(
         pn.DOMAIN,
-        "dismiss",
-        {"notification_id": "test_notification"},
+        PersistentNotificationService.DISMISS,
+        {PersistentNotificationServiceArgument.NOTIFICATION_ID: "test_notification"},
         blocking=True,
     )
 
@@ -88,8 +96,11 @@ async def test_automation_with_pn_trigger(hass: HomeAssistant) -> None:
 
     await hass.services.async_call(
         pn.DOMAIN,
-        "create",
-        {"notification_id": "42", "message": "Forty Two"},
+        PersistentNotificationService.CREATE,
+        {
+            PersistentNotificationServiceArgument.NOTIFICATION_ID: "42",
+            PersistentNotificationServiceArgument.MESSAGE: "Forty Two",
+        },
         blocking=True,
     )
 
@@ -99,3 +110,20 @@ async def test_automation_with_pn_trigger(hass: HomeAssistant) -> None:
     assert result["notification"]["notification_id"] == "42"
     assert result["notification"]["message"] == "Forty Two"
     assert result_any[2] == result_id[0]
+
+    await hass.services.async_call(
+        pn.DOMAIN,
+        PersistentNotificationService.CREATE,
+        {
+            PersistentNotificationServiceArgument.NOTIFICATION_ID: "42",
+            PersistentNotificationServiceArgument.MESSAGE: "Is the answer to the ultimate question",
+        },
+        blocking=True,
+    )
+
+    result = result_any[3].get("trigger")
+    assert result["platform"] == "persistent_notification"
+    assert result["update_type"] == pn.UpdateType.UPDATED
+    assert result["notification"]["notification_id"] == "42"
+    assert result["notification"]["message"] == "Is the answer to the ultimate question"
+    assert result_any[3] == result_id[1]

@@ -1,5 +1,4 @@
 """The tests for the panel_custom component."""
-from unittest.mock import Mock, patch
 
 from homeassistant import setup
 from homeassistant.components import frontend, panel_custom
@@ -21,14 +20,13 @@ async def test_webcomponent_custom_path_not_found(hass: HomeAssistant) -> None:
         }
     }
 
-    with patch("os.path.isfile", Mock(return_value=False)):
-        result = await setup.async_setup_component(hass, "panel_custom", config)
-        assert not result
+    result = await setup.async_setup_component(hass, "panel_custom", config)
+    assert not result
 
-        panels = hass.data.get(frontend.DATA_PANELS, [])
+    panels = hass.data.get(frontend.DATA_PANELS, [])
 
-        assert panels
-        assert "nice_url" not in panels
+    assert panels
+    assert "nice_url" not in panels
 
 
 async def test_js_webcomponent(hass: HomeAssistant) -> None:
@@ -63,6 +61,7 @@ async def test_js_webcomponent(hass: HomeAssistant) -> None:
             "name": "todo-mvc",
             "embed_iframe": True,
             "trust_external": True,
+            "handle_safe_area": False,
         },
     }
     assert panel.frontend_url_path == "nice_url"
@@ -83,6 +82,7 @@ async def test_module_webcomponent(hass: HomeAssistant) -> None:
             "embed_iframe": True,
             "trust_external_script": True,
             "require_admin": True,
+            "handle_safe_area": True,
         }
     }
 
@@ -104,6 +104,7 @@ async def test_module_webcomponent(hass: HomeAssistant) -> None:
             "name": "todo-mvc",
             "embed_iframe": True,
             "trust_external": True,
+            "handle_safe_area": True,
         },
     }
     assert panel.frontend_url_path == "nice_url"
@@ -138,6 +139,7 @@ async def test_latest_and_es5_build(hass: HomeAssistant) -> None:
             "module_url": "/local/latest.js",
             "embed_iframe": False,
             "trust_external": False,
+            "handle_safe_area": False,
         },
     }
     assert panel.frontend_url_path == "nice_url"
@@ -171,6 +173,7 @@ async def test_register_config_panel(hass: HomeAssistant) -> None:
         embed_iframe=True,
         require_admin=True,
         config_panel_domain="test",
+        handle_safe_area=True,
     )
 
     panels = hass.data.get(frontend.DATA_PANELS, [])
@@ -185,6 +188,7 @@ async def test_register_config_panel(hass: HomeAssistant) -> None:
             "name": "custom-frontend",
             "embed_iframe": True,
             "trust_external": False,
+            "handle_safe_area": True,
         },
     }
     assert panel.frontend_url_path == "config_panel"

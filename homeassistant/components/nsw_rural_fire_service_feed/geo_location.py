@@ -1,18 +1,20 @@
 """Support for NSW Rural Fire Service Feeds."""
-from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta
 import logging
-from typing import Any
+from typing import Any, override
 
 from aio_geojson_nsw_rfs_incidents import NswRuralFireServiceIncidentsFeedManager
 from aio_geojson_nsw_rfs_incidents.feed_entry import (
     NswRuralFireServiceIncidentsFeedEntry,
 )
-import voluptuous as vol
+import probatio
 
-from homeassistant.components.geo_location import PLATFORM_SCHEMA, GeolocationEvent
+from homeassistant.components.geo_location import (
+    PLATFORM_SCHEMA as GEO_LOCATION_PLATFORM_SCHEMA,
+    GeolocationEvent,
+)
 from homeassistant.const import (
     ATTR_LOCATION,
     CONF_LATITUDE,
@@ -58,14 +60,16 @@ SOURCE = "nsw_rural_fire_service_feed"
 
 VALID_CATEGORIES = ["Advice", "Emergency Warning", "Not Applicable", "Watch and Act"]
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+PLATFORM_SCHEMA = GEO_LOCATION_PLATFORM_SCHEMA.extend(
     {
-        vol.Optional(CONF_CATEGORIES, default=[]): vol.All(
-            cv.ensure_list, [vol.In(VALID_CATEGORIES)]
+        probatio.Optional(CONF_CATEGORIES, default=[]): probatio.All(
+            probatio.EnsureList(), [probatio.In(VALID_CATEGORIES)]
         ),
-        vol.Optional(CONF_LATITUDE): cv.latitude,
-        vol.Optional(CONF_LONGITUDE): cv.longitude,
-        vol.Optional(CONF_RADIUS, default=DEFAULT_RADIUS_IN_KM): vol.Coerce(float),
+        probatio.Optional(CONF_LATITUDE): cv.latitude,
+        probatio.Optional(CONF_LONGITUDE): cv.longitude,
+        probatio.Optional(CONF_RADIUS, default=DEFAULT_RADIUS_IN_KM): probatio.Coerce(
+            float
+        ),
     }
 )
 
@@ -201,6 +205,7 @@ class NswRuralFireServiceLocationEvent(GeolocationEvent):
         self._remove_signal_delete: Callable[[], None]
         self._remove_signal_update: Callable[[], None]
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Call when entity is added to hass."""
         self._remove_signal_delete = async_dispatcher_connect(
@@ -214,6 +219,7 @@ class NswRuralFireServiceLocationEvent(GeolocationEvent):
             self._update_callback,
         )
 
+    @override
     async def async_will_remove_from_hass(self) -> None:
         """Call when entity will be removed from hass."""
         self._remove_signal_delete()
@@ -256,6 +262,7 @@ class NswRuralFireServiceLocationEvent(GeolocationEvent):
         self._responsible_agency = feed_entry.responsible_agency
 
     @property
+    @override
     def icon(self) -> str:
         """Return the icon to use in the frontend."""
         if self._fire:
@@ -263,21 +270,22 @@ class NswRuralFireServiceLocationEvent(GeolocationEvent):
         return "mdi:alarm-light"
 
     @property
+    @override
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the device state attributes."""
-        attributes = {}
-        for key, value in (
-            (ATTR_EXTERNAL_ID, self._external_id),
-            (ATTR_CATEGORY, self._category),
-            (ATTR_LOCATION, self._location),
-            (ATTR_PUBLICATION_DATE, self._publication_date),
-            (ATTR_COUNCIL_AREA, self._council_area),
-            (ATTR_STATUS, self._status),
-            (ATTR_TYPE, self._type),
-            (ATTR_FIRE, self._fire),
-            (ATTR_SIZE, self._size),
-            (ATTR_RESPONSIBLE_AGENCY, self._responsible_agency),
-        ):
-            if value or isinstance(value, bool):
-                attributes[key] = value
-        return attributes
+        return {
+            key: value
+            for key, value in (
+                (ATTR_EXTERNAL_ID, self._external_id),
+                (ATTR_CATEGORY, self._category),
+                (ATTR_LOCATION, self._location),
+                (ATTR_PUBLICATION_DATE, self._publication_date),
+                (ATTR_COUNCIL_AREA, self._council_area),
+                (ATTR_STATUS, self._status),
+                (ATTR_TYPE, self._type),
+                (ATTR_FIRE, self._fire),
+                (ATTR_SIZE, self._size),
+                (ATTR_RESPONSIBLE_AGENCY, self._responsible_agency),
+            )
+            if value or isinstance(value, bool)
+        }

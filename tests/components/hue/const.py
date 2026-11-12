@@ -1,5 +1,29 @@
 """Constants for Hue tests."""
 
+FAKE_BRIDGE = {
+    "bridge_id": "aabbccddeeffggh",
+    "id": "07dd5849-abcd-efgh-b9b9-eb540408ce00",
+    "id_v1": "",
+    "owner": {"rid": "4a507550-8742-4087-8bf5-c2334f29891c", "rtype": "device"},
+    "time_zone": {"time_zone": "Europe/Amsterdam"},
+    "type": "bridge",
+}
+
+FAKE_BRIDGE_DEVICE = {
+    "id": "4a507550-8742-4087-8bf5-c2334f29891c",
+    "id_v1": "",
+    "metadata": {"archetype": "bridge_v2", "name": "Philips hue"},
+    "product_data": {
+        "certified": True,
+        "manufacturer_name": "Signify Netherlands B.V.",
+        "model_id": "BSB002",
+        "product_archetype": "bridge_v2",
+        "product_name": "Philips hue",
+        "software_version": "1.50.1950111030",
+    },
+    "services": [{"rid": "07dd5849-abcd-efgh-b9b9-eb540408ce00", "rtype": "bridge"}],
+    "type": "device",
+}
 
 FAKE_DEVICE = {
     "id": "fake_device_id_1",
@@ -102,14 +126,64 @@ FAKE_ROTARY = {
     "id_v1": "/sensors/1",
     "owner": {"rid": "fake_device_id_1", "rtype": "device"},
     "relative_rotary": {
-        "last_event": {
+        "rotary_report": {
             "action": "start",
             "rotation": {
                 "direction": "clock_wise",
                 "steps": 0,
                 "duration": 0,
             },
+            "updated": "2023-09-27T10:06:41.822Z",
         }
     },
     "type": "relative_rotary",
+}
+
+FAKE_BEHAVIOR_SCRIPT = {
+    "configuration_schema": {},
+    "description": "Generic switches script",
+    "id": "fake_behavior_script_id_1",
+    "metadata": {"category": "accessory", "name": "Hue Accessories"},
+    "state_schema": {},
+    "supported_features": [],
+    "trigger_schema": {},
+    "type": "behavior_script",
+    "version": "0.0.1",
+}
+
+FAKE_BEHAVIOR_INSTANCE = {
+    "configuration": {},
+    "dependees": [],  # codespell:ignore dependees
+    "enabled": True,
+    "id": "fake_behavior_instance_id_1",
+    "last_error": "",
+    "metadata": {"name": "Wall switch Hallway"},
+    "script_id": "fake_behavior_script_id_1",
+    "status": "running",
+    "type": "behavior_instance",
+}
+
+FAKE_PRESENCE_MIMICKING_SCRIPT = {
+    "configuration_schema": {},
+    "description": "PM Automation",
+    "id": "fake_behavior_script_id_2",
+    "metadata": {"category": "automation", "name": "PM"},
+    "state_schema": {},
+    "supported_features": [],
+    "trigger_schema": {},
+    "type": "behavior_script",
+    "version": "0.0.1",
+}
+
+FAKE_PRESENCE_MIMICKING_INSTANCE = {
+    "configuration": {},
+    "dependees": [],  # codespell:ignore dependees
+    "enabled": True,
+    "id": "fake_behavior_instance_id_2",
+    "last_error": "",
+    "metadata": {"name": "Mimic presence"},
+    "script_id": "fake_behavior_script_id_2",
+    "state": {"pm_state": "stopped"},
+    "status": "running",
+    "type": "behavior_instance",
 }

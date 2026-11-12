@@ -1,11 +1,10 @@
 """Config flow for Group integration."""
-from __future__ import annotations
 
 from collections.abc import Callable, Coroutine, Mapping
 from functools import partial
-from typing import Any, cast
+from typing import Any, cast, override
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components import websocket_api
 from homeassistant.const import CONF_ENTITIES, CONF_TYPE
@@ -21,92 +20,107 @@ from homeassistant.helpers.schema_config_entry_flow import (
     entity_selector_without_own_entities,
 )
 
-from . import DOMAIN, GroupEntity
 from .binary_sensor import CONF_ALL, async_create_preview_binary_sensor
-from .const import CONF_HIDE_MEMBERS, CONF_IGNORE_NON_NUMERIC
+from .button import async_create_preview_button
+from .calendar import async_create_preview_calendar
+from .const import CONF_HIDE_MEMBERS, CONF_IGNORE_NON_NUMERIC, DOMAIN
 from .cover import async_create_preview_cover
+from .entity import GroupEntity
 from .event import async_create_preview_event
 from .fan import async_create_preview_fan
 from .light import async_create_preview_light
 from .lock import async_create_preview_lock
 from .media_player import MediaPlayerGroup, async_create_preview_media_player
+from .notify import async_create_preview_notify
 from .sensor import async_create_preview_sensor
 from .switch import async_create_preview_switch
+from .valve import async_create_preview_valve
 
 _STATISTIC_MEASURES = [
-    "min",
+    "last",
+    "first_available",
     "max",
     "mean",
     "median",
-    "last",
-    "range",
-    "sum",
+    "min",
     "product",
+    "range",
+    "stdev",
+    "sum",
 ]
 
 
 async def basic_group_options_schema(
     domain: str | list[str], handler: SchemaCommonFlowHandler | None
-) -> vol.Schema:
+) -> probatio.Schema:
     """Generate options schema."""
+    entity_selector: selector.Selector[Any] | probatio.Schema
     if handler is None:
         entity_selector = selector.selector(
-            {"entity": {"domain": domain, "multiple": True}}
+            {"entity": {"domain": domain, "multiple": True, "reorder": True}}
         )
     else:
         entity_selector = entity_selector_without_own_entities(
             cast(SchemaOptionsFlowHandler, handler.parent_handler),
-            selector.EntitySelectorConfig(domain=domain, multiple=True),
+            selector.EntitySelectorConfig(domain=domain, multiple=True, reorder=True),
         )
 
-    return vol.Schema(
+    return probatio.Schema(
         {
-            vol.Required(CONF_ENTITIES): entity_selector,
-            vol.Required(CONF_HIDE_MEMBERS, default=False): selector.BooleanSelector(),
+            probatio.Required(CONF_ENTITIES): entity_selector,
+            probatio.Required(
+                CONF_HIDE_MEMBERS, default=False
+            ): selector.BooleanSelector(),
         }
     )
 
 
-def basic_group_config_schema(domain: str | list[str]) -> vol.Schema:
+def basic_group_config_schema(domain: str | list[str]) -> probatio.Schema:
     """Generate config schema."""
-    return vol.Schema(
+    return probatio.Schema(
         {
-            vol.Required("name"): selector.TextSelector(),
-            vol.Required(CONF_ENTITIES): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain=domain, multiple=True),
+            probatio.Required("name"): selector.TextSelector(),
+            probatio.Required(CONF_ENTITIES): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain=domain, multiple=True, reorder=True
+                ),
             ),
-            vol.Required(CONF_HIDE_MEMBERS, default=False): selector.BooleanSelector(),
+            probatio.Required(
+                CONF_HIDE_MEMBERS, default=False
+            ): selector.BooleanSelector(),
         }
     )
 
 
 async def binary_sensor_options_schema(
     handler: SchemaCommonFlowHandler | None,
-) -> vol.Schema:
+) -> probatio.Schema:
     """Generate options schema."""
     return (await basic_group_options_schema("binary_sensor", handler)).extend(
         {
-            vol.Required(CONF_ALL, default=False): selector.BooleanSelector(),
+            probatio.Required(CONF_ALL, default=False): selector.BooleanSelector(),
         }
     )
 
 
 BINARY_SENSOR_CONFIG_SCHEMA = basic_group_config_schema("binary_sensor").extend(
     {
-        vol.Required(CONF_ALL, default=False): selector.BooleanSelector(),
+        probatio.Required(CONF_ALL, default=False): selector.BooleanSelector(),
     }
 )
 
 SENSOR_CONFIG_EXTENDS = {
-    vol.Required(CONF_TYPE): selector.SelectSelector(
+    probatio.Required(CONF_TYPE): selector.SelectSelector(
         selector.SelectSelectorConfig(
             options=_STATISTIC_MEASURES, translation_key=CONF_TYPE
         ),
     ),
 }
 SENSOR_OPTIONS = {
-    vol.Optional(CONF_IGNORE_NON_NUMERIC, default=False): selector.BooleanSelector(),
-    vol.Required(CONF_TYPE): selector.SelectSelector(
+    probatio.Optional(
+        CONF_IGNORE_NON_NUMERIC, default=False
+    ): selector.BooleanSelector(),
+    probatio.Required(CONF_TYPE): selector.SelectSelector(
         selector.SelectSelectorConfig(
             options=_STATISTIC_MEASURES, translation_key=CONF_TYPE
         ),
@@ -116,7 +130,7 @@ SENSOR_OPTIONS = {
 
 async def sensor_options_schema(
     domain: str, handler: SchemaCommonFlowHandler | None
-) -> vol.Schema:
+) -> probatio.Schema:
     """Generate options schema."""
     return (
         await basic_group_options_schema(["sensor", "number", "input_number"], handler)
@@ -130,27 +144,43 @@ SENSOR_CONFIG_SCHEMA = basic_group_config_schema(
 
 async def light_switch_options_schema(
     domain: str, handler: SchemaCommonFlowHandler | None
-) -> vol.Schema:
+) -> probatio.Schema:
     """Generate options schema."""
     return (await basic_group_options_schema(domain, handler)).extend(
         {
-            vol.Required(
-                CONF_ALL, default=False, description={"advanced": True}
-            ): selector.BooleanSelector(),
+            probatio.Required(CONF_ALL, default=False): selector.BooleanSelector(),
         }
     )
 
 
+LIGHT_CONFIG_SCHEMA = basic_group_config_schema("light").extend(
+    {
+        probatio.Required(CONF_ALL, default=False): selector.BooleanSelector(),
+    }
+)
+
+
+SWITCH_CONFIG_SCHEMA = basic_group_config_schema("switch").extend(
+    {
+        probatio.Required(CONF_ALL, default=False): selector.BooleanSelector(),
+    }
+)
+
+
 GROUP_TYPES = [
     "binary_sensor",
+    "button",
+    "calendar",
     "cover",
     "event",
     "fan",
     "light",
     "lock",
     "media_player",
+    "notify",
     "sensor",
     "switch",
+    "valve",
 ]
 
 
@@ -182,6 +212,16 @@ CONFIG_FLOW = {
         preview="group",
         validate_user_input=set_group_type("binary_sensor"),
     ),
+    "button": SchemaFlowFormStep(
+        basic_group_config_schema("button"),
+        preview="group",
+        validate_user_input=set_group_type("button"),
+    ),
+    "calendar": SchemaFlowFormStep(
+        basic_group_config_schema("calendar"),
+        preview="group",
+        validate_user_input=set_group_type("calendar"),
+    ),
     "cover": SchemaFlowFormStep(
         basic_group_config_schema("cover"),
         preview="group",
@@ -198,7 +238,7 @@ CONFIG_FLOW = {
         validate_user_input=set_group_type("fan"),
     ),
     "light": SchemaFlowFormStep(
-        basic_group_config_schema("light"),
+        LIGHT_CONFIG_SCHEMA,
         preview="group",
         validate_user_input=set_group_type("light"),
     ),
@@ -212,15 +252,25 @@ CONFIG_FLOW = {
         preview="group",
         validate_user_input=set_group_type("media_player"),
     ),
+    "notify": SchemaFlowFormStep(
+        basic_group_config_schema("notify"),
+        preview="group",
+        validate_user_input=set_group_type("notify"),
+    ),
     "sensor": SchemaFlowFormStep(
         SENSOR_CONFIG_SCHEMA,
         preview="group",
         validate_user_input=set_group_type("sensor"),
     ),
     "switch": SchemaFlowFormStep(
-        basic_group_config_schema("switch"),
+        SWITCH_CONFIG_SCHEMA,
         preview="group",
         validate_user_input=set_group_type("switch"),
+    ),
+    "valve": SchemaFlowFormStep(
+        basic_group_config_schema("valve"),
+        preview="group",
+        validate_user_input=set_group_type("valve"),
     ),
 }
 
@@ -229,6 +279,14 @@ OPTIONS_FLOW = {
     "init": SchemaFlowFormStep(next_step=choose_options_step),
     "binary_sensor": SchemaFlowFormStep(
         binary_sensor_options_schema,
+        preview="group",
+    ),
+    "button": SchemaFlowFormStep(
+        partial(basic_group_options_schema, "button"),
+        preview="group",
+    ),
+    "calendar": SchemaFlowFormStep(
+        partial(basic_group_options_schema, "calendar"),
         preview="group",
     ),
     "cover": SchemaFlowFormStep(
@@ -255,6 +313,10 @@ OPTIONS_FLOW = {
         partial(basic_group_options_schema, "media_player"),
         preview="group",
     ),
+    "notify": SchemaFlowFormStep(
+        partial(basic_group_options_schema, "notify"),
+        preview="group",
+    ),
     "sensor": SchemaFlowFormStep(
         partial(sensor_options_schema, "sensor"),
         preview="group",
@@ -263,23 +325,31 @@ OPTIONS_FLOW = {
         partial(light_switch_options_schema, "switch"),
         preview="group",
     ),
+    "valve": SchemaFlowFormStep(
+        partial(basic_group_options_schema, "valve"),
+        preview="group",
+    ),
 }
 
-PREVIEW_OPTIONS_SCHEMA: dict[str, vol.Schema] = {}
+PREVIEW_OPTIONS_SCHEMA: dict[str, probatio.Schema] = {}
 
 CREATE_PREVIEW_ENTITY: dict[
     str,
-    Callable[[str, dict[str, Any]], GroupEntity | MediaPlayerGroup],
+    Callable[[HomeAssistant, str, dict[str, Any]], GroupEntity | MediaPlayerGroup],
 ] = {
     "binary_sensor": async_create_preview_binary_sensor,
+    "button": async_create_preview_button,
+    "calendar": async_create_preview_calendar,
     "cover": async_create_preview_cover,
     "event": async_create_preview_event,
     "fan": async_create_preview_fan,
     "light": async_create_preview_light,
     "lock": async_create_preview_lock,
     "media_player": async_create_preview_media_player,
+    "notify": async_create_preview_notify,
     "sensor": async_create_preview_sensor,
     "switch": async_create_preview_switch,
+    "valve": async_create_preview_valve,
 }
 
 
@@ -288,8 +358,10 @@ class GroupConfigFlowHandler(SchemaConfigFlowHandler, domain=DOMAIN):
 
     config_flow = CONFIG_FLOW
     options_flow = OPTIONS_FLOW
+    options_flow_reloads = True
 
     @callback
+    @override
     def async_config_entry_title(self, options: Mapping[str, Any]) -> str:
         """Return config entry title.
 
@@ -299,6 +371,7 @@ class GroupConfigFlowHandler(SchemaConfigFlowHandler, domain=DOMAIN):
         return cast(str, options["name"]) if "name" in options else ""
 
     @callback
+    @override
     def async_config_flow_finished(self, options: Mapping[str, Any]) -> None:
         """Hide the group members if requested."""
         if options[CONF_HIDE_MEMBERS]:
@@ -308,6 +381,7 @@ class GroupConfigFlowHandler(SchemaConfigFlowHandler, domain=DOMAIN):
 
     @callback
     @staticmethod
+    @override
     def async_options_flow_finished(
         hass: HomeAssistant, options: Mapping[str, Any]
     ) -> None:
@@ -318,6 +392,7 @@ class GroupConfigFlowHandler(SchemaConfigFlowHandler, domain=DOMAIN):
         _async_hide_members(hass, options[CONF_ENTITIES], hidden_by)
 
     @staticmethod
+    @override
     async def async_setup_preview(hass: HomeAssistant) -> None:
         """Set up preview WS API."""
         for group_type, form_step in OPTIONS_FLOW.items():
@@ -325,7 +400,8 @@ class GroupConfigFlowHandler(SchemaConfigFlowHandler, domain=DOMAIN):
                 continue
             schema = cast(
                 Callable[
-                    [SchemaCommonFlowHandler | None], Coroutine[Any, Any, vol.Schema]
+                    [SchemaCommonFlowHandler | None],
+                    Coroutine[Any, Any, probatio.Schema],
                 ],
                 form_step.schema,
             )
@@ -348,10 +424,10 @@ def _async_hide_members(
 
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "group/start_preview",
-        vol.Required("flow_id"): str,
-        vol.Required("flow_type"): vol.Any("config_flow", "options_flow"),
-        vol.Required("user_input"): dict,
+        probatio.Required("type"): "group/start_preview",
+        probatio.Required("flow_id"): str,
+        probatio.Required("flow_type"): probatio.Any("config_flow", "options_flow"),
+        probatio.Required("user_input"): dict,
     }
 )
 @callback
@@ -366,7 +442,7 @@ def ws_start_preview(
         flow_status = hass.config_entries.flow.async_get(msg["flow_id"])
         group_type = flow_status["step_id"]
         form_step = cast(SchemaFlowFormStep, CONFIG_FLOW[group_type])
-        schema = cast(vol.Schema, form_step.schema)
+        schema = cast(probatio.Schema, form_step.schema)
         validated = schema(msg["user_input"])
         name = validated["name"]
     else:
@@ -392,7 +468,9 @@ def ws_start_preview(
             )
         )
 
-    preview_entity = CREATE_PREVIEW_ENTITY[group_type](name, validated)
+    preview_entity: GroupEntity | MediaPlayerGroup = CREATE_PREVIEW_ENTITY[group_type](
+        hass, name, validated
+    )
     preview_entity.hass = hass
     preview_entity.registry_entry = entity_registry_entry
 

@@ -1,9 +1,12 @@
 {
   "domain": "envisalink",
   "name": "Envisalink",
-  "codeowners": ["@ufodone"],
+  "categories": ["security_safety.alarm_systems"],
+  "codeowners": [],
+  "connectivity": ["network"],
   "documentation": "https://www.home-assistant.io/integrations/envisalink",
   "iot_class": "local_push",
   "loggers": ["pyenvisalink"],
-  "requirements": ["pyenvisalink==4.6"]
+  "quality_scale": "legacy",
+  "requirements": ["pyenvisalink==4.9"]
 }

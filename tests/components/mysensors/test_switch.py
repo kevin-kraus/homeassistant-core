@@ -1,5 +1,4 @@
 """Provide tests for mysensors switch platform."""
-from __future__ import annotations
 
 from collections.abc import Callable
 from unittest.mock import MagicMock, call
@@ -7,6 +6,7 @@ from unittest.mock import MagicMock, call
 from mysensors.sensor import Sensor
 
 from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
+from homeassistant.const import ATTR_BATTERY_LEVEL
 from homeassistant.core import HomeAssistant
 
 
@@ -23,6 +23,7 @@ async def test_relay_node(
 
     assert state
     assert state.state == "off"
+    assert state.attributes[ATTR_BATTERY_LEVEL] == 0
 
     await hass.services.async_call(
         SWITCH_DOMAIN,

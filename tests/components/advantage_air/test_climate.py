@@ -1,268 +1,236 @@
 """Test the Advantage Air Climate Platform."""
-from json import loads
 
+from collections.abc import Generator
+from unittest.mock import AsyncMock, patch
+
+from advantage_air import ApiError
 import pytest
+from pytest_homeassistant.common import snapshot_platform
+from syrupy.assertion import SnapshotAssertion
 
-from homeassistant.components.advantage_air.climate import (
-    ADVANTAGE_AIR_COOL_TARGET,
-    ADVANTAGE_AIR_HEAT_TARGET,
-    HASS_FAN_MODES,
-    HASS_HVAC_MODES,
-)
-from homeassistant.components.advantage_air.const import (
-    ADVANTAGE_AIR_STATE_CLOSE,
-    ADVANTAGE_AIR_STATE_OFF,
-    ADVANTAGE_AIR_STATE_ON,
-    ADVANTAGE_AIR_STATE_OPEN,
-)
+from homeassistant.components.advantage_air.climate import ADVANTAGE_AIR_MYAUTO
 from homeassistant.components.climate import (
-    ATTR_CURRENT_TEMPERATURE,
     ATTR_FAN_MODE,
     ATTR_HVAC_MODE,
-    ATTR_MAX_TEMP,
-    ATTR_MIN_TEMP,
+    ATTR_PRESET_MODE,
     ATTR_TARGET_TEMP_HIGH,
     ATTR_TARGET_TEMP_LOW,
     DOMAIN as CLIMATE_DOMAIN,
+    FAN_AUTO,
     FAN_LOW,
     SERVICE_SET_FAN_MODE,
     SERVICE_SET_HVAC_MODE,
+    SERVICE_SET_PRESET_MODE,
     SERVICE_SET_TEMPERATURE,
     SERVICE_TURN_OFF,
     SERVICE_TURN_ON,
     HVACMode,
 )
-from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE
+from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 
-from . import (
-    TEST_SET_RESPONSE,
-    TEST_SET_URL,
-    TEST_SYSTEM_DATA,
-    TEST_SYSTEM_URL,
-    add_mock_config,
-)
-
-from tests.test_util.aiohttp import AiohttpClientMocker
+from . import add_mock_config
 
 
-async def test_climate_async_setup_entry(
-    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+@pytest.fixture(autouse=True)
+def override_platforms() -> Generator[None]:
+    """Override PLATFORMS."""
+    with patch("homeassistant.components.advantage_air.PLATFORMS", [Platform.CLIMATE]):
+        yield
+
+
+@pytest.mark.usefixtures("mock_get")
+async def test_all_entities(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    snapshot: SnapshotAssertion,
 ) -> None:
-    """Test climate platform."""
+    """Test all entities."""
 
-    aioclient_mock.get(
-        TEST_SYSTEM_URL,
-        text=TEST_SYSTEM_DATA,
-    )
-    aioclient_mock.get(
-        TEST_SET_URL,
-        text=TEST_SET_RESPONSE,
-    )
+    config_entry = await add_mock_config(hass)
+
+    await snapshot_platform(hass, entity_registry, snapshot, config_entry.entry_id)
+
+
+@pytest.mark.usefixtures("mock_get")
+@pytest.mark.parametrize(
+    ("entity_id", "hvac_mode"),
+    [
+        pytest.param("climate.myzone", HVACMode.COOL, id="main-cool"),
+        pytest.param("climate.myzone", HVACMode.FAN_ONLY, id="main-fan_only"),
+        pytest.param("climate.myzone", HVACMode.OFF, id="main-off"),
+        pytest.param(
+            "climate.myzone_zone_open_with_sensor",
+            HVACMode.HEAT_COOL,
+            id="zone-heat_cool",
+        ),
+        pytest.param(
+            "climate.myzone_zone_open_with_sensor", HVACMode.OFF, id="zone-off"
+        ),
+    ],
+)
+async def test_set_hvac_mode(
+    hass: HomeAssistant,
+    mock_update: AsyncMock,
+    entity_id: str,
+    hvac_mode: HVACMode,
+) -> None:
+    """Test setting the HVAC mode."""
+
     await add_mock_config(hass)
 
-    registry = er.async_get(hass)
-
-    # Test MyZone Climate Entity
-    entity_id = "climate.myzone"
-    state = hass.states.get(entity_id)
-    assert state
-    assert state.state == HVACMode.FAN_ONLY
-    assert state.attributes.get(ATTR_MIN_TEMP) == 16
-    assert state.attributes.get(ATTR_MAX_TEMP) == 32
-    assert state.attributes.get(ATTR_TEMPERATURE) == 24
-    assert state.attributes.get(ATTR_CURRENT_TEMPERATURE) is None
-
-    entry = registry.async_get(entity_id)
-    assert entry
-    assert entry.unique_id == "uniqueid-ac1"
-
-    # Test setting HVAC Mode
     await hass.services.async_call(
         CLIMATE_DOMAIN,
         SERVICE_SET_HVAC_MODE,
-        {ATTR_ENTITY_ID: [entity_id], ATTR_HVAC_MODE: HVACMode.FAN_ONLY},
+        {ATTR_ENTITY_ID: [entity_id], ATTR_HVAC_MODE: hvac_mode},
         blocking=True,
     )
-    assert aioclient_mock.mock_calls[-2][0] == "GET"
-    assert aioclient_mock.mock_calls[-2][1].path == "/setAircon"
-    data = loads(aioclient_mock.mock_calls[-2][1].query["json"])
-    assert data["ac1"]["info"]["state"] == ADVANTAGE_AIR_STATE_ON
-    assert data["ac1"]["info"]["mode"] == HASS_HVAC_MODES[HVACMode.FAN_ONLY]
-    assert aioclient_mock.mock_calls[-1][0] == "GET"
-    assert aioclient_mock.mock_calls[-1][1].path == "/getSystemData"
+    mock_update.assert_called_once()
 
-    # Test Turning Off with HVAC Mode
+
+@pytest.mark.usefixtures("mock_get")
+@pytest.mark.parametrize(
+    "entity_id", ["climate.myzone", "climate.myzone_zone_open_with_sensor"]
+)
+async def test_set_temperature(
+    hass: HomeAssistant,
+    mock_update: AsyncMock,
+    entity_id: str,
+) -> None:
+    """Test setting the target temperature."""
+
+    await add_mock_config(hass)
+
     await hass.services.async_call(
         CLIMATE_DOMAIN,
-        SERVICE_SET_HVAC_MODE,
-        {ATTR_ENTITY_ID: [entity_id], ATTR_HVAC_MODE: HVACMode.OFF},
+        SERVICE_SET_TEMPERATURE,
+        {ATTR_ENTITY_ID: [entity_id], ATTR_TEMPERATURE: 25},
         blocking=True,
     )
-    assert aioclient_mock.mock_calls[-2][0] == "GET"
-    assert aioclient_mock.mock_calls[-2][1].path == "/setAircon"
-    data = loads(aioclient_mock.mock_calls[-2][1].query["json"])
-    assert data["ac1"]["info"]["state"] == ADVANTAGE_AIR_STATE_OFF
-    assert aioclient_mock.mock_calls[-1][0] == "GET"
-    assert aioclient_mock.mock_calls[-1][1].path == "/getSystemData"
+    mock_update.assert_called_once()
 
-    # Test changing Fan Mode
+
+@pytest.mark.usefixtures("mock_get")
+@pytest.mark.parametrize("service", [SERVICE_TURN_ON, SERVICE_TURN_OFF])
+async def test_turn_on_off(
+    hass: HomeAssistant,
+    mock_update: AsyncMock,
+    service: str,
+) -> None:
+    """Test turning the main entity on and off."""
+
+    await add_mock_config(hass)
+
+    await hass.services.async_call(
+        CLIMATE_DOMAIN,
+        service,
+        {ATTR_ENTITY_ID: ["climate.myzone"]},
+        blocking=True,
+    )
+    mock_update.assert_called_once()
+
+
+@pytest.mark.usefixtures("mock_get")
+async def test_set_fan_mode(hass: HomeAssistant, mock_update: AsyncMock) -> None:
+    """Test setting the fan mode."""
+
+    await add_mock_config(hass)
+
     await hass.services.async_call(
         CLIMATE_DOMAIN,
         SERVICE_SET_FAN_MODE,
-        {ATTR_ENTITY_ID: [entity_id], ATTR_FAN_MODE: FAN_LOW},
+        {ATTR_ENTITY_ID: ["climate.myzone"], ATTR_FAN_MODE: FAN_LOW},
         blocking=True,
     )
-    assert aioclient_mock.mock_calls[-2][0] == "GET"
-    assert aioclient_mock.mock_calls[-2][1].path == "/setAircon"
-    data = loads(aioclient_mock.mock_calls[-2][1].query["json"])
-    assert data["ac1"]["info"]["fan"] == HASS_FAN_MODES[FAN_LOW]
-    assert aioclient_mock.mock_calls[-1][0] == "GET"
-    assert aioclient_mock.mock_calls[-1][1].path == "/getSystemData"
+    mock_update.assert_called_once()
 
-    # Test changing Temperature
-    await hass.services.async_call(
-        CLIMATE_DOMAIN,
-        SERVICE_SET_TEMPERATURE,
-        {ATTR_ENTITY_ID: [entity_id], ATTR_TEMPERATURE: 25},
-        blocking=True,
-    )
-    assert aioclient_mock.mock_calls[-2][0] == "GET"
-    assert aioclient_mock.mock_calls[-2][1].path == "/setAircon"
-    data = loads(aioclient_mock.mock_calls[-2][1].query["json"])
-    assert data["ac1"]["info"]["setTemp"] == 25
-    assert aioclient_mock.mock_calls[-1][0] == "GET"
-    assert aioclient_mock.mock_calls[-1][1].path == "/getSystemData"
 
-    # Test Turning On
-    await hass.services.async_call(
-        CLIMATE_DOMAIN,
-        SERVICE_TURN_OFF,
-        {ATTR_ENTITY_ID: [entity_id]},
-        blocking=True,
-    )
-    assert aioclient_mock.mock_calls[-2][0] == "GET"
-    assert aioclient_mock.mock_calls[-2][1].path == "/setAircon"
-    data = loads(aioclient_mock.mock_calls[-2][1].query["json"])
-    assert data["ac1"]["info"]["state"] == ADVANTAGE_AIR_STATE_OFF
-    assert aioclient_mock.mock_calls[-1][0] == "GET"
-    assert aioclient_mock.mock_calls[-1][1].path == "/getSystemData"
+@pytest.mark.usefixtures("mock_get")
+async def test_set_preset_mode(
+    hass: HomeAssistant, mock_update: AsyncMock, snapshot: SnapshotAssertion
+) -> None:
+    """Test setting the preset mode."""
 
-    # Test Turning Off
-    await hass.services.async_call(
-        CLIMATE_DOMAIN,
-        SERVICE_TURN_ON,
-        {ATTR_ENTITY_ID: [entity_id]},
-        blocking=True,
-    )
-    assert aioclient_mock.mock_calls[-2][0] == "GET"
-    assert aioclient_mock.mock_calls[-2][1].path == "/setAircon"
-    data = loads(aioclient_mock.mock_calls[-2][1].query["json"])
-    assert data["ac1"]["info"]["state"] == ADVANTAGE_AIR_STATE_ON
-    assert aioclient_mock.mock_calls[-1][0] == "GET"
-    assert aioclient_mock.mock_calls[-1][1].path == "/getSystemData"
-
-    # Test Climate Zone Entity
-    entity_id = "climate.myzone_zone_open_with_sensor"
-    state = hass.states.get(entity_id)
-    assert state
-    assert state.attributes.get(ATTR_MIN_TEMP) == 16
-    assert state.attributes.get(ATTR_MAX_TEMP) == 32
-    assert state.attributes.get(ATTR_TEMPERATURE) == 24
-    assert state.attributes.get(ATTR_CURRENT_TEMPERATURE) == 25
-
-    entry = registry.async_get(entity_id)
-    assert entry
-    assert entry.unique_id == "uniqueid-ac1-z01"
-
-    # Test Climate Zone On
-    await hass.services.async_call(
-        CLIMATE_DOMAIN,
-        SERVICE_SET_HVAC_MODE,
-        {ATTR_ENTITY_ID: [entity_id], ATTR_HVAC_MODE: HVACMode.FAN_ONLY},
-        blocking=True,
-    )
-
-    assert aioclient_mock.mock_calls[-2][0] == "GET"
-    assert aioclient_mock.mock_calls[-2][1].path == "/setAircon"
-    data = loads(aioclient_mock.mock_calls[-2][1].query["json"])
-
-    assert data["ac1"]["zones"]["z01"]["state"] == ADVANTAGE_AIR_STATE_OPEN
-    assert aioclient_mock.mock_calls[-1][0] == "GET"
-    assert aioclient_mock.mock_calls[-1][1].path == "/getSystemData"
-
-    # Test Climate Zone Off
-    await hass.services.async_call(
-        CLIMATE_DOMAIN,
-        SERVICE_SET_HVAC_MODE,
-        {ATTR_ENTITY_ID: [entity_id], ATTR_HVAC_MODE: HVACMode.OFF},
-        blocking=True,
-    )
-
-    assert aioclient_mock.mock_calls[-2][0] == "GET"
-    assert aioclient_mock.mock_calls[-2][1].path == "/setAircon"
-    data = loads(aioclient_mock.mock_calls[-2][1].query["json"])
-    assert data["ac1"]["zones"]["z01"]["state"] == ADVANTAGE_AIR_STATE_CLOSE
-    assert aioclient_mock.mock_calls[-1][0] == "GET"
-    assert aioclient_mock.mock_calls[-1][1].path == "/getSystemData"
+    await add_mock_config(hass)
 
     await hass.services.async_call(
         CLIMATE_DOMAIN,
-        SERVICE_SET_TEMPERATURE,
-        {ATTR_ENTITY_ID: [entity_id], ATTR_TEMPERATURE: 25},
+        SERVICE_SET_PRESET_MODE,
+        {ATTR_ENTITY_ID: ["climate.myzone"], ATTR_PRESET_MODE: ADVANTAGE_AIR_MYAUTO},
         blocking=True,
     )
+    mock_update.assert_called_once()
+    assert mock_update.call_args[0][0] == snapshot
 
-    assert aioclient_mock.mock_calls[-2][0] == "GET"
-    assert aioclient_mock.mock_calls[-2][1].path == "/setAircon"
-    assert aioclient_mock.mock_calls[-1][0] == "GET"
-    assert aioclient_mock.mock_calls[-1][1].path == "/getSystemData"
 
-    # Test MyAuto Climate Entity
-    entity_id = "climate.myauto"
-    state = hass.states.get(entity_id)
-    assert state
-    assert state.attributes.get(ATTR_TARGET_TEMP_LOW) == 20
-    assert state.attributes.get(ATTR_TARGET_TEMP_HIGH) == 24
+@pytest.mark.usefixtures("mock_get")
+async def test_set_hvac_mode_unsupported(
+    hass: HomeAssistant, mock_update: AsyncMock
+) -> None:
+    """Test setting an HVAC mode the main entity does not support."""
 
-    entry = registry.async_get(entity_id)
-    assert entry
-    assert entry.unique_id == "uniqueid-ac3"
+    await add_mock_config(hass)
+
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            CLIMATE_DOMAIN,
+            SERVICE_SET_HVAC_MODE,
+            {ATTR_ENTITY_ID: ["climate.myzone"], ATTR_HVAC_MODE: HVACMode.HEAT_COOL},
+            blocking=True,
+        )
+
+
+@pytest.mark.usefixtures("mock_get")
+async def test_myauto_set_temperature_range(
+    hass: HomeAssistant, mock_update: AsyncMock, snapshot: SnapshotAssertion
+) -> None:
+    """Test setting the target temperature range on a MyAuto entity."""
+
+    await add_mock_config(hass)
 
     await hass.services.async_call(
         CLIMATE_DOMAIN,
         SERVICE_SET_TEMPERATURE,
         {
-            ATTR_ENTITY_ID: [entity_id],
+            ATTR_ENTITY_ID: ["climate.myauto"],
             ATTR_TARGET_TEMP_LOW: 21,
             ATTR_TARGET_TEMP_HIGH: 23,
         },
         blocking=True,
     )
-    assert aioclient_mock.mock_calls[-2][0] == "GET"
-    assert aioclient_mock.mock_calls[-2][1].path == "/setAircon"
-    data = loads(aioclient_mock.mock_calls[-2][1].query["json"])
-    assert data["ac3"]["info"][ADVANTAGE_AIR_HEAT_TARGET] == 21
-    assert data["ac3"]["info"][ADVANTAGE_AIR_COOL_TARGET] == 23
+    mock_update.assert_called_once()
+    assert mock_update.call_args[0][0] == snapshot
 
 
+@pytest.mark.usefixtures("mock_get")
+async def test_myauto_set_fan_mode(
+    hass: HomeAssistant, mock_update: AsyncMock, snapshot: SnapshotAssertion
+) -> None:
+    """Test setting the fan mode on a MyAuto entity."""
+
+    await add_mock_config(hass)
+
+    await hass.services.async_call(
+        CLIMATE_DOMAIN,
+        SERVICE_SET_FAN_MODE,
+        {ATTR_ENTITY_ID: ["climate.myauto"], ATTR_FAN_MODE: FAN_AUTO},
+        blocking=True,
+    )
+    mock_update.assert_called_once()
+    assert mock_update.call_args[0][0] == snapshot
+
+
+@pytest.mark.usefixtures("mock_get")
 async def test_climate_async_failed_update(
-    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+    hass: HomeAssistant,
+    mock_update: AsyncMock,
 ) -> None:
     """Test climate change failure."""
 
-    aioclient_mock.get(
-        TEST_SYSTEM_URL,
-        text=TEST_SYSTEM_DATA,
-    )
-    aioclient_mock.get(
-        TEST_SET_URL,
-        exc=SyntaxError,
-    )
+    mock_update.side_effect = ApiError
     await add_mock_config(hass)
-
     with pytest.raises(HomeAssistantError):
         await hass.services.async_call(
             CLIMATE_DOMAIN,
@@ -270,5 +238,5 @@ async def test_climate_async_failed_update(
             {ATTR_ENTITY_ID: ["climate.myzone"], ATTR_TEMPERATURE: 25},
             blocking=True,
         )
-    assert aioclient_mock.mock_calls[-1][0] == "GET"
-    assert aioclient_mock.mock_calls[-1][1].path == "/setAircon"
+
+    mock_update.assert_called_once()

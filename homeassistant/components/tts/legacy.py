@@ -1,23 +1,21 @@
 """Provide the legacy TTS service provider interface."""
-from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Coroutine, Mapping
 from functools import partial
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, final
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.media_player import (
-    ATTR_MEDIA_ANNOUNCE,
-    ATTR_MEDIA_CONTENT_ID,
-    ATTR_MEDIA_CONTENT_TYPE,
-    DOMAIN as DOMAIN_MP,
-    SERVICE_PLAY_MEDIA,
+    DOMAIN as MP_DOMAIN,
+    MediaPlayerService,
+    MediaPlayerServiceArgument,
     MediaType,
 )
+from homeassistant.config import config_per_platform
 from homeassistant.const import (
     ATTR_ENTITY_ID,
     CONF_DESCRIPTION,
@@ -25,12 +23,15 @@ from homeassistant.const import (
     CONF_PLATFORM,
 )
 from homeassistant.core import HomeAssistant, ServiceCall, callback
-from homeassistant.helpers import config_per_platform, discovery
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv, discovery
 from homeassistant.helpers.service import async_set_service_schema
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from homeassistant.setup import async_prepare_setup_platform
-from homeassistant.util.yaml import load_yaml
+from homeassistant.setup import (
+    SetupPhases,
+    async_prepare_setup_platform,
+    async_start_setup,
+)
+from homeassistant.util.yaml import load_yaml_dict
 
 from .const import (
     ATTR_CACHE,
@@ -51,9 +52,6 @@ from .const import (
 from .media_source import generate_media_source_id
 from .models import Voice
 
-if TYPE_CHECKING:
-    from . import SpeechManager
-
 _LOGGER = logging.getLogger(__name__)
 
 CONF_SERVICE_NAME = "service_name"
@@ -62,7 +60,7 @@ CONF_SERVICE_NAME = "service_name"
 def _deprecated_platform(value: str) -> str:
     """Validate if platform is deprecated."""
     if value == "google":
-        raise vol.Invalid(
+        raise probatio.Invalid(
             "google tts service has been renamed to google_translate,"
             " please update your configuration."
         )
@@ -71,26 +69,26 @@ def _deprecated_platform(value: str) -> str:
 
 PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_PLATFORM): vol.All(cv.string, _deprecated_platform),
-        vol.Optional(CONF_CACHE, default=DEFAULT_CACHE): cv.boolean,
-        vol.Optional(CONF_CACHE_DIR, default=DEFAULT_CACHE_DIR): cv.string,
-        vol.Optional(CONF_TIME_MEMORY, default=DEFAULT_TIME_MEMORY): vol.All(
-            vol.Coerce(int), vol.Range(min=60, max=57600)
+        probatio.Required(CONF_PLATFORM): probatio.All(cv.string, _deprecated_platform),
+        probatio.Optional(CONF_CACHE, default=DEFAULT_CACHE): cv.boolean,
+        probatio.Optional(CONF_CACHE_DIR, default=DEFAULT_CACHE_DIR): cv.string,
+        probatio.Optional(CONF_TIME_MEMORY, default=DEFAULT_TIME_MEMORY): probatio.All(
+            probatio.Coerce(int), probatio.Range(min=60, max=57600)
         ),
-        vol.Optional(CONF_SERVICE_NAME): cv.string,
+        probatio.Optional(CONF_SERVICE_NAME): cv.string,
     }
 )
 PLATFORM_SCHEMA_BASE = cv.PLATFORM_SCHEMA_BASE.extend(PLATFORM_SCHEMA.schema)
 
 SERVICE_SAY = "say"
 
-SCHEMA_SERVICE_SAY = vol.Schema(
+SCHEMA_SERVICE_SAY = probatio.Schema(
     {
-        vol.Required(ATTR_MESSAGE): cv.string,
-        vol.Optional(ATTR_CACHE): cv.boolean,
-        vol.Required(ATTR_ENTITY_ID): cv.comp_entity_ids,
-        vol.Optional(ATTR_LANGUAGE): cv.string,
-        vol.Optional(ATTR_OPTIONS): dict,
+        probatio.Required(ATTR_MESSAGE): cv.string,
+        probatio.Optional(ATTR_CACHE): cv.boolean,
+        probatio.Required(ATTR_ENTITY_ID): cv.comp_entity_ids,
+        probatio.Optional(ATTR_LANGUAGE): cv.string,
+        probatio.Optional(ATTR_OPTIONS): dict,
     }
 )
 
@@ -99,12 +97,10 @@ async def async_setup_legacy(
     hass: HomeAssistant, config: ConfigType
 ) -> list[Coroutine[Any, Any, None]]:
     """Set up legacy text-to-speech providers."""
-    tts: SpeechManager = hass.data[DATA_TTS_MANAGER]
-
     # Load service descriptions from tts/services.yaml
     services_yaml = Path(__file__).parent / "services.yaml"
-    services_dict = cast(
-        dict, await hass.async_add_executor_job(load_yaml, str(services_yaml))
+    services_dict = await hass.async_add_executor_job(
+        load_yaml_dict, str(services_yaml)
     )
 
     async def async_setup_platform(
@@ -122,21 +118,29 @@ async def async_setup_legacy(
             return
 
         try:
-            if hasattr(platform, "async_get_engine"):
-                provider = await platform.async_get_engine(
-                    hass, p_config, discovery_info
-                )
-            else:
-                provider = await hass.async_add_executor_job(
-                    platform.get_engine, hass, p_config, discovery_info
-                )
+            with async_start_setup(
+                hass,
+                integration=p_type,
+                group=str(id(p_config)),
+                phase=SetupPhases.PLATFORM_SETUP,
+            ):
+                if hasattr(platform, "async_get_engine"):
+                    provider = await platform.async_get_engine(
+                        hass, p_config, discovery_info
+                    )
+                else:
+                    provider = await hass.async_add_executor_job(
+                        platform.get_engine, hass, p_config, discovery_info
+                    )
 
-            if provider is None:
-                _LOGGER.error("Error setting up platform: %s", p_type)
-                return
+                if provider is None:
+                    _LOGGER.error("Error setting up platform: %s", p_type)
+                    return
 
-            tts.async_register_legacy_engine(p_type, provider, p_config)
-        except Exception:  # pylint: disable=broad-except
+                hass.data[DATA_TTS_MANAGER].async_register_legacy_engine(
+                    p_type, provider, p_config
+                )
+        except Exception:
             _LOGGER.exception("Error setting up platform: %s", p_type)
             return
 
@@ -145,11 +149,11 @@ async def async_setup_legacy(
             entity_ids = service.data[ATTR_ENTITY_ID]
 
             await hass.services.async_call(
-                DOMAIN_MP,
-                SERVICE_PLAY_MEDIA,
+                MP_DOMAIN,
+                MediaPlayerService.PLAY_MEDIA,
                 {
                     ATTR_ENTITY_ID: entity_ids,
-                    ATTR_MEDIA_CONTENT_ID: generate_media_source_id(
+                    MediaPlayerServiceArgument.MEDIA_CONTENT_ID: generate_media_source_id(
                         hass,
                         engine=p_type,
                         message=service.data[ATTR_MESSAGE],
@@ -157,14 +161,16 @@ async def async_setup_legacy(
                         options=service.data.get(ATTR_OPTIONS),
                         cache=service.data.get(ATTR_CACHE),
                     ),
-                    ATTR_MEDIA_CONTENT_TYPE: MediaType.MUSIC,
-                    ATTR_MEDIA_ANNOUNCE: True,
+                    MediaPlayerServiceArgument.MEDIA_CONTENT_TYPE: MediaType.MUSIC,
+                    MediaPlayerServiceArgument.ANNOUNCE: True,
                 },
                 blocking=True,
                 context=service.context,
             )
 
         service_name = p_config.get(CONF_SERVICE_NAME, f"{p_type}_{SERVICE_SAY}")
+        # Cannot be moved: actions are registered per legacy platform
+        # pylint: disable-next=home-assistant-action-registered-outside-services-module
         hass.services.async_register(
             DOMAIN, service_name, async_say_handle, schema=SCHEMA_SERVICE_SAY
         )
@@ -199,6 +205,7 @@ class Provider:
 
     hass: HomeAssistant | None = None
     name: str | None = None
+    has_entity: bool = False
 
     @property
     def default_language(self) -> str | None:
@@ -229,7 +236,7 @@ class Provider:
         self, message: str, language: str, options: dict[str, Any]
     ) -> TtsAudioType:
         """Load tts audio file from provider."""
-        raise NotImplementedError()
+        raise NotImplementedError
 
     async def async_get_tts_audio(
         self, message: str, language: str, options: dict[str, Any]
@@ -243,3 +250,15 @@ class Provider:
         return await self.hass.async_add_executor_job(
             partial(self.get_tts_audio, message, language, options=options)
         )
+
+    @final
+    async def async_internal_get_tts_audio(
+        self, message: str, language: str, options: dict[str, Any]
+    ) -> TtsAudioType:
+        """Load tts audio file from provider.
+
+        Proxies request to mimic the entity interface.
+
+        Return a tuple of file extension and data as bytes.
+        """
+        return await self.async_get_tts_audio(message, language, options)

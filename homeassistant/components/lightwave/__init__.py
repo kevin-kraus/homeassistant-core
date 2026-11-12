@@ -1,8 +1,9 @@
 """Support for device connected via Lightwave WiFi-link hub."""
+
 import logging
 
 from lightwave.lightwave import LWLink
-import voluptuous as vol
+import probatio
 
 from homeassistant.const import (
     CONF_HOST,
@@ -12,7 +13,7 @@ from homeassistant.const import (
     Platform,
 )
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.discovery import async_load_platform
 from homeassistant.helpers.typing import ConfigType
 
@@ -30,29 +31,33 @@ LIGHTWAVE_TRV_PROXY_PORT = f"{DOMAIN}_proxy_port"
 _LOGGER = logging.getLogger(__name__)
 
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        DOMAIN: vol.Schema(
-            vol.All(
-                cv.has_at_least_one_key(CONF_LIGHTS, CONF_SWITCHES, CONF_TRV),
+        DOMAIN: probatio.Schema(
+            probatio.All(
+                probatio.AtLeastOne(CONF_LIGHTS, CONF_SWITCHES, CONF_TRV),
                 {
-                    vol.Required(CONF_HOST): cv.string,
-                    vol.Optional(CONF_LIGHTS, default={}): {
-                        cv.string: vol.Schema({vol.Required(CONF_NAME): cv.string})
+                    probatio.Required(CONF_HOST): cv.string,
+                    probatio.Optional(CONF_LIGHTS, default={}): {
+                        cv.string: probatio.Schema(
+                            {probatio.Required(CONF_NAME): cv.string}
+                        )
                     },
-                    vol.Optional(CONF_SWITCHES, default={}): {
-                        cv.string: vol.Schema({vol.Required(CONF_NAME): cv.string})
+                    probatio.Optional(CONF_SWITCHES, default={}): {
+                        cv.string: probatio.Schema(
+                            {probatio.Required(CONF_NAME): cv.string}
+                        )
                     },
-                    vol.Optional(CONF_TRV, default={}): {
-                        vol.Optional(
+                    probatio.Optional(CONF_TRV, default={}): {
+                        probatio.Optional(
                             CONF_PROXY_PORT, default=DEFAULT_PROXY_PORT
-                        ): cv.port,
-                        vol.Optional(CONF_PROXY_IP): cv.string,
-                        vol.Required(CONF_TRVS, default={}): {
-                            cv.string: vol.Schema(
+                        ): probatio.Port(),
+                        probatio.Optional(CONF_PROXY_IP): cv.string,
+                        probatio.Required(CONF_TRVS, default={}): {
+                            cv.string: probatio.Schema(
                                 {
-                                    vol.Required(CONF_NAME): cv.string,
-                                    vol.Required(CONF_SERIAL): cv.string,
+                                    probatio.Required(CONF_NAME): cv.string,
+                                    probatio.Required(CONF_SERIAL): cv.string,
                                 }
                             )
                         },
@@ -61,7 +66,7 @@ CONFIG_SCHEMA = vol.Schema(
             )
         )
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
 
 PLATFORMS = (Platform.CLIMATE, Platform.SENSOR)
@@ -92,7 +97,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         else:
             lwlink.set_trv_proxy(proxy_ip, proxy_port)
             _LOGGER.warning(
-                "Proxy no longer required, remove `proxy_ip` from config to use builtin listener"
+                "Proxy no longer required, remove"
+                " `proxy_ip` from config to use"
+                " builtin listener"
             )
 
         for platform in PLATFORMS:

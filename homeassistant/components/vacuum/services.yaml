@@ -1,19 +1,5 @@
 # Describes the format for available vacuum services
 
-turn_on:
-  target:
-    entity:
-      domain: vacuum
-      supported_features:
-        - vacuum.VacuumEntityFeature.TURN_ON
-
-turn_off:
-  target:
-    entity:
-      domain: vacuum
-      supported_features:
-        - vacuum.VacuumEntityFeature.TURN_OFF
-
 stop:
   target:
     entity:
@@ -27,13 +13,6 @@ locate:
       domain: vacuum
       supported_features:
         - vacuum.VacuumEntityFeature.LOCATE
-
-start_pause:
-  target:
-    entity:
-      domain: vacuum
-      supported_features:
-        - vacuum.VacuumEntityFeature.PAUSE
 
 start:
   target:
@@ -61,6 +40,20 @@ clean_spot:
     entity:
       domain: vacuum
 
+clean_area:
+  target:
+    entity:
+      domain: vacuum
+      supported_features:
+        - vacuum.VacuumEntityFeature.CLEAN_AREA
+  fields:
+    cleaning_area_id:
+      required: true
+      selector:
+        area:
+          multiple: true
+          reorder: true
+
 send_command:
   target:
     entity:
@@ -85,4 +78,5 @@ set_fan_speed:
       required: true
       example: "low"
       selector:
-        text:
+        state:
+          attribute: fan_speed

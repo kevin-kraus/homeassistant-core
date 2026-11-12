@@ -1,20 +1,16 @@
 """The tests for mqtt image component."""
+
 from base64 import b64encode
-from contextlib import suppress
 from http import HTTPStatus
 import json
 import ssl
 from unittest.mock import MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
-import respx
-
-from homeassistant.components import image, mqtt
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, Platform
-from homeassistant.core import HomeAssistant
-
-from .test_common import (
+from pytest_homeassistant.common import async_fire_mqtt_message
+from pytest_homeassistant.components.mqtt.common import (
+    help_custom_config,
     help_test_availability_when_connection_lost,
     help_test_availability_without_topic,
     help_test_custom_availability_payload,
@@ -34,35 +30,31 @@ from .test_common import (
     help_test_reloadable,
     help_test_setting_attribute_via_mqtt_json_message,
     help_test_setting_attribute_with_template,
+    help_test_skipped_async_ha_write_state,
     help_test_unique_id,
     help_test_unload_config_entry_with_platform,
     help_test_update_with_json_attrs_bad_json,
     help_test_update_with_json_attrs_not_dict,
 )
-
-from tests.common import async_fire_mqtt_message
-from tests.typing import (
+from pytest_homeassistant.typing import (
     ClientSessionGenerator,
     MqttMockHAClientGenerator,
     MqttMockPahoClient,
 )
+import respx
 
-DEFAULT_CONFIG = {
-    mqtt.DOMAIN: {image.DOMAIN: {"name": "test", "image_topic": "test_topic"}}
-}
+from homeassistant.components import image
+from homeassistant.components.mqtt.const import DOMAIN
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import HomeAssistant
 
-
-@pytest.fixture(autouse=True)
-def image_platform_only():
-    """Only setup the image platform to speed up tests."""
-    with patch("homeassistant.components.mqtt.PLATFORMS", [Platform.IMAGE]):
-        yield
+DEFAULT_CONFIG = {DOMAIN: {image.DOMAIN: {"name": "test", "image_topic": "test_topic"}}}
 
 
 @pytest.mark.freeze_time("2023-04-01 00:00:00+00:00")
 @pytest.mark.parametrize(
     "hass_config",
-    [{mqtt.DOMAIN: {image.DOMAIN: {"image_topic": "test/image", "name": "Test"}}}],
+    [{DOMAIN: {image.DOMAIN: {"image_topic": "test/image", "name": "Test"}}}],
 )
 async def test_run_image_setup(
     hass: HomeAssistant,
@@ -98,7 +90,7 @@ async def test_run_image_setup(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 image.DOMAIN: {
                     "image_topic": "test/image",
                     "name": "Test",
@@ -152,7 +144,7 @@ async def test_run_image_b64_encoded(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 "image": {
                     "image_topic": "test/image",
                     "name": "Test",
@@ -205,7 +197,7 @@ async def test_image_b64_encoded_with_availability(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 "image": {
                     "url_topic": "test/image",
                     "name": "Test",
@@ -286,7 +278,7 @@ async def test_image_from_url(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 "image": {
                     "url_topic": "test/image",
                     "name": "Test",
@@ -339,7 +331,7 @@ async def test_image_from_url_with_template(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 "image": {
                     "url_topic": "test/image",
                     "name": "Test",
@@ -361,7 +353,6 @@ async def test_image_from_url_content_type(
     hass: HomeAssistant,
     hass_client_no_auth: ClientSessionGenerator,
     mqtt_mock_entry: MqttMockHAClientGenerator,
-    caplog: pytest.LogCaptureFixture,
     content_type: str,
     setup_ok: bool,
 ) -> None:
@@ -408,7 +399,7 @@ async def test_image_from_url_content_type(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 "image": {
                     "url_topic": "test/image",
                     "name": "Test",
@@ -421,8 +412,8 @@ async def test_image_from_url_content_type(
 @pytest.mark.parametrize(
     "side_effect",
     [
-        httpx.RequestError("server offline", request=MagicMock()),
-        httpx.TimeoutException,
+        httpx2.RequestError("server offline", request=MagicMock()),
+        httpx2.TimeoutException,
         ssl.SSLError,
     ],
 )
@@ -430,7 +421,6 @@ async def test_image_from_url_fails(
     hass: HomeAssistant,
     hass_client_no_auth: ClientSessionGenerator,
     mqtt_mock_entry: MqttMockHAClientGenerator,
-    caplog: pytest.LogCaptureFixture,
     side_effect: Exception,
 ) -> None:
     """Test setup with minimum configuration."""
@@ -454,7 +444,7 @@ async def test_image_from_url_fails(
 
     state = hass.states.get("image.test")
 
-    # The image failed to load, the the last image update is registered
+    # The image failed to load, the last image update is registered
     # but _last_image was set to `None`
     assert state.state == "2023-04-01T00:00:00+00:00"
     client = await hass_client_no_auth()
@@ -469,7 +459,7 @@ async def test_image_from_url_fails(
     [
         (
             {
-                mqtt.DOMAIN: {
+                DOMAIN: {
                     "image": {
                         "url_topic": "test/image",
                         "content_type": "image/jpg",
@@ -482,7 +472,7 @@ async def test_image_from_url_fails(
         ),
         (
             {
-                mqtt.DOMAIN: {
+                DOMAIN: {
                     "image": {
                         "url_topic": "test/image",
                         "image_topic": "test/image-data-topic",
@@ -495,27 +485,25 @@ async def test_image_from_url_fails(
         ),
         (
             {
-                mqtt.DOMAIN: {
+                DOMAIN: {
                     "image": {
                         "name": "Test",
                         "encoding": "utf-8",
                     }
                 }
             },
-            "Invalid config for [mqtt]: Expected one of [`image_topic`, `url_topic`], got none",
+            "Expected one of [`image_topic`, `url_topic`], got none",
         ),
     ],
 )
+@pytest.mark.usefixtures("hass", "hass_client_no_auth")
 async def test_image_config_fails(
-    hass: HomeAssistant,
-    hass_client_no_auth: ClientSessionGenerator,
     mqtt_mock_entry: MqttMockHAClientGenerator,
     caplog: pytest.LogCaptureFixture,
     error_msg: str,
 ) -> None:
     """Test setup with minimum configuration."""
-    with suppress(AssertionError):
-        await mqtt_mock_entry()
+    assert await mqtt_mock_entry()
     assert error_msg in caplog.text
 
 
@@ -582,11 +570,7 @@ async def test_update_with_json_attrs_not_dict(
 ) -> None:
     """Test attributes get extracted from a JSON result."""
     await help_test_update_with_json_attrs_not_dict(
-        hass,
-        mqtt_mock_entry,
-        caplog,
-        image.DOMAIN,
-        DEFAULT_CONFIG,
+        hass, mqtt_mock_entry, caplog, image.DOMAIN, DEFAULT_CONFIG
     )
 
 
@@ -597,26 +581,16 @@ async def test_update_with_json_attrs_bad_json(
 ) -> None:
     """Test attributes get extracted from a JSON result."""
     await help_test_update_with_json_attrs_bad_json(
-        hass,
-        mqtt_mock_entry,
-        caplog,
-        image.DOMAIN,
-        DEFAULT_CONFIG,
+        hass, mqtt_mock_entry, caplog, image.DOMAIN, DEFAULT_CONFIG
     )
 
 
 async def test_discovery_update_attr(
-    hass: HomeAssistant,
-    mqtt_mock_entry: MqttMockHAClientGenerator,
-    caplog: pytest.LogCaptureFixture,
+    hass: HomeAssistant, mqtt_mock_entry: MqttMockHAClientGenerator
 ) -> None:
     """Test update of discovered MQTTAttributes."""
     await help_test_discovery_update_attr(
-        hass,
-        mqtt_mock_entry,
-        caplog,
-        image.DOMAIN,
-        DEFAULT_CONFIG,
+        hass, mqtt_mock_entry, image.DOMAIN, DEFAULT_CONFIG
     )
 
 
@@ -624,7 +598,7 @@ async def test_discovery_update_attr(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 image.DOMAIN: [
                     {
                         "name": "Test 1",
@@ -649,33 +623,27 @@ async def test_unique_id(
 
 
 async def test_discovery_removal_image(
-    hass: HomeAssistant,
-    mqtt_mock_entry: MqttMockHAClientGenerator,
-    caplog: pytest.LogCaptureFixture,
+    hass: HomeAssistant, mqtt_mock_entry: MqttMockHAClientGenerator
 ) -> None:
     """Test removal of discovered image."""
-    data = json.dumps(DEFAULT_CONFIG[mqtt.DOMAIN][image.DOMAIN])
-    await help_test_discovery_removal(hass, mqtt_mock_entry, caplog, image.DOMAIN, data)
+    data = json.dumps(DEFAULT_CONFIG[DOMAIN][image.DOMAIN])
+    await help_test_discovery_removal(hass, mqtt_mock_entry, image.DOMAIN, data)
 
 
 async def test_discovery_update_image(
-    hass: HomeAssistant,
-    mqtt_mock_entry: MqttMockHAClientGenerator,
-    caplog: pytest.LogCaptureFixture,
+    hass: HomeAssistant, mqtt_mock_entry: MqttMockHAClientGenerator
 ) -> None:
     """Test update of discovered image."""
     config1 = {"name": "Beer", "image_topic": "test_topic"}
     config2 = {"name": "Milk", "image_topic": "test_topic"}
 
     await help_test_discovery_update(
-        hass, mqtt_mock_entry, caplog, image.DOMAIN, config1, config2
+        hass, mqtt_mock_entry, image.DOMAIN, config1, config2
     )
 
 
 async def test_discovery_update_unchanged_image(
-    hass: HomeAssistant,
-    mqtt_mock_entry: MqttMockHAClientGenerator,
-    caplog: pytest.LogCaptureFixture,
+    hass: HomeAssistant, mqtt_mock_entry: MqttMockHAClientGenerator
 ) -> None:
     """Test update of discovered image."""
     data1 = '{ "name": "Beer", "image_topic": "test_topic"}'
@@ -683,28 +651,19 @@ async def test_discovery_update_unchanged_image(
         "homeassistant.components.mqtt.image.MqttImage.discovery_update"
     ) as discovery_update:
         await help_test_discovery_update_unchanged(
-            hass,
-            mqtt_mock_entry,
-            caplog,
-            image.DOMAIN,
-            data1,
-            discovery_update,
+            hass, mqtt_mock_entry, image.DOMAIN, data1, discovery_update
         )
 
 
 @pytest.mark.no_fail_on_log_exception
 async def test_discovery_broken(
-    hass: HomeAssistant,
-    mqtt_mock_entry: MqttMockHAClientGenerator,
-    caplog: pytest.LogCaptureFixture,
+    hass: HomeAssistant, mqtt_mock_entry: MqttMockHAClientGenerator
 ) -> None:
     """Test handling of bad discovery message."""
     data1 = '{ "name": "Beer" }'
     data2 = '{ "name": "Milk", "image_topic": "test_topic"}'
 
-    await help_test_discovery_broken(
-        hass, mqtt_mock_entry, caplog, image.DOMAIN, data1, data2
-    )
+    await help_test_discovery_broken(hass, mqtt_mock_entry, image.DOMAIN, data1, data2)
 
 
 async def test_entity_device_info_with_connection(
@@ -752,7 +711,7 @@ async def test_entity_id_update_subscriptions(
         mqtt_mock_entry,
         image.DOMAIN,
         DEFAULT_CONFIG,
-        ["test_topic"],
+        ["test_topic", "avty-topic"],
     )
 
 
@@ -781,8 +740,7 @@ async def test_entity_debug_info_message(
 
 
 async def test_reloadable(
-    hass: HomeAssistant,
-    mqtt_client_mock: MqttMockPahoClient,
+    hass: HomeAssistant, mqtt_client_mock: MqttMockPahoClient
 ) -> None:
     """Test reloading the MQTT platform."""
     domain = image.DOMAIN
@@ -801,12 +759,73 @@ async def test_setup_manual_entity_from_yaml(
 
 
 async def test_unload_entry(
-    hass: HomeAssistant,
-    mqtt_mock_entry: MqttMockHAClientGenerator,
+    hass: HomeAssistant, mqtt_mock_entry: MqttMockHAClientGenerator
 ) -> None:
     """Test unloading the config entry."""
     domain = image.DOMAIN
     config = DEFAULT_CONFIG
     await help_test_unload_config_entry_with_platform(
         hass, mqtt_mock_entry, domain, config
+    )
+
+
+@pytest.mark.parametrize(
+    "hass_config",
+    [
+        help_custom_config(
+            image.DOMAIN,
+            DEFAULT_CONFIG,
+            (
+                {
+                    "availability_topic": "availability-topic",
+                    "json_attributes_topic": "json-attributes-topic",
+                },
+            ),
+        )
+    ],
+)
+@pytest.mark.parametrize(
+    ("topic", "payload1", "payload2"),
+    [
+        ("availability-topic", "online", "offline"),
+        ("json-attributes-topic", '{"attr1": "val1"}', '{"attr1": "val2"}'),
+    ],
+)
+async def test_skipped_async_ha_write_state(
+    hass: HomeAssistant,
+    mqtt_mock_entry: MqttMockHAClientGenerator,
+    topic: str,
+    payload1: str,
+    payload2: str,
+) -> None:
+    """Test a write state command is only called when there is change."""
+    await mqtt_mock_entry()
+    await help_test_skipped_async_ha_write_state(hass, topic, payload1, payload2)
+
+
+@pytest.mark.parametrize(
+    "hass_config",
+    [
+        {
+            DOMAIN: {
+                image.DOMAIN: {
+                    "name": "test",
+                    "url_topic": "test-topic",
+                    "url_template": "{{ value_json.some_var * 1 }}",
+                }
+            }
+        }
+    ],
+)
+async def test_value_template_fails(
+    hass: HomeAssistant,
+    mqtt_mock_entry: MqttMockHAClientGenerator,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test the rendering of MQTT value template fails."""
+    await mqtt_mock_entry()
+    async_fire_mqtt_message(hass, "test-topic", '{"some_var": null }')
+    assert (
+        "TypeError: unsupported operand type(s) for *:"
+        " 'NoneType' and 'int' rendering template" in caplog.text
     )

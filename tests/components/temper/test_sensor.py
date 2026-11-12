@@ -1,12 +1,13 @@
-"""The tests for the temper (USB temperature sensor) component."""
+"""The tests for the TEMPer integration."""
+
 from datetime import timedelta
 from unittest.mock import Mock, patch
 
+from pytest_homeassistant.common import async_fire_time_changed
+
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
-import homeassistant.util.dt as dt_util
-
-from tests.common import async_fire_time_changed
+from homeassistant.util import dt as dt_util
 
 
 async def test_temperature_readback(hass: HomeAssistant) -> None:
@@ -28,7 +29,7 @@ async def test_temperature_readback(hass: HomeAssistant) -> None:
         await hass.async_block_till_done()
 
         async_fire_time_changed(hass, utcnow + timedelta(seconds=70))
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
 
         temperature = hass.states.get("sensor.mydevicename")
         assert temperature

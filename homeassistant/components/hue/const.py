@@ -1,4 +1,5 @@
 """Constants for the Hue component."""
+
 from aiohue.v2.models.button import ButtonEvent
 from aiohue.v2.models.relative_rotary import (
     RelativeRotaryAction,
@@ -7,17 +8,19 @@ from aiohue.v2.models.relative_rotary import (
 
 DOMAIN = "hue"
 
-CONF_API_VERSION = "api_version"
 CONF_IGNORE_AVAILABILITY = "ignore_availability"
 
 CONF_SUBTYPE = "subtype"
 
 ATTR_HUE_EVENT = "hue_event"
+SERVICE_ACTIVATE_SCENE = "activate_scene"
 SERVICE_HUE_ACTIVATE_SCENE = "hue_activate_scene"
 ATTR_GROUP_NAME = "group_name"
 ATTR_SCENE_NAME = "scene_name"
 ATTR_TRANSITION = "transition"
 ATTR_DYNAMIC = "dynamic"
+ATTR_SPEED = "speed"
+ATTR_BRIGHTNESS = "brightness"
 
 
 # V1 API SPECIFIC CONSTANTS ##################

@@ -1,19 +1,19 @@
 """Support managing EventTypes."""
-from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from lru import LRU  # pylint: disable=no-name-in-module
+from lru import LRU
 from sqlalchemy.orm.session import Session
 
 from homeassistant.core import Event
+from homeassistant.util.collection import chunked_or_all
+from homeassistant.util.event_type import EventType
 
-from ..const import SQLITE_MAX_BIND_VARS
 from ..db_schema import EventTypes
 from ..queries import find_event_type_ids
 from ..tasks import RefreshEventTypesTask
-from ..util import chunked, execute_stmt_lambda_element
+from ..util import execute_stmt_lambda_element
 from . import BaseLRUTableManager
 
 if TYPE_CHECKING:
@@ -29,7 +29,9 @@ class EventTypeManager(BaseLRUTableManager[EventTypes]):
     def __init__(self, recorder: Recorder) -> None:
         """Initialize the event type manager."""
         super().__init__(recorder, CACHE_SIZE)
-        self._non_existent_event_types: LRU = LRU(CACHE_SIZE)
+        self._non_existent_event_types: LRU[EventType[Any] | str, None] = LRU(
+            CACHE_SIZE
+        )
 
     def load(self, events: list[Event], session: Session) -> None:
         """Load the event_type to event_type_ids mapping into memory.
@@ -44,26 +46,32 @@ class EventTypeManager(BaseLRUTableManager[EventTypes]):
         )
 
     def get(
-        self, event_type: str, session: Session, from_recorder: bool = False
+        self,
+        event_type: EventType[Any] | str,
+        session: Session,
+        from_recorder: bool = False,
     ) -> int | None:
         """Resolve event_type to the event_type_id.
 
         This call is not thread-safe and must be called from the
         recorder thread.
         """
-        return self.get_many((event_type,), session)[event_type]
+        return self.get_many((event_type,), session, from_recorder)[event_type]
 
     def get_many(
-        self, event_types: Iterable[str], session: Session, from_recorder: bool = False
-    ) -> dict[str, int | None]:
+        self,
+        event_types: Iterable[EventType[Any] | str],
+        session: Session,
+        from_recorder: bool = False,
+    ) -> dict[EventType[Any] | str, int | None]:
         """Resolve event_types to event_type_ids.
 
         This call is not thread-safe and must be called from the
         recorder thread.
         """
-        results: dict[str, int | None] = {}
-        missing: list[str] = []
-        non_existent: list[str] = []
+        results: dict[EventType[Any] | str, int | None] = {}
+        missing: list[EventType[Any] | str] = []
+        non_existent: list[EventType[Any] | str] = []
 
         for event_type in event_types:
             if (event_type_id := self._id_map.get(event_type)) is None:
@@ -78,7 +86,7 @@ class EventTypeManager(BaseLRUTableManager[EventTypes]):
             return results
 
         with session.no_autoflush:
-            for missing_chunk in chunked(missing, SQLITE_MAX_BIND_VARS):
+            for missing_chunk in chunked_or_all(missing, self.recorder.max_bind_vars):
                 for event_type_id, event_type in execute_stmt_lambda_element(
                     session, find_event_type_ids(missing_chunk), orm_rows=False
                 ):
@@ -113,7 +121,7 @@ class EventTypeManager(BaseLRUTableManager[EventTypes]):
         self._pending[event_type] = db_event_type
 
     def post_commit_pending(self) -> None:
-        """Call after commit to load the event_type_ids of the new EventTypes into the LRU.
+        """Call after commit to load new EventTypes into the LRU.
 
         This call is not thread-safe and must be called from the
         recorder thread.
@@ -123,7 +131,7 @@ class EventTypeManager(BaseLRUTableManager[EventTypes]):
             self.clear_non_existent(event_type)
         self._pending.clear()
 
-    def clear_non_existent(self, event_type: str) -> None:
+    def clear_non_existent(self, event_type: EventType[Any] | str) -> None:
         """Clear a non-existent event type from the cache.
 
         This call is not thread-safe and must be called from the

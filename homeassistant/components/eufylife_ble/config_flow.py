@@ -1,20 +1,19 @@
 """Config flow for the EufyLife integration."""
-from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
 from eufylife_ble_client import MODEL_TO_NAME
-import voluptuous as vol
+import probatio
 
+from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
 )
-from homeassistant.config_entries import ConfigFlow
-from homeassistant.const import CONF_ADDRESS
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.const import CONF_ADDRESS, CONF_MODEL
 
-from .const import CONF_MODEL, DOMAIN
+from .const import DOMAIN
 
 
 class EufyLifeConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -27,9 +26,10 @@ class EufyLifeConfigFlow(ConfigFlow, domain=DOMAIN):
         self._discovery_info: BluetoothServiceInfoBleak | None = None
         self._discovered_devices: dict[str, str] = {}
 
+    @override
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfoBleak
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the bluetooth discovery step."""
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
@@ -42,7 +42,7 @@ class EufyLifeConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_bluetooth_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Confirm discovery."""
         assert self._discovery_info is not None
         discovery_info = self._discovery_info
@@ -55,16 +55,16 @@ class EufyLifeConfigFlow(ConfigFlow, domain=DOMAIN):
                 title=model_name, data={CONF_MODEL: discovery_info.name}
             )
 
-        self._set_confirm_only()
         placeholders = {"name": model_name}
         self.context["title_placeholders"] = placeholders
         return self.async_show_form(
             step_id="bluetooth_confirm", description_placeholders=placeholders
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the user step to pick discovered device."""
         if user_input is not None:
             address = user_input[CONF_ADDRESS]
@@ -77,7 +77,8 @@ class EufyLifeConfigFlow(ConfigFlow, domain=DOMAIN):
                 data={CONF_MODEL: model},
             )
 
-        current_addresses = self._async_current_ids()
+        await bluetooth.async_request_active_scan(self.hass)
+        current_addresses = self._async_current_ids(include_ignore=False)
         for discovery_info in async_discovered_service_info(self.hass, False):
             address = discovery_info.address
             if (
@@ -93,7 +94,7 @@ class EufyLifeConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {vol.Required(CONF_ADDRESS): vol.In(self._discovered_devices)}
+            data_schema=probatio.Schema(
+                {probatio.Required(CONF_ADDRESS): probatio.In(self._discovered_devices)}
             ),
         )

@@ -1,27 +1,24 @@
 """Provides device actions for Network UPS Tools (NUT)."""
-from __future__ import annotations
 
-import voluptuous as vol
+from typing import cast
 
+import probatio
+
+from homeassistant.components.device_automation import InvalidDeviceAutomationConfig
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_DEVICE_ID, CONF_DOMAIN, CONF_TYPE
 from homeassistant.core import Context, HomeAssistant
-from homeassistant.helpers import device_registry as dr
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.typing import ConfigType, TemplateVarsType
 
-from . import PyNUTData
-from .const import (
-    DOMAIN,
-    INTEGRATION_SUPPORTED_COMMANDS,
-    PYNUT_DATA,
-    USER_AVAILABLE_COMMANDS,
-)
+from .const import DOMAIN, INTEGRATION_SUPPORTED_COMMANDS
+from .coordinator import NutConfigEntry, NutRuntimeData
 
 ACTION_TYPES = {cmd.replace(".", "_") for cmd in INTEGRATION_SUPPORTED_COMMANDS}
 
 ACTION_SCHEMA = cv.DEVICE_ACTION_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_TYPE): vol.In(ACTION_TYPES),
+        probatio.Required(CONF_TYPE): probatio.In(ACTION_TYPES),
     }
 )
 
@@ -30,18 +27,15 @@ async def async_get_actions(
     hass: HomeAssistant, device_id: str
 ) -> list[dict[str, str]]:
     """List device actions for Network UPS Tools (NUT) devices."""
-    if (entry_id := _get_entry_id_from_device_id(hass, device_id)) is None:
+    if (runtime_data := _get_runtime_data_from_device_id(hass, device_id)) is None:
         return []
     base_action = {
         CONF_DEVICE_ID: device_id,
         CONF_DOMAIN: DOMAIN,
     }
-    user_available_commands: set[str] = hass.data[DOMAIN][entry_id][
-        USER_AVAILABLE_COMMANDS
-    ]
     return [
         {CONF_TYPE: _get_device_action_name(command_name)} | base_action
-        for command_name in user_available_commands
+        for command_name in runtime_data.user_available_commands
     ]
 
 
@@ -55,9 +49,11 @@ async def async_call_action_from_config(
     device_action_name: str = config[CONF_TYPE]
     command_name = _get_command_name(device_action_name)
     device_id: str = config[CONF_DEVICE_ID]
-    entry_id = _get_entry_id_from_device_id(hass, device_id)
-    data: PyNUTData = hass.data[DOMAIN][entry_id][PYNUT_DATA]
-    await data.async_run_command(hass, command_name)
+
+    if runtime_data := _get_runtime_data_from_device_id_exception_on_failure(
+        hass, device_id
+    ):
+        await runtime_data.data.async_run_command(command_name)
 
 
 def _get_device_action_name(command_name: str) -> str:
@@ -68,8 +64,60 @@ def _get_command_name(device_action_name: str) -> str:
     return device_action_name.replace("_", ".")
 
 
-def _get_entry_id_from_device_id(hass: HomeAssistant, device_id: str) -> str | None:
+def _get_runtime_data_from_device_id(
+    hass: HomeAssistant,
+    device_id: str,
+) -> NutRuntimeData | None:
+    """Find the runtime data for device ID and return None on error."""
     device_registry = dr.async_get(hass)
-    if (device := device_registry.async_get(device_id)) is None:
+    if (
+        device := device_registry.async_get(device_id, include_child_devices=False)
+    ) is None:
         return None
-    return next(entry for entry in device.config_entries)
+    return _get_runtime_data_for_device(hass, device)
+
+
+def _get_runtime_data_for_device(
+    hass: HomeAssistant, device: dr.DeviceEntry
+) -> NutRuntimeData | None:
+    """Find the runtime data for device and return None on error."""
+    _, config_entry = dr.async_get_device_and_config_entry_for_domain(
+        hass, device.id, domain=DOMAIN
+    )
+    if (
+        config_entry
+        and config_entry.state is ConfigEntryState.LOADED
+        and hasattr(config_entry, "runtime_data")
+    ):
+        return cast(NutConfigEntry, config_entry).runtime_data
+
+    return None
+
+
+def _get_runtime_data_from_device_id_exception_on_failure(
+    hass: HomeAssistant,
+    device_id: str,
+) -> NutRuntimeData | None:
+    """Find the runtime data for device ID and raise exception on error."""
+    device_registry = dr.async_get(hass)
+    if (
+        device := device_registry.async_get(device_id, include_child_devices=False)
+    ) is None:
+        raise InvalidDeviceAutomationConfig(
+            translation_domain=DOMAIN,
+            translation_key="device_not_found",
+            translation_placeholders={
+                "device_id": device_id,
+            },
+        )
+
+    if runtime_data := _get_runtime_data_for_device(hass, device):
+        return runtime_data
+
+    raise InvalidDeviceAutomationConfig(
+        translation_domain=DOMAIN,
+        translation_key="config_invalid",
+        translation_placeholders={
+            "device_id": device_id,
+        },
+    )

@@ -1,19 +1,21 @@
 """Test the Fronius integration."""
+
 from datetime import timedelta
 from unittest.mock import patch
 
-from pyfronius import FroniusError
+from freezegun.api import FrozenDateTimeFactory
+from fronius_solarapi import FroniusError
+from pytest_homeassistant.common import async_fire_time_changed
+from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
+from pytest_homeassistant.typing import WebSocketGenerator
 
 from homeassistant.components.fronius.const import DOMAIN, SOLAR_NET_RESCAN_TIMER
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
-from homeassistant.util import dt as dt_util
+from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.setup import async_setup_component
 
 from . import mock_responses, setup_fronius_integration
-
-from tests.common import async_fire_time_changed
-from tests.test_util.aiohttp import AiohttpClientMocker
 
 
 async def test_unload_config_entry(
@@ -36,6 +38,19 @@ async def test_unload_config_entry(
     assert not hass.data.get(DOMAIN)
 
 
+async def test_migrate_config_entry(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Test migration adds the Modbus settings to old config entries."""
+    mock_responses(aioclient_mock)
+    entry = await setup_fronius_integration(hass)
+
+    assert entry.version == 1
+    assert entry.minor_version == 3
+    assert entry.data["modbus_port"] == 502
+    assert entry.data["auto_revert_power_limit"] is False
+
+
 async def test_logger_error(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
@@ -52,7 +67,7 @@ async def test_inverter_error(
     """Test setup when inverter_info reports an error."""
     mock_responses(aioclient_mock)
     with patch(
-        "pyfronius.Fronius.inverter_info",
+        "fronius_solarapi.FroniusSolarApi.inverter_info",
         side_effect=FroniusError,
     ):
         config_entry = await setup_fronius_integration(hass)
@@ -60,9 +75,12 @@ async def test_inverter_error(
 
 
 async def test_inverter_night_rescan(
-    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    aioclient_mock: AiohttpClientMocker,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
-    """Test dynamic adding of an inverter discovered automatically after a Home Assistant reboot during the night."""
+    """Test adding inverter discovered after HA reboot at night."""
     mock_responses(aioclient_mock, fixture_set="igplus_v2", night=True)
     config_entry = await setup_fronius_integration(hass, is_logger=True)
     assert config_entry.state is ConfigEntryState.LOADED
@@ -73,33 +91,36 @@ async def test_inverter_night_rescan(
 
     # Switch to daytime
     mock_responses(aioclient_mock, fixture_set="igplus_v2", night=False)
-    async_fire_time_changed(
-        hass, dt_util.utcnow() + timedelta(minutes=SOLAR_NET_RESCAN_TIMER)
-    )
+    freezer.tick(timedelta(minutes=SOLAR_NET_RESCAN_TIMER))
+    async_fire_time_changed(hass)
     await hass.async_block_till_done()
 
     # We expect our inverter to be present now
-    device_registry = dr.async_get(hass)
-    inverter_1 = device_registry.async_get_device(identifiers={(DOMAIN, "203200")})
+    inverter_1 = device_registry.async_get_device_by_identifier(
+        (DOMAIN, "203200"), config_entry.entry_id
+    )
     assert inverter_1.manufacturer == "Fronius"
 
     # After another re-scan we still only expect this inverter
-    async_fire_time_changed(
-        hass, dt_util.utcnow() + timedelta(minutes=SOLAR_NET_RESCAN_TIMER * 2)
-    )
+    freezer.tick(timedelta(minutes=SOLAR_NET_RESCAN_TIMER))
+    async_fire_time_changed(hass)
     await hass.async_block_till_done()
-    inverter_1 = device_registry.async_get_device(identifiers={(DOMAIN, "203200")})
+    inverter_1 = device_registry.async_get_device_by_identifier(
+        (DOMAIN, "203200"), config_entry.entry_id
+    )
     assert inverter_1.manufacturer == "Fronius"
 
 
 async def test_inverter_rescan_interruption(
-    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    aioclient_mock: AiohttpClientMocker,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     """Test interruption of re-scan during runtime to process further."""
     mock_responses(aioclient_mock, fixture_set="igplus_v2", night=True)
     config_entry = await setup_fronius_integration(hass, is_logger=True)
     assert config_entry.state is ConfigEntryState.LOADED
-    device_registry = dr.async_get(hass)
     # Expect 1 devices during the night, logger
     assert (
         len(dr.async_entries_for_config_entry(device_registry, config_entry.entry_id))
@@ -107,12 +128,11 @@ async def test_inverter_rescan_interruption(
     )
 
     with patch(
-        "pyfronius.Fronius.inverter_info",
+        "fronius_solarapi.FroniusSolarApi.inverter_info",
         side_effect=FroniusError,
     ):
-        async_fire_time_changed(
-            hass, dt_util.utcnow() + timedelta(minutes=SOLAR_NET_RESCAN_TIMER)
-        )
+        freezer.tick(timedelta(minutes=SOLAR_NET_RESCAN_TIMER))
+        async_fire_time_changed(hass)
         await hass.async_block_till_done()
 
         # No increase of devices expected because of a FroniusError
@@ -127,12 +147,45 @@ async def test_inverter_rescan_interruption(
 
     # Next re-scan will pick up the new inverter. Expect 2 devices now.
     mock_responses(aioclient_mock, fixture_set="igplus_v2", night=False)
-    async_fire_time_changed(
-        hass, dt_util.utcnow() + timedelta(minutes=SOLAR_NET_RESCAN_TIMER * 2)
-    )
+    freezer.tick(timedelta(minutes=SOLAR_NET_RESCAN_TIMER))
+    async_fire_time_changed(hass)
     await hass.async_block_till_done()
 
     assert (
         len(dr.async_entries_for_config_entry(device_registry, config_entry.entry_id))
         == 2
+    )
+
+
+async def test_device_remove_devices(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """Test we can remove a device."""
+    assert await async_setup_component(hass, "config", {})
+
+    mock_responses(aioclient_mock, fixture_set="gen24_storage")
+    config_entry = await setup_fronius_integration(
+        hass, is_logger=False, unique_id="12345678"
+    )
+
+    inverter_1 = device_registry.async_get_device_by_identifier(
+        (DOMAIN, "12345678"), config_entry.entry_id
+    )
+    assert device_registry.async_get_child_device_by_identifier(
+        (DOMAIN, "12345678-mppt-1"), config_entry.entry_id
+    )
+    client = await hass_ws_client(hass)
+    response = await client.remove_device(inverter_1.id)
+    assert response["success"]
+
+    assert not device_registry.async_get_device_by_identifier(
+        (DOMAIN, "12345678"), config_entry.entry_id
+    )
+    # the MPPT child devices go with their inverter
+    assert not device_registry.async_get_child_device_by_identifier(
+        (DOMAIN, "12345678-mppt-1"), config_entry.entry_id
     )

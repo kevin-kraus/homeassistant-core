@@ -1,15 +1,27 @@
 """Start Home Assistant."""
-from __future__ import annotations
 
 import argparse
+from contextlib import suppress
 import faulthandler
 import os
 import sys
 import threading
 
+from .backup_restore import restore_backup
 from .const import REQUIRED_PYTHON_VER, RESTART_EXIT_CODE, __version__
+from .util.package import is_docker_env, is_virtual_env
 
 FAULT_LOG_FILENAME = "home-assistant.log.fault"
+
+
+def validate_environment() -> None:
+    """Validate that Home Assistant is started from a container or a venv."""
+    if not is_virtual_env() and not is_docker_env():
+        print(
+            "Home Assistant must be run in a Python virtual environment or a container.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def validate_os() -> None:
@@ -35,10 +47,7 @@ def validate_python() -> None:
 
 def ensure_config_path(config_dir: str) -> None:
     """Validate the configuration directory."""
-    # pylint: disable-next=import-outside-toplevel
-    from . import config as config_util
-
-    lib_dir = os.path.join(config_dir, "deps")
+    from . import config as config_util  # noqa: PLC0415
 
     # Test if configuration directory exists
     if not os.path.isdir(config_dir):
@@ -63,22 +72,10 @@ def ensure_config_path(config_dir: str) -> None:
             )
             sys.exit(1)
 
-    # Test if library directory exists
-    if not os.path.isdir(lib_dir):
-        try:
-            os.mkdir(lib_dir)
-        except OSError as ex:
-            print(
-                f"Fatal Error: Unable to create library directory {lib_dir}: {ex}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
 
 def get_arguments() -> argparse.Namespace:
     """Get parsed passed in arguments."""
-    # pylint: disable-next=import-outside-toplevel
-    from . import config as config_util
+    from . import config as config_util  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(
         description="Home Assistant: Observe, Control, Automate.",
@@ -93,7 +90,9 @@ def get_arguments() -> argparse.Namespace:
         help="Directory that contains the Home Assistant configuration",
     )
     parser.add_argument(
-        "--safe-mode", action="store_true", help="Start Home Assistant in safe mode"
+        "--recovery-mode",
+        action="store_true",
+        help="Start Home Assistant in recovery mode",
     )
     parser.add_argument(
         "--debug", action="store_true", help="Start Home Assistant in debug mode"
@@ -143,9 +142,7 @@ def get_arguments() -> argparse.Namespace:
         help="Skips validation of operating system",
     )
 
-    arguments = parser.parse_args()
-
-    return arguments
+    return parser.parse_args()
 
 
 def check_threads() -> None:
@@ -167,6 +164,7 @@ def check_threads() -> None:
 def main() -> int:
     """Start Home Assistant."""
     validate_python()
+    validate_environment()
 
     args = get_arguments()
 
@@ -174,42 +172,54 @@ def main() -> int:
         validate_os()
 
     if args.script is not None:
-        # pylint: disable-next=import-outside-toplevel
-        from . import scripts
+        from . import scripts  # noqa: PLC0415
 
         return scripts.run(args.script)
 
     config_dir = os.path.abspath(os.path.join(os.getcwd(), args.config))
+    if restore_backup(config_dir):
+        return RESTART_EXIT_CODE
+
     ensure_config_path(config_dir)
 
-    # pylint: disable-next=import-outside-toplevel
-    from . import runner
+    from . import config, runner  # noqa: PLC0415
 
-    runtime_conf = runner.RuntimeConfig(
-        config_dir=config_dir,
-        verbose=args.verbose,
-        log_rotate_days=args.log_rotate_days,
-        log_file=args.log_file,
-        log_no_color=args.log_no_color,
-        skip_pip=args.skip_pip,
-        skip_pip_packages=args.skip_pip_packages,
-        safe_mode=args.safe_mode,
-        debug=args.debug,
-        open_ui=args.open_ui,
-    )
+    # Ensure only one instance runs per config directory
+    with runner.ensure_single_execution(config_dir) as single_execution_lock:
+        # Check if another instance is already running
+        if single_execution_lock.exit_code is not None:
+            return single_execution_lock.exit_code
 
-    fault_file_name = os.path.join(config_dir, FAULT_LOG_FILENAME)
-    with open(fault_file_name, mode="a", encoding="utf8") as fault_file:
-        faulthandler.enable(fault_file)
-        exit_code = runner.run(runtime_conf)
-        faulthandler.disable()
+        safe_mode = config.safe_mode_enabled(config_dir)
 
-    if os.path.getsize(fault_file_name) == 0:
-        os.remove(fault_file_name)
+        runtime_conf = runner.RuntimeConfig(
+            config_dir=config_dir,
+            verbose=args.verbose,
+            log_rotate_days=args.log_rotate_days,
+            log_file=args.log_file,
+            log_no_color=args.log_no_color,
+            skip_pip=args.skip_pip,
+            skip_pip_packages=args.skip_pip_packages,
+            recovery_mode=args.recovery_mode,
+            debug=args.debug,
+            open_ui=args.open_ui,
+            safe_mode=safe_mode,
+        )
 
-    check_threads()
+        fault_file_name = os.path.join(config_dir, FAULT_LOG_FILENAME)
+        with open(fault_file_name, mode="a", encoding="utf8") as fault_file:
+            faulthandler.enable(fault_file)
+            exit_code = runner.run(runtime_conf)
+            faulthandler.disable()
 
-    return exit_code
+        # It's possible for the fault file to disappear, so suppress obvious errors
+        with suppress(FileNotFoundError):
+            if os.path.getsize(fault_file_name) == 0:
+                os.remove(fault_file_name)
+
+        check_threads()
+
+        return exit_code
 
 
 if __name__ == "__main__":

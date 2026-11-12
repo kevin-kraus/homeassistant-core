@@ -1,21 +1,19 @@
 """Intents for the humidifier integration."""
-from __future__ import annotations
 
-import voluptuous as vol
+from typing import override
 
-from homeassistant.const import ATTR_ENTITY_ID, ATTR_MODE, STATE_OFF
+import probatio
+
+from homeassistant.const import ATTR_ENTITY_ID, STATE_OFF
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import intent
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv, intent
 
-from . import (
-    ATTR_AVAILABLE_MODES,
-    ATTR_HUMIDITY,
+from . import HumidifierEntityFeature
+from .const import (
     DOMAIN,
-    SERVICE_SET_HUMIDITY,
-    SERVICE_SET_MODE,
-    SERVICE_TURN_ON,
-    HumidifierEntityFeature,
+    HumidifierEntityCapabilityAttribute,
+    HumidifierService,
+    HumidifierServiceArgument,
 )
 
 INTENT_HUMIDITY = "HassHumidifierSetpoint"
@@ -32,43 +30,52 @@ class HumidityHandler(intent.IntentHandler):
     """Handle set humidity intents."""
 
     intent_type = INTENT_HUMIDITY
+    description = "Set desired humidity level"
     slot_schema = {
-        vol.Required("name"): cv.string,
-        vol.Required("humidity"): vol.All(vol.Coerce(int), vol.Range(0, 100)),
+        probatio.Required("name"): intent.non_empty_string,
+        probatio.Required("humidity"): probatio.All(
+            probatio.Coerce(int), probatio.Range(0, 100)
+        ),
     }
+    platforms = {DOMAIN}
 
+    @override
     async def async_handle(self, intent_obj: intent.Intent) -> intent.IntentResponse:
         """Handle the hass intent."""
         hass = intent_obj.hass
         slots = self.async_validate_slots(intent_obj.slots)
-        states = list(
-            intent.async_match_states(
-                hass,
-                name=slots["name"]["value"],
-                states=hass.states.async_all(DOMAIN),
-            )
+
+        match_constraints = intent.MatchTargetsConstraints(
+            name=slots["name"]["value"],
+            domains=[DOMAIN],
+            assistant=intent_obj.assistant,
         )
+        match_result = intent.async_match_targets(hass, match_constraints)
+        if not match_result.is_match:
+            raise intent.MatchFailedError(
+                result=match_result, constraints=match_constraints
+            )
 
-        if not states:
-            raise intent.IntentHandleError("No entities matched")
-
-        state = states[0]
+        state = match_result.states[0]
         service_data = {ATTR_ENTITY_ID: state.entity_id}
 
         humidity = slots["humidity"]["value"]
 
         if state.state == STATE_OFF:
             await hass.services.async_call(
-                DOMAIN, SERVICE_TURN_ON, service_data, context=intent_obj.context
+                DOMAIN,
+                HumidifierService.TURN_ON,
+                service_data,
+                context=intent_obj.context,
             )
             speech = f"Turned {state.name} on and set humidity to {humidity}%"
         else:
             speech = f"The {state.name} is set to {humidity}%"
 
-        service_data[ATTR_HUMIDITY] = humidity
+        service_data[HumidifierServiceArgument.HUMIDITY] = humidity
         await hass.services.async_call(
             DOMAIN,
-            SERVICE_SET_HUMIDITY,
+            HumidifierService.SET_HUMIDITY,
             service_data,
             context=intent_obj.context,
             blocking=True,
@@ -84,33 +91,39 @@ class SetModeHandler(intent.IntentHandler):
     """Handle set humidity intents."""
 
     intent_type = INTENT_MODE
+    description = "Set humidifier mode"
     slot_schema = {
-        vol.Required("name"): cv.string,
-        vol.Required("mode"): cv.string,
+        probatio.Required("name"): intent.non_empty_string,
+        probatio.Required("mode"): cv.string,
     }
+    platforms = {DOMAIN}
 
+    @override
     async def async_handle(self, intent_obj: intent.Intent) -> intent.IntentResponse:
         """Handle the hass intent."""
         hass = intent_obj.hass
         slots = self.async_validate_slots(intent_obj.slots)
-        states = list(
-            intent.async_match_states(
-                hass,
-                name=slots["name"]["value"],
-                states=hass.states.async_all(DOMAIN),
-            )
+        match_constraints = intent.MatchTargetsConstraints(
+            name=slots["name"]["value"],
+            domains=[DOMAIN],
+            assistant=intent_obj.assistant,
         )
+        match_result = intent.async_match_targets(hass, match_constraints)
+        if not match_result.is_match:
+            raise intent.MatchFailedError(
+                result=match_result, constraints=match_constraints
+            )
 
-        if not states:
-            raise intent.IntentHandleError("No entities matched")
-
-        state = states[0]
+        state = match_result.states[0]
         service_data = {ATTR_ENTITY_ID: state.entity_id}
 
         intent.async_test_feature(state, HumidifierEntityFeature.MODES, "modes")
         mode = slots["mode"]["value"]
 
-        if mode not in state.attributes.get(ATTR_AVAILABLE_MODES, []):
+        if mode not in (
+            state.attributes.get(HumidifierEntityCapabilityAttribute.AVAILABLE_MODES)
+            or []
+        ):
             raise intent.IntentHandleError(
                 f"Entity {state.name} does not support {mode} mode"
             )
@@ -118,7 +131,7 @@ class SetModeHandler(intent.IntentHandler):
         if state.state == STATE_OFF:
             await hass.services.async_call(
                 DOMAIN,
-                SERVICE_TURN_ON,
+                HumidifierService.TURN_ON,
                 service_data,
                 context=intent_obj.context,
                 blocking=True,
@@ -127,10 +140,10 @@ class SetModeHandler(intent.IntentHandler):
         else:
             speech = f"The mode for {state.name} is set to {mode}"
 
-        service_data[ATTR_MODE] = mode
+        service_data[HumidifierServiceArgument.MODE] = mode
         await hass.services.async_call(
             DOMAIN,
-            SERVICE_SET_MODE,
+            HumidifierService.SET_MODE,
             service_data,
             context=intent_obj.context,
             blocking=True,

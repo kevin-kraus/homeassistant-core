@@ -1,8 +1,12 @@
 """The tests for the demo water_heater component."""
+
+from unittest.mock import patch
+
+import probatio
 import pytest
-import voluptuous as vol
 
 from homeassistant.components import water_heater
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
@@ -13,8 +17,18 @@ ENTITY_WATER_HEATER = "water_heater.demo_water_heater"
 ENTITY_WATER_HEATER_CELSIUS = "water_heater.demo_water_heater_celsius"
 
 
+@pytest.fixture
+async def water_heater_only() -> None:
+    """Enable only the datetime platform."""
+    with patch(
+        "homeassistant.components.demo.COMPONENTS_WITH_CONFIG_ENTRY_DEMO_PLATFORM",
+        [Platform.WATER_HEATER],
+    ):
+        yield
+
+
 @pytest.fixture(autouse=True)
-async def setup_comp(hass, disable_platforms):
+async def setup_comp(hass: HomeAssistant, water_heater_only: None):
     """Set up demo component."""
     hass.config.units = US_CUSTOMARY_SYSTEM
     assert await async_setup_component(
@@ -29,6 +43,7 @@ async def test_setup_params(hass: HomeAssistant) -> None:
     assert state.attributes.get("temperature") == 119
     assert state.attributes.get("away_mode") == "off"
     assert state.attributes.get("operation_mode") == "eco"
+    assert state.attributes.get("target_temp_step") == 1
 
 
 async def test_default_setup_params(hass: HomeAssistant) -> None:
@@ -42,7 +57,7 @@ async def test_set_only_target_temp_bad_attr(hass: HomeAssistant) -> None:
     """Test setting the target temperature without required attribute."""
     state = hass.states.get(ENTITY_WATER_HEATER)
     assert state.attributes.get("temperature") == 119
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         await common.async_set_temperature(hass, None, ENTITY_WATER_HEATER)
     assert state.attributes.get("temperature") == 119
 
@@ -64,7 +79,7 @@ async def test_set_operation_bad_attr_and_state(hass: HomeAssistant) -> None:
     state = hass.states.get(ENTITY_WATER_HEATER)
     assert state.attributes.get("operation_mode") == "eco"
     assert state.state == "eco"
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         await common.async_set_operation_mode(hass, None, ENTITY_WATER_HEATER)
     state = hass.states.get(ENTITY_WATER_HEATER)
     assert state.attributes.get("operation_mode") == "eco"
@@ -86,7 +101,7 @@ async def test_set_away_mode_bad_attr(hass: HomeAssistant) -> None:
     """Test setting the away mode without required attribute."""
     state = hass.states.get(ENTITY_WATER_HEATER)
     assert state.attributes.get("away_mode") == "off"
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         await common.async_set_away_mode(hass, None, ENTITY_WATER_HEATER)
     assert state.attributes.get("away_mode") == "off"
 

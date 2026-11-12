@@ -1,14 +1,13 @@
 """Support for recording details."""
-from __future__ import annotations
 
 import logging
 from typing import Any
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.const import CONF_EXCLUDE, EVENT_STATE_CHANGED
-from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entityfilter import (
     INCLUDE_EXCLUDE_BASE_FILTER_SCHEMA,
     INCLUDE_EXCLUDE_FILTER_SCHEMA_INNER,
@@ -17,27 +16,30 @@ from homeassistant.helpers.entityfilter import (
 from homeassistant.helpers.integration_platform import (
     async_process_integration_platforms,
 )
+from homeassistant.helpers.recorder import DATA_INSTANCE, get_instance
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.loader import bind_hass
+from homeassistant.util.event_type import EventType
 
-from . import entity_registry, websocket_api
-from .const import (  # noqa: F401
+# Pre-import backup to avoid it being imported
+# later when the import executor is busy and delaying
+# startup
+from . import (
+    backup,  # noqa: F401
+    entity_options,
+    entity_registry,
+    websocket_api,
+)
+from .const import (
     CONF_DB_INTEGRITY_CHECK,
-    DATA_INSTANCE,
     DOMAIN,
-    EVENT_RECORDER_5MIN_STATISTICS_GENERATED,
-    EVENT_RECORDER_HOURLY_STATISTICS_GENERATED,
-    EXCLUDE_ATTRIBUTES,
-    INTEGRATION_PLATFORM_COMPILE_STATISTICS,
-    INTEGRATION_PLATFORM_EXCLUDE_ATTRIBUTES,
-    INTEGRATION_PLATFORMS_LOAD_IN_RECORDER_THREAD,
+    INTEGRATION_PLATFORM_METHODS,
     SQLITE_URL_PREFIX,
     SupportedDialect,
 )
 from .core import Recorder
-from .services import async_register_services
+from .entity_options import is_entity_recorded
+from .services import async_setup_services
 from .tasks import AddRecorderPlatformTask
-from .util import get_instance
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,15 +63,30 @@ CONF_COMMIT_INTERVAL = "commit_interval"
 
 
 EXCLUDE_SCHEMA = INCLUDE_EXCLUDE_FILTER_SCHEMA_INNER.extend(
-    {vol.Optional(CONF_EVENT_TYPES): vol.All(cv.ensure_list, [cv.string])}
+    {
+        probatio.Optional(CONF_EVENT_TYPES): probatio.All(
+            probatio.EnsureList(), [cv.string]
+        )
+    }
 )
 
 FILTER_SCHEMA = INCLUDE_EXCLUDE_BASE_FILTER_SCHEMA.extend(
-    {vol.Optional(CONF_EXCLUDE, default=EXCLUDE_SCHEMA({})): EXCLUDE_SCHEMA}
+    {probatio.Optional(CONF_EXCLUDE, default=EXCLUDE_SCHEMA({})): EXCLUDE_SCHEMA}
 )
 
 
 ALLOW_IN_MEMORY_DB = False
+
+__all__ = [
+    "CONF_DB_URL",
+    "DEFAULT_DB_FILE",
+    "DEFAULT_URL",
+    "DOMAIN",
+    "Recorder",
+    "SupportedDialect",
+    "get_instance",
+    "is_entity_recorded",
+]
 
 
 def validate_db_url(db_url: str) -> Any:
@@ -79,74 +96,63 @@ def validate_db_url(db_url: str) -> Any:
         db_url == SQLITE_URL_PREFIX
         or (db_url.startswith(SQLITE_URL_PREFIX) and ":memory:" in db_url)
     ) and not ALLOW_IN_MEMORY_DB:
-        raise vol.Invalid("In-memory SQLite database is not supported")
+        raise probatio.Invalid("In-memory SQLite database is not supported")
 
     return db_url
 
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        vol.Optional(DOMAIN, default=dict): vol.All(
+        probatio.Optional(DOMAIN, default=dict): probatio.All(
             cv.deprecated(CONF_PURGE_INTERVAL),
             cv.deprecated(CONF_DB_INTEGRITY_CHECK),
             FILTER_SCHEMA.extend(
                 {
-                    vol.Optional(CONF_AUTO_PURGE, default=True): cv.boolean,
-                    vol.Optional(CONF_AUTO_REPACK, default=True): cv.boolean,
-                    vol.Optional(CONF_PURGE_KEEP_DAYS, default=10): vol.All(
-                        vol.Coerce(int), vol.Range(min=1)
+                    probatio.Optional(CONF_AUTO_PURGE, default=True): cv.boolean,
+                    probatio.Optional(CONF_AUTO_REPACK, default=True): cv.boolean,
+                    probatio.Optional(CONF_PURGE_KEEP_DAYS, default=10): probatio.All(
+                        probatio.Coerce(int), probatio.Range(min=1)
                     ),
-                    vol.Optional(CONF_PURGE_INTERVAL, default=1): cv.positive_int,
-                    vol.Optional(CONF_DB_URL): vol.All(cv.string, validate_db_url),
-                    vol.Optional(
+                    probatio.Optional(CONF_PURGE_INTERVAL, default=1): cv.positive_int,
+                    probatio.Optional(CONF_DB_URL): probatio.All(
+                        cv.string, validate_db_url
+                    ),
+                    probatio.Optional(
                         CONF_COMMIT_INTERVAL, default=DEFAULT_COMMIT_INTERVAL
                     ): cv.positive_int,
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_DB_MAX_RETRIES, default=DEFAULT_DB_MAX_RETRIES
                     ): cv.positive_int,
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_DB_RETRY_WAIT, default=DEFAULT_DB_RETRY_WAIT
                     ): cv.positive_int,
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_DB_INTEGRITY_CHECK, default=DEFAULT_DB_INTEGRITY_CHECK
                     ): cv.boolean,
                 }
             ),
         )
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
-
-
-@bind_hass
-def is_entity_recorded(hass: HomeAssistant, entity_id: str) -> bool:
-    """Check if an entity is being recorded.
-
-    Async friendly.
-    """
-    if DATA_INSTANCE not in hass.data:
-        return False
-    instance = get_instance(hass)
-    return instance.entity_filter(entity_id)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the recorder."""
-    exclude_attributes_by_domain: dict[str, set[str]] = {}
-    hass.data[EXCLUDE_ATTRIBUTES] = exclude_attributes_by_domain
     conf = config[DOMAIN]
-    entity_filter = convert_include_exclude_filter(conf).get_filter()
+    _filter = convert_include_exclude_filter(conf)
+    entity_filter = None if _filter.empty_filter else _filter.get_filter()
     auto_purge = conf[CONF_AUTO_PURGE]
     auto_repack = conf[CONF_AUTO_REPACK]
     keep_days = conf[CONF_PURGE_KEEP_DAYS]
     commit_interval = conf[CONF_COMMIT_INTERVAL]
     db_max_retries = conf[CONF_DB_MAX_RETRIES]
     db_retry_wait = conf[CONF_DB_RETRY_WAIT]
-    db_url = conf.get(CONF_DB_URL) or DEFAULT_URL.format(
-        hass_config_path=hass.config.path(DEFAULT_DB_FILE)
-    )
+    db_url = conf.get(CONF_DB_URL) or get_default_url(hass)
     exclude = conf[CONF_EXCLUDE]
-    exclude_event_types: set[str] = set(exclude.get(CONF_EVENT_TYPES, []))
+    exclude_event_types: set[EventType[Any] | str] = set(
+        exclude.get(CONF_EVENT_TYPES, [])
+    )
     if EVENT_STATE_CHANGED in exclude_event_types:
         _LOGGER.error("State change events cannot be excluded, use a filter instead")
         exclude_event_types.remove(EVENT_STATE_CHANGED)
@@ -161,48 +167,39 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         db_retry_wait=db_retry_wait,
         entity_filter=entity_filter,
         exclude_event_types=exclude_event_types,
-        exclude_attributes_by_domain=exclude_attributes_by_domain,
     )
+    get_instance.cache_clear()
+    entity_registry.async_setup(hass)
+    entity_options.async_setup(hass)
     instance.async_initialize()
     instance.async_register()
     instance.start()
-    async_register_services(hass, instance)
+    async_setup_services(hass)
     websocket_api.async_setup(hass)
-    entity_registry.async_setup(hass)
 
-    await _async_setup_integration_platform(
-        hass, instance, exclude_attributes_by_domain
-    )
+    await _async_setup_integration_platform(hass, instance)
 
     return await instance.async_db_ready
 
 
 async def _async_setup_integration_platform(
-    hass: HomeAssistant,
-    instance: Recorder,
-    exclude_attributes_by_domain: dict[str, set[str]],
+    hass: HomeAssistant, instance: Recorder
 ) -> None:
     """Set up a recorder integration platform."""
 
-    async def _process_recorder_platform(
+    @callback
+    def _process_recorder_platform(
         hass: HomeAssistant, domain: str, platform: Any
     ) -> None:
         """Process a recorder platform."""
-        # We need to add this before as soon as the component is loaded
-        # to ensure by the time the state is recorded that the excluded
-        # attributes are known. This is safe to modify in the event loop
-        # since exclude_attributes_by_domain is never iterated over.
-        if exclude_attributes := getattr(
-            platform, INTEGRATION_PLATFORM_EXCLUDE_ATTRIBUTES, None
-        ):
-            exclude_attributes_by_domain[domain] = exclude_attributes(hass)
-
         # If the platform has a compile_statistics method, we need to
         # add it to the recorder queue to be processed.
-        if any(
-            hasattr(platform, _attr)
-            for _attr in INTEGRATION_PLATFORMS_LOAD_IN_RECORDER_THREAD
-        ):
+        if any(hasattr(platform, _attr) for _attr in INTEGRATION_PLATFORM_METHODS):
             instance.queue_task(AddRecorderPlatformTask(domain, platform))
 
     await async_process_integration_platforms(hass, DOMAIN, _process_recorder_platform)
+
+
+def get_default_url(hass: HomeAssistant) -> str:
+    """Return the default URL."""
+    return DEFAULT_URL.format(hass_config_path=hass.config.path(DEFAULT_DB_FILE))

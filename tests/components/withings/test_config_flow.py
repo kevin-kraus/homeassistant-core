@@ -1,24 +1,27 @@
 """Tests for config flow."""
+
 from unittest.mock import AsyncMock, patch
 
-from homeassistant.components.withings.const import CONF_USE_WEBHOOK, DOMAIN
-from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
+import pytest
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
+from pytest_homeassistant.typing import ClientSessionGenerator
+
+from homeassistant.components.withings.const import DOMAIN
+from homeassistant.config_entries import SOURCE_DHCP, SOURCE_USER
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from . import setup_integration
-from .conftest import CLIENT_ID, USER_ID
-
-from tests.common import MockConfigEntry
-from tests.test_util.aiohttp import AiohttpClientMocker
-from tests.typing import ClientSessionGenerator
+from .conftest import CLIENT_ID, USER_ID, WEBHOOK_ID
 
 
+@pytest.mark.usefixtures("current_request_with_host")
 async def test_full_flow(
     hass: HomeAssistant,
     hass_client_no_auth: ClientSessionGenerator,
-    current_request_with_host: None,
     aioclient_mock: AiohttpClientMocker,
 ) -> None:
     """Check full flow."""
@@ -33,7 +36,7 @@ async def test_full_flow(
         },
     )
 
-    assert result["type"] == FlowResultType.EXTERNAL_STEP
+    assert result["type"] is FlowResultType.EXTERNAL_STEP
     assert result["url"] == (
         "https://account.withings.com/oauth2_user/authorize2?"
         f"response_type=code&client_id={CLIENT_ID}&"
@@ -61,14 +64,14 @@ async def test_full_flow(
         },
     )
     with patch(
-        "homeassistant.components.withings.async_setup_entry", return_value=True
+        "homeassistant.components.withings.async_setup_entry", return_value=None
     ) as mock_setup:
         result = await hass.config_entries.flow.async_configure(result["flow_id"])
 
     assert len(hass.config_entries.async_entries(DOMAIN)) == 1
     assert len(mock_setup.mock_calls) == 1
 
-    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Withings"
     assert "result" in result
     assert result["result"].unique_id == "600"
@@ -78,17 +81,16 @@ async def test_full_flow(
     assert result["result"].data["token"]["refresh_token"] == "mock-refresh-token"
 
 
+@pytest.mark.usefixtures("current_request_with_host")
 async def test_config_non_unique_profile(
     hass: HomeAssistant,
     hass_client_no_auth: ClientSessionGenerator,
-    current_request_with_host: None,
     withings: AsyncMock,
-    config_entry: MockConfigEntry,
-    disable_webhook_delay,
+    polling_config_entry: MockConfigEntry,
     aioclient_mock: AiohttpClientMocker,
 ) -> None:
     """Test setup a non-unique profile."""
-    await setup_integration(hass, config_entry)
+    await setup_integration(hass, polling_config_entry)
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
     )
@@ -100,7 +102,7 @@ async def test_config_non_unique_profile(
         },
     )
 
-    assert result["type"] == FlowResultType.EXTERNAL_STEP
+    assert result["type"] is FlowResultType.EXTERNAL_STEP
     assert result["url"] == (
         "https://account.withings.com/oauth2_user/authorize2?"
         f"response_type=code&client_id={CLIENT_ID}&"
@@ -128,31 +130,23 @@ async def test_config_non_unique_profile(
         },
     )
     result = await hass.config_entries.flow.async_configure(result["flow_id"])
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
 
 
+@pytest.mark.usefixtures("current_request_with_host")
 async def test_config_reauth_profile(
     hass: HomeAssistant,
     hass_client_no_auth: ClientSessionGenerator,
     aioclient_mock: AiohttpClientMocker,
-    config_entry: MockConfigEntry,
+    polling_config_entry: MockConfigEntry,
     withings: AsyncMock,
-    disable_webhook_delay,
-    current_request_with_host,
 ) -> None:
     """Test reauth an existing profile reauthenticates the config entry."""
-    await setup_integration(hass, config_entry)
+    await setup_integration(hass, polling_config_entry)
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={
-            "source": SOURCE_REAUTH,
-            "entry_id": config_entry.entry_id,
-        },
-        data=config_entry.data,
-    )
-    assert result["type"] == "form"
+    result = await polling_config_entry.start_reauth_flow(hass)
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "reauth_confirm"
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
@@ -191,31 +185,23 @@ async def test_config_reauth_profile(
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"])
     assert result
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reauth_successful"
 
 
+@pytest.mark.usefixtures("current_request_with_host")
 async def test_config_reauth_wrong_account(
     hass: HomeAssistant,
     hass_client_no_auth: ClientSessionGenerator,
     aioclient_mock: AiohttpClientMocker,
-    config_entry: MockConfigEntry,
+    polling_config_entry: MockConfigEntry,
     withings: AsyncMock,
-    disable_webhook_delay,
-    current_request_with_host,
 ) -> None:
     """Test reauth with wrong account."""
-    await setup_integration(hass, config_entry)
+    await setup_integration(hass, polling_config_entry)
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={
-            "source": SOURCE_REAUTH,
-            "entry_id": config_entry.entry_id,
-        },
-        data=config_entry.data,
-    )
-    assert result["type"] == "form"
+    result = await polling_config_entry.start_reauth_flow(hass)
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "reauth_confirm"
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
@@ -254,33 +240,193 @@ async def test_config_reauth_wrong_account(
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"])
     assert result
-    assert result["type"] == FlowResultType.ABORT
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "wrong_account"
 
 
-async def test_options_flow(
+@pytest.mark.usefixtures("current_request_with_host")
+@pytest.mark.parametrize(
+    ("user_id", "reason", "access_token"),
+    [
+        pytest.param(
+            USER_ID, "reconfigure_successful", "new-access-token", id="success"
+        ),
+        pytest.param(
+            12346, "unique_id_mismatch", "mock-access-token", id="wrong_account"
+        ),
+    ],
+)
+async def test_reconfigure(
     hass: HomeAssistant,
     hass_client_no_auth: ClientSessionGenerator,
     aioclient_mock: AiohttpClientMocker,
-    config_entry: MockConfigEntry,
+    polling_config_entry: MockConfigEntry,
     withings: AsyncMock,
-    disable_webhook_delay,
-    current_request_with_host,
+    user_id: int,
+    reason: str,
+    access_token: str,
 ) -> None:
-    """Test options flow."""
-    await setup_integration(hass, config_entry)
+    """Test reconfigure re-runs the OAuth flow for the same account."""
+    await setup_integration(hass, polling_config_entry)
 
-    result = await hass.config_entries.options.async_init(config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    assert result["type"] == FlowResultType.FORM
-    assert result["step_id"] == "init"
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        user_input={CONF_USE_WEBHOOK: True},
+    result = await polling_config_entry.start_reconfigure_flow(hass)
+    state = config_entry_oauth2_flow._encode_jwt(
+        hass,
+        {
+            "flow_id": result["flow_id"],
+            "redirect_uri": "https://example.com/auth/external/callback",
+        },
     )
-    await hass.async_block_till_done()
+    assert result["url"] == (
+        "https://account.withings.com/oauth2_user/authorize2?"
+        f"response_type=code&client_id={CLIENT_ID}&"
+        "redirect_uri=https://example.com/auth/external/callback&"
+        f"state={state}"
+        "&scope=user.info,user.metrics,user.activity,user.sleepevents"
+    )
+    client = await hass_client_no_auth()
+    resp = await client.get(f"/auth/external/callback?code=abcd&state={state}")
+    assert resp.status == 200
 
-    assert result["type"] == FlowResultType.CREATE_ENTRY
-    assert result["data"] == {CONF_USE_WEBHOOK: True}
+    aioclient_mock.clear_requests()
+    aioclient_mock.post(
+        "https://wbsapi.withings.net/v2/oauth2",
+        json={
+            "body": {
+                "refresh_token": "new-refresh-token",
+                "access_token": "new-access-token",
+                "type": "Bearer",
+                "expires_in": 60,
+                "userid": user_id,
+            },
+        },
+    )
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"])
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == reason
+    assert polling_config_entry.data["token"]["access_token"] == access_token
+    assert polling_config_entry.data["webhook_id"] == WEBHOOK_ID
+
+
+@pytest.mark.usefixtures("current_request_with_host")
+async def test_config_flow_with_invalid_credentials(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    aioclient_mock: AiohttpClientMocker,
+    polling_config_entry: MockConfigEntry,
+    withings: AsyncMock,
+) -> None:
+    """Test flow with invalid credentials."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    state = config_entry_oauth2_flow._encode_jwt(
+        hass,
+        {
+            "flow_id": result["flow_id"],
+            "redirect_uri": "https://example.com/auth/external/callback",
+        },
+    )
+
+    assert result["type"] is FlowResultType.EXTERNAL_STEP
+    assert result["url"] == (
+        "https://account.withings.com/oauth2_user/authorize2?"
+        f"response_type=code&client_id={CLIENT_ID}&"
+        "redirect_uri=https://example.com/auth/external/callback&"
+        f"state={state}"
+        "&scope=user.info,user.metrics,user.activity,user.sleepevents"
+    )
+
+    client = await hass_client_no_auth()
+    resp = await client.get(f"/auth/external/callback?code=abcd&state={state}")
+    assert resp.status == 200
+    assert resp.headers["content-type"] == "text/html; charset=utf-8"
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.post(
+        "https://wbsapi.withings.net/v2/oauth2",
+        json={
+            "body": {
+                "status": 503,
+                "error": "Invalid Params: invalid client id/secret",
+            },
+        },
+    )
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"])
+    assert result
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "oauth_error"
+
+
+@pytest.mark.usefixtures("current_request_with_host")
+async def test_dhcp(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """Check DHCP discovery."""
+
+    service_info = DhcpServiceInfo(
+        hostname="device",
+        ip="192.168.0.1",
+        macaddress="0024e4bd30de",
+    )
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_DHCP}, data=service_info
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "oauth_discovery"
+    assert not result["errors"]
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {},
+    )
+    state = config_entry_oauth2_flow._encode_jwt(
+        hass,
+        {
+            "flow_id": result["flow_id"],
+            "redirect_uri": "https://example.com/auth/external/callback",
+        },
+    )
+
+    assert result["type"] is FlowResultType.EXTERNAL_STEP
+    assert result["url"] == (
+        "https://account.withings.com/oauth2_user/authorize2?"
+        f"response_type=code&client_id={CLIENT_ID}&"
+        "redirect_uri=https://example.com/auth/external/callback&"
+        f"state={state}"
+        "&scope=user.info,user.metrics,user.activity,user.sleepevents"
+    )
+
+    client = await hass_client_no_auth()
+    resp = await client.get(f"/auth/external/callback?code=abcd&state={state}")
+    assert resp.status == 200
+    assert resp.headers["content-type"] == "text/html; charset=utf-8"
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.post(
+        "https://wbsapi.withings.net/v2/oauth2",
+        json={
+            "body": {
+                "refresh_token": "mock-refresh-token",
+                "access_token": "mock-access-token",
+                "type": "Bearer",
+                "expires_in": 60,
+                "userid": 600,
+            },
+        },
+    )
+    with patch(
+        "homeassistant.components.withings.async_setup_entry", return_value=None
+    ) as mock_setup:
+        result = await hass.config_entries.flow.async_configure(result["flow_id"])
+
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+    assert len(mock_setup.mock_calls) == 1
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["result"].unique_id == "600"

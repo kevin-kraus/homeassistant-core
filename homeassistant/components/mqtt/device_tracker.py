@@ -1,44 +1,47 @@
 """Support for tracking MQTT enabled devices identified."""
-from __future__ import annotations
 
 from collections.abc import Callable
-import functools
+import logging
+from typing import TYPE_CHECKING, Any, override
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components import device_tracker
 from homeassistant.components.device_tracker import (
-    SOURCE_TYPES,
     SourceType,
     TrackerEntity,
+    TrackerEntityStateAttribute,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    ATTR_GPS_ACCURACY,
-    ATTR_LATITUDE,
-    ATTR_LONGITUDE,
     CONF_NAME,
     CONF_VALUE_TEMPLATE,
     STATE_HOME,
     STATE_NOT_HOME,
+    EntityStateAttribute,
 )
 from homeassistant.core import HomeAssistant, callback
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.service_info.mqtt import ReceivePayloadType
+from homeassistant.helpers.typing import ConfigType, VolSchemaType
 
 from . import subscription
 from .config import MQTT_BASE_SCHEMA
-from .const import CONF_PAYLOAD_RESET, CONF_QOS, CONF_STATE_TOPIC
-from .debug_info import log_messages
-from .mixins import (
+from .const import (
+    CONF_JSON_ATTRS_TEMPLATE,
     CONF_JSON_ATTRS_TOPIC,
-    MQTT_ENTITY_COMMON_SCHEMA,
-    MqttEntity,
-    async_setup_entry_helper,
+    CONF_PAYLOAD_RESET,
+    CONF_STATE_TOPIC,
 )
-from .models import MqttValueTemplate, ReceiveMessage, ReceivePayloadType
-from .util import get_mqtt_data, valid_subscribe_topic
+from .entity import MqttEntity, async_setup_entity_entry_helper
+from .models import MqttValueTemplate, ReceiveMessage
+from .schemas import MQTT_ENTITY_COMMON_SCHEMA
+from .util import valid_subscribe_topic
+
+_LOGGER = logging.getLogger(__name__)
+
+PARALLEL_UPDATES = 0
 
 CONF_PAYLOAD_HOME = "payload_home"
 CONF_PAYLOAD_NOT_HOME = "payload_not_home"
@@ -51,54 +54,50 @@ DEFAULT_SOURCE_TYPE = SourceType.GPS
 def valid_config(config: ConfigType) -> ConfigType:
     """Check if there is a state topic or json_attributes_topic."""
     if CONF_STATE_TOPIC not in config and CONF_JSON_ATTRS_TOPIC not in config:
-        raise vol.MultipleInvalid(
-            f"Invalid device tracker config, missing {CONF_STATE_TOPIC} or {CONF_JSON_ATTRS_TOPIC}, got: {config}"
+        raise probatio.Invalid(
+            f"Invalid device tracker config, missing"
+            f" {CONF_STATE_TOPIC} or"
+            f" {CONF_JSON_ATTRS_TOPIC}, got: {config}"
         )
     return config
 
 
 PLATFORM_SCHEMA_MODERN_BASE = MQTT_BASE_SCHEMA.extend(
     {
-        vol.Optional(CONF_STATE_TOPIC): valid_subscribe_topic,
-        vol.Optional(CONF_VALUE_TEMPLATE): cv.template,
-        vol.Optional(CONF_NAME): vol.Any(cv.string, None),
-        vol.Optional(CONF_PAYLOAD_HOME, default=STATE_HOME): cv.string,
-        vol.Optional(CONF_PAYLOAD_NOT_HOME, default=STATE_NOT_HOME): cv.string,
-        vol.Optional(CONF_PAYLOAD_RESET, default=DEFAULT_PAYLOAD_RESET): cv.string,
-        vol.Optional(CONF_SOURCE_TYPE, default=DEFAULT_SOURCE_TYPE): vol.In(
-            SOURCE_TYPES
-        ),
+        probatio.Optional(CONF_STATE_TOPIC): valid_subscribe_topic,
+        probatio.Optional(CONF_VALUE_TEMPLATE): cv.template,
+        probatio.Optional(CONF_NAME): probatio.Any(cv.string, None),
+        probatio.Optional(CONF_PAYLOAD_HOME, default=STATE_HOME): cv.string,
+        probatio.Optional(CONF_PAYLOAD_NOT_HOME, default=STATE_NOT_HOME): cv.string,
+        probatio.Optional(CONF_PAYLOAD_RESET, default=DEFAULT_PAYLOAD_RESET): cv.string,
+        probatio.Optional(
+            CONF_SOURCE_TYPE, default=DEFAULT_SOURCE_TYPE
+        ): probatio.Coerce(SourceType),
     },
 ).extend(MQTT_ENTITY_COMMON_SCHEMA.schema)
-PLATFORM_SCHEMA_MODERN = vol.All(PLATFORM_SCHEMA_MODERN_BASE, valid_config)
+PLATFORM_SCHEMA_MODERN = probatio.All(PLATFORM_SCHEMA_MODERN_BASE, valid_config)
 
 
-DISCOVERY_SCHEMA = vol.All(
-    PLATFORM_SCHEMA_MODERN_BASE.extend({}, extra=vol.REMOVE_EXTRA), valid_config
+DISCOVERY_SCHEMA = probatio.All(
+    PLATFORM_SCHEMA_MODERN_BASE.extend({}, extra=probatio.REMOVE_EXTRA), valid_config
 )
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up MQTT device_tracker through YAML and through MQTT discovery."""
-    setup = functools.partial(
-        _async_setup_entity, hass, async_add_entities, config_entry=config_entry
+    """Set up MQTT event through YAML and through MQTT discovery."""
+    async_setup_entity_entry_helper(
+        hass,
+        config_entry,
+        MqttDeviceTracker,
+        device_tracker.DOMAIN,
+        async_add_entities,
+        DISCOVERY_SCHEMA,
+        PLATFORM_SCHEMA_MODERN,
     )
-    await async_setup_entry_helper(hass, device_tracker.DOMAIN, setup, DISCOVERY_SCHEMA)
-
-
-async def _async_setup_entity(
-    hass: HomeAssistant,
-    async_add_entities: AddEntitiesCallback,
-    config: ConfigType,
-    config_entry: ConfigEntry,
-    discovery_data: DiscoveryInfoType | None = None,
-) -> None:
-    """Set up the MQTT Device Tracker entity."""
-    async_add_entities([MqttDeviceTracker(hass, config, config_entry, discovery_data)])
 
 
 class MqttDeviceTracker(MqttEntity, TrackerEntity):
@@ -106,114 +105,121 @@ class MqttDeviceTracker(MqttEntity, TrackerEntity):
 
     _default_name = None
     _entity_id_format = device_tracker.ENTITY_ID_FORMAT
-    _value_template: Callable[..., ReceivePayloadType]
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        config: ConfigType,
-        config_entry: ConfigEntry,
-        discovery_data: DiscoveryInfoType | None,
-    ) -> None:
-        """Initialize the tracker."""
-        self._location_name: str | None = None
-        MqttEntity.__init__(self, hass, config, config_entry, discovery_data)
+    _location_name: str | None = None
+    _value_template: Callable[[ReceivePayloadType], ReceivePayloadType]
 
     @staticmethod
-    def config_schema() -> vol.Schema:
+    @override
+    def config_schema() -> VolSchemaType:
         """Return the config schema."""
         return DISCOVERY_SCHEMA
 
+    @override
     def _setup_from_config(self, config: ConfigType) -> None:
         """(Re)Setup the entity."""
         self._value_template = MqttValueTemplate(
             config.get(CONF_VALUE_TEMPLATE), entity=self
         ).async_render_with_possible_json_value
+        self._attr_source_type = self._config[CONF_SOURCE_TYPE]
 
+    @callback
+    def _tracker_message_received(self, msg: ReceiveMessage) -> None:
+        """Handle new MQTT messages."""
+        payload = self._value_template(msg.payload)
+        if not payload.strip():  # No output from template, ignore
+            _LOGGER.debug(
+                "Ignoring empty payload '%s' after rendering for topic %s",
+                payload,
+                msg.topic,
+            )
+            return
+        if payload == self._config[CONF_PAYLOAD_HOME]:
+            self._attr_location_name = STATE_HOME
+        elif payload == self._config[CONF_PAYLOAD_NOT_HOME]:
+            self._attr_location_name = STATE_NOT_HOME
+        elif payload == self._config[CONF_PAYLOAD_RESET]:
+            self._attr_location_name = None
+        else:
+            if TYPE_CHECKING:
+                assert isinstance(msg.payload, str)
+            self._attr_location_name = msg.payload
+
+    @callback
+    @override
     def _prepare_subscribe_topics(self) -> None:
         """(Re)Subscribe to topics."""
-
-        @callback
-        @log_messages(self.hass, self.entity_id)
-        def message_received(msg: ReceiveMessage) -> None:
-            """Handle new MQTT messages."""
-            payload: ReceivePayloadType = self._value_template(msg.payload)
-            if payload == self._config[CONF_PAYLOAD_HOME]:
-                self._location_name = STATE_HOME
-            elif payload == self._config[CONF_PAYLOAD_NOT_HOME]:
-                self._location_name = STATE_NOT_HOME
-            elif payload == self._config[CONF_PAYLOAD_RESET]:
-                self._location_name = None
-            else:
-                assert isinstance(msg.payload, str)
-                self._location_name = msg.payload
-
-            get_mqtt_data(self.hass).state_write_requests.write_state_request(self)
-
-        state_topic: str | None = self._config.get(CONF_STATE_TOPIC)
-        if state_topic is None:
-            return
-        self._sub_state = subscription.async_prepare_subscribe_topics(
-            self.hass,
-            self._sub_state,
-            {
-                "state_topic": {
-                    "topic": state_topic,
-                    "msg_callback": message_received,
-                    "qos": self._config[CONF_QOS],
-                }
-            },
+        self.add_subscription(
+            CONF_STATE_TOPIC, self._tracker_message_received, {"_attr_location_name"}
         )
 
-    @property
-    def force_update(self) -> bool:
-        """Do not force updates if the state is the same."""
-        return False
-
+    @override
     async def _subscribe_topics(self) -> None:
         """(Re)Subscribe to topics."""
-        await subscription.async_subscribe_topics(self.hass, self._sub_state)
+        subscription.async_subscribe_topics_internal(self.hass, self._sub_state)
 
-    @property
-    def latitude(self) -> float | None:
-        """Return latitude if provided in extra_state_attributes or None."""
+    @callback
+    @override
+    def _process_update_extra_state_attributes(
+        self, extra_state_attributes: dict[str, Any]
+    ) -> None:
+        """Extract the location from the extra state attributes."""
         if (
-            self.extra_state_attributes is not None
-            and ATTR_LATITUDE in self.extra_state_attributes
+            EntityStateAttribute.LATITUDE in extra_state_attributes
+            or EntityStateAttribute.LONGITUDE in extra_state_attributes
         ):
-            latitude: float = self.extra_state_attributes[ATTR_LATITUDE]
-            return latitude
-        return None
+            latitude: float | None
+            longitude: float | None
+            gps_accuracy: float
+            if isinstance(
+                latitude := extra_state_attributes.get(EntityStateAttribute.LATITUDE),
+                (int, float),
+            ) and isinstance(
+                longitude := extra_state_attributes.get(EntityStateAttribute.LONGITUDE),
+                (int, float),
+            ):
+                self._attr_latitude = latitude
+                self._attr_longitude = longitude
+            else:
+                # Invalid or incomplete coordinates, reset location
+                self._attr_latitude = None
+                self._attr_longitude = None
+                _LOGGER.warning(
+                    "Extra state attributes received at %s and template %s "
+                    "contain invalid or incomplete location info. Got %s",
+                    self._config.get(CONF_JSON_ATTRS_TOPIC),
+                    self._config.get(CONF_JSON_ATTRS_TEMPLATE),
+                    extra_state_attributes,
+                )
 
-    @property
-    def location_accuracy(self) -> int:
-        """Return location accuracy if provided in extra_state_attributes or None."""
-        if (
-            self.extra_state_attributes is not None
-            and ATTR_GPS_ACCURACY in self.extra_state_attributes
-        ):
-            accuracy: int = self.extra_state_attributes[ATTR_GPS_ACCURACY]
-            return accuracy
-        return 0
+            if TrackerEntityStateAttribute.GPS_ACCURACY in extra_state_attributes:
+                if isinstance(
+                    gps_accuracy := extra_state_attributes[
+                        TrackerEntityStateAttribute.GPS_ACCURACY
+                    ],
+                    (int, float),
+                ):
+                    self._attr_location_accuracy = gps_accuracy
+                else:
+                    _LOGGER.warning(
+                        "Extra state attributes received at %s and template %s "
+                        "contain invalid GPS accuracy setting, "
+                        "gps_accuracy was set to 0 as the default. Got %s",
+                        self._config.get(CONF_JSON_ATTRS_TOPIC),
+                        self._config.get(CONF_JSON_ATTRS_TEMPLATE),
+                        extra_state_attributes,
+                    )
+                    self._attr_location_accuracy = 0
 
-    @property
-    def longitude(self) -> float | None:
-        """Return longitude if provided in extra_state_attributes or None."""
-        if (
-            self.extra_state_attributes is not None
-            and ATTR_LONGITUDE in self.extra_state_attributes
-        ):
-            longitude: float = self.extra_state_attributes[ATTR_LONGITUDE]
-            return longitude
-        return None
+            else:
+                self._attr_location_accuracy = 0
 
-    @property
-    def location_name(self) -> str | None:
-        """Return a location name for the current location of the device."""
-        return self._location_name
-
-    @property
-    def source_type(self) -> SourceType | str:
-        """Return the source type, eg gps or router, of the device."""
-        source_type: SourceType | str = self._config[CONF_SOURCE_TYPE]
-        return source_type
+        self._attr_extra_state_attributes = {
+            attribute: value
+            for attribute, value in extra_state_attributes.items()
+            if attribute
+            not in {
+                TrackerEntityStateAttribute.GPS_ACCURACY,
+                EntityStateAttribute.LATITUDE,
+                EntityStateAttribute.LONGITUDE,
+            }
+        }

@@ -1,10 +1,9 @@
 """The thread websocket API."""
-from __future__ import annotations
 
 from typing import Any
 
+import probatio
 from python_otbr_api.tlv_parser import TLVError
-import voluptuous as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
@@ -20,16 +19,16 @@ def async_setup(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_discover_routers)
     websocket_api.async_register_command(hass, ws_get_dataset)
     websocket_api.async_register_command(hass, ws_list_datasets)
-    websocket_api.async_register_command(hass, ws_set_preferred_border_agent_id)
+    websocket_api.async_register_command(hass, ws_set_preferred_border_agent)
     websocket_api.async_register_command(hass, ws_set_preferred_dataset)
 
 
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "thread/add_dataset_tlv",
-        vol.Required("source"): str,
-        vol.Required("tlv"): str,
+        probatio.Required("type"): "thread/add_dataset_tlv",
+        probatio.Required("source"): str,
+        probatio.Required("tlv"): str,
     }
 )
 @websocket_api.async_response
@@ -41,41 +40,47 @@ async def ws_add_dataset(
     tlv = msg["tlv"]
 
     try:
-        await dataset_store.async_add_dataset(hass, source, tlv)
+        result = await dataset_store.async_add_dataset(hass, source, tlv)
     except TLVError as exc:
-        connection.send_error(
-            msg["id"], websocket_api.const.ERR_INVALID_FORMAT, str(exc)
-        )
+        connection.send_error(msg["id"], websocket_api.ERR_INVALID_FORMAT, str(exc))
         return
 
-    connection.send_result(msg["id"])
+    # The outcome rides in the result payload rather than an error: existing
+    # callers treat any error as a failed transfer, while a discarded dataset
+    # means the store already holds this network's dataset in a same-or-newer
+    # revision.
+    connection.send_result(msg["id"], {"result": str(result)})
 
 
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "thread/set_preferred_border_agent_id",
-        vol.Required("dataset_id"): str,
-        vol.Required("border_agent_id"): str,
+        probatio.Required("type"): "thread/set_preferred_border_agent",
+        probatio.Required("dataset_id"): str,
+        probatio.Required("border_agent_id"): probatio.Any(str, None),
+        probatio.Required("extended_address"): str,
     }
 )
 @websocket_api.async_response
-async def ws_set_preferred_border_agent_id(
+async def ws_set_preferred_border_agent(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Set the preferred border agent ID."""
+    """Set the preferred border agent's border agent ID and extended address."""
     dataset_id = msg["dataset_id"]
     border_agent_id = msg["border_agent_id"]
+    extended_address = msg["extended_address"]
     store = await dataset_store.async_get_store(hass)
-    store.async_set_preferred_border_agent_id(dataset_id, border_agent_id)
+    store.async_set_preferred_border_agent(
+        dataset_id, border_agent_id, extended_address
+    )
     connection.send_result(msg["id"])
 
 
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "thread/set_preferred_dataset",
-        vol.Required("dataset_id"): str,
+        probatio.Required("type"): "thread/set_preferred_dataset",
+        probatio.Required("dataset_id"): str,
     }
 )
 @websocket_api.async_response
@@ -89,9 +94,7 @@ async def ws_set_preferred_dataset(
     try:
         store.preferred_dataset = dataset_id
     except KeyError:
-        connection.send_error(
-            msg["id"], websocket_api.const.ERR_NOT_FOUND, "unknown dataset"
-        )
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, "unknown dataset")
         return
 
     connection.send_result(msg["id"])
@@ -100,8 +103,8 @@ async def ws_set_preferred_dataset(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "thread/delete_dataset",
-        vol.Required("dataset_id"): str,
+        probatio.Required("type"): "thread/delete_dataset",
+        probatio.Required("dataset_id"): str,
     }
 )
 @websocket_api.async_response
@@ -115,10 +118,10 @@ async def ws_delete_dataset(
     try:
         store.async_delete(dataset_id)
     except KeyError as exc:
-        connection.send_error(msg["id"], websocket_api.const.ERR_NOT_FOUND, str(exc))
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, str(exc))
         return
     except dataset_store.DatasetPreferredError as exc:
-        connection.send_error(msg["id"], websocket_api.const.ERR_NOT_ALLOWED, str(exc))
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_ALLOWED, str(exc))
         return
 
     connection.send_result(msg["id"])
@@ -127,8 +130,8 @@ async def ws_delete_dataset(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "thread/get_dataset_tlv",
-        vol.Required("dataset_id"): str,
+        probatio.Required("type"): "thread/get_dataset_tlv",
+        probatio.Required("dataset_id"): str,
     }
 )
 @websocket_api.async_response
@@ -140,9 +143,7 @@ async def ws_get_dataset(
 
     store = await dataset_store.async_get_store(hass)
     if not (dataset := store.async_get(dataset_id)):
-        connection.send_error(
-            msg["id"], websocket_api.const.ERR_NOT_FOUND, "unknown dataset"
-        )
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, "unknown dataset")
         return
 
     connection.send_result(msg["id"], {"tlv": dataset.tlv})
@@ -151,7 +152,7 @@ async def ws_get_dataset(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "thread/list_datasets",
+        probatio.Required("type"): "thread/list_datasets",
     }
 )
 @websocket_api.async_response
@@ -161,22 +162,22 @@ async def ws_list_datasets(
     """Get a list of thread datasets."""
 
     store = await dataset_store.async_get_store(hass)
-    result = []
     preferred_dataset = store.preferred_dataset
-    for dataset in store.datasets.values():
-        result.append(
-            {
-                "channel": dataset.channel,
-                "created": dataset.created,
-                "dataset_id": dataset.id,
-                "extended_pan_id": dataset.extended_pan_id,
-                "network_name": dataset.network_name,
-                "pan_id": dataset.pan_id,
-                "preferred": dataset.id == preferred_dataset,
-                "preferred_border_agent_id": dataset.preferred_border_agent_id,
-                "source": dataset.source,
-            }
-        )
+    result = [
+        {
+            "channel": dataset.channel,
+            "created": dataset.created,
+            "dataset_id": dataset.id,
+            "extended_pan_id": dataset.extended_pan_id,
+            "network_name": dataset.network_name,
+            "pan_id": dataset.pan_id,
+            "preferred": dataset.id == preferred_dataset,
+            "preferred_border_agent_id": dataset.preferred_border_agent_id,
+            "preferred_extended_address": dataset.preferred_extended_address,
+            "source": dataset.source,
+        }
+        for dataset in store.datasets.values()
+    ]
 
     connection.send_result(msg["id"], {"datasets": result})
 
@@ -184,7 +185,7 @@ async def ws_list_datasets(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "thread/discover_routers",
+        probatio.Required("type"): "thread/discover_routers",
     }
 )
 @websocket_api.async_response

@@ -1,11 +1,11 @@
 """Test select entity."""
 
-from __future__ import annotations
-
 import pytest
+from pytest_homeassistant.common import MockConfigEntry, MockPlatform, mock_platform
 
-from homeassistant.components.assist_pipeline import Pipeline
+from homeassistant.components.assist_pipeline import DOMAIN, Pipeline
 from homeassistant.components.assist_pipeline.pipeline import (
+    AssistDevice,
     PipelineData,
     PipelineStorageCollection,
 )
@@ -14,13 +14,12 @@ from homeassistant.components.assist_pipeline.select import (
     VadSensitivitySelect,
 )
 from homeassistant.components.assist_pipeline.vad import VadSensitivity
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-
-from tests.common import MockConfigEntry, MockPlatform, mock_entity_platform
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 
 class SelectPlatform(MockPlatform):
@@ -30,10 +29,10 @@ class SelectPlatform(MockPlatform):
         self,
         hass: HomeAssistant,
         config_entry: ConfigEntry,
-        async_add_entities: AddEntitiesCallback,
+        async_add_entities: AddConfigEntryEntitiesCallback,
     ) -> None:
         """Set up fake select platform."""
-        pipeline_entity = AssistPipelineSelect(hass, "test")
+        pipeline_entity = AssistPipelineSelect(hass, "test-domain", "test-prefix")
         pipeline_entity._attr_device_info = DeviceInfo(
             identifiers={("test", "test")},
         )
@@ -47,10 +46,12 @@ class SelectPlatform(MockPlatform):
 @pytest.fixture
 async def init_select(hass: HomeAssistant, init_components) -> ConfigEntry:
     """Initialize select entity."""
-    mock_entity_platform(hass, "select.assist_pipeline", SelectPlatform())
-    config_entry = MockConfigEntry(domain="assist_pipeline")
+    mock_platform(hass, "assist_pipeline.select", SelectPlatform())
+    config_entry = MockConfigEntry(domain=DOMAIN, state=ConfigEntryState.LOADED)
     config_entry.add_to_hass(hass)
-    assert await hass.config_entries.async_forward_entry_setup(config_entry, "select")
+    await hass.config_entries.async_forward_entry_setups(
+        config_entry, [Platform.SELECT]
+    )
     return config_entry
 
 
@@ -70,6 +71,8 @@ async def pipeline_1(
             "tts_voice": None,
             "stt_engine": None,
             "stt_language": None,
+            "wake_word_entity": None,
+            "wake_word_id": None,
         }
     )
 
@@ -90,6 +93,8 @@ async def pipeline_2(
             "tts_voice": None,
             "stt_engine": None,
             "stt_language": None,
+            "wake_word_entity": None,
+            "wake_word_id": None,
         }
     )
 
@@ -98,33 +103,44 @@ async def test_select_entity_registering_device(
     hass: HomeAssistant,
     init_select: ConfigEntry,
     pipeline_data: PipelineData,
+    device_registry: dr.DeviceRegistry,
 ) -> None:
     """Test entity registering as an assist device."""
-    dev_reg = dr.async_get(hass)
-    device = dev_reg.async_get_device(identifiers={("test", "test")})
+    device = device_registry.async_get_device_by_identifier(
+        ("test", "test"), init_select.entry_id
+    )
     assert device is not None
 
     # Test device is registered
-    assert pipeline_data.pipeline_devices == {device.id}
+    assert pipeline_data.pipeline_devices == {
+        device.id: AssistDevice("test-domain", "test-prefix")
+    }
 
     await hass.config_entries.async_remove(init_select.entry_id)
     await hass.async_block_till_done()
 
     # Test device is removed
-    assert pipeline_data.pipeline_devices == set()
+    assert pipeline_data.pipeline_devices == {}
 
 
 async def test_select_entity_changing_pipelines(
     hass: HomeAssistant,
-    init_select: ConfigEntry,
+    entity_registry: er.EntityRegistry,
+    init_select: MockConfigEntry,
     pipeline_1: Pipeline,
     pipeline_2: Pipeline,
     pipeline_storage: PipelineStorageCollection,
 ) -> None:
     """Test entity tracking pipeline changes."""
     config_entry = init_select  # nicer naming
+    config_entry.mock_state(hass, ConfigEntryState.LOADED)
 
-    state = hass.states.get("select.assist_pipeline_test_pipeline")
+    pipeline_entity_id = entity_registry.async_get_entity_id(
+        Platform.SELECT, DOMAIN, "test-prefix-pipeline"
+    )
+    assert pipeline_entity_id is not None
+
+    state = hass.states.get(pipeline_entity_id)
     assert state is not None
     assert state.state == "preferred"
     assert state.attributes["options"] == [
@@ -139,28 +155,32 @@ async def test_select_entity_changing_pipelines(
         "select",
         "select_option",
         {
-            "entity_id": "select.assist_pipeline_test_pipeline",
+            "entity_id": pipeline_entity_id,
             "option": pipeline_2.name,
         },
         blocking=True,
     )
 
-    state = hass.states.get("select.assist_pipeline_test_pipeline")
+    state = hass.states.get(pipeline_entity_id)
     assert state is not None
     assert state.state == pipeline_2.name
 
     # Reload config entry to test selected option persists
-    assert await hass.config_entries.async_forward_entry_unload(config_entry, "select")
-    assert await hass.config_entries.async_forward_entry_setup(config_entry, "select")
+    assert await hass.config_entries.async_forward_entry_unload(
+        config_entry, Platform.SELECT
+    )
+    await hass.config_entries.async_forward_entry_setups(
+        config_entry, [Platform.SELECT]
+    )
 
-    state = hass.states.get("select.assist_pipeline_test_pipeline")
+    state = hass.states.get(pipeline_entity_id)
     assert state is not None
     assert state.state == pipeline_2.name
 
     # Remove selected pipeline
     await pipeline_storage.async_delete_item(pipeline_2.id)
 
-    state = hass.states.get("select.assist_pipeline_test_pipeline")
+    state = hass.states.get(pipeline_entity_id)
     assert state is not None
     assert state.state == "preferred"
     assert state.attributes["options"] == [
@@ -172,34 +192,45 @@ async def test_select_entity_changing_pipelines(
 
 async def test_select_entity_changing_vad_sensitivity(
     hass: HomeAssistant,
-    init_select: ConfigEntry,
+    entity_registry: er.EntityRegistry,
+    init_select: MockConfigEntry,
 ) -> None:
-    """Test entity tracking pipeline changes."""
+    """Test entity tracking vad sensitivity changes."""
     config_entry = init_select  # nicer naming
+    config_entry.mock_state(hass, ConfigEntryState.LOADED)
 
-    state = hass.states.get("select.assist_pipeline_test_vad_sensitivity")
+    vad_entity_id = entity_registry.async_get_entity_id(
+        Platform.SELECT, DOMAIN, "test-vad_sensitivity"
+    )
+    assert vad_entity_id is not None
+
+    state = hass.states.get(vad_entity_id)
     assert state is not None
     assert state.state == VadSensitivity.DEFAULT.value
 
-    # Change select to new pipeline
+    # Change select to new sensitivity
     await hass.services.async_call(
         "select",
         "select_option",
         {
-            "entity_id": "select.assist_pipeline_test_vad_sensitivity",
+            "entity_id": vad_entity_id,
             "option": VadSensitivity.AGGRESSIVE.value,
         },
         blocking=True,
     )
 
-    state = hass.states.get("select.assist_pipeline_test_vad_sensitivity")
+    state = hass.states.get(vad_entity_id)
     assert state is not None
     assert state.state == VadSensitivity.AGGRESSIVE.value
 
     # Reload config entry to test selected option persists
-    assert await hass.config_entries.async_forward_entry_unload(config_entry, "select")
-    assert await hass.config_entries.async_forward_entry_setup(config_entry, "select")
+    assert await hass.config_entries.async_forward_entry_unload(
+        config_entry, Platform.SELECT
+    )
+    await hass.config_entries.async_forward_entry_setups(
+        config_entry, [Platform.SELECT]
+    )
 
-    state = hass.states.get("select.assist_pipeline_test_vad_sensitivity")
+    state = hass.states.get(vad_entity_id)
     assert state is not None
     assert state.state == VadSensitivity.AGGRESSIVE.value

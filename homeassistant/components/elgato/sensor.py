@@ -1,8 +1,8 @@
 """Support for Elgato sensors."""
-from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import override
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -10,36 +10,30 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfPower,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import DOMAIN
-from .coordinator import ElgatoData, ElgatoDataUpdateCoordinator
+from .coordinator import ElgatoConfigEntry, ElgatoData, ElgatoDataUpdateCoordinator
 from .entity import ElgatoEntity
 
-
-@dataclass
-class ElgatoEntityDescriptionMixin:
-    """Mixin values for Elgato entities."""
-
-    value_fn: Callable[[ElgatoData], float | int | None]
+# Coordinator is used to centralize the data updates
+PARALLEL_UPDATES = 0
 
 
-@dataclass
-class ElgatoSensorEntityDescription(
-    SensorEntityDescription, ElgatoEntityDescriptionMixin
-):
+@dataclass(frozen=True, kw_only=True)
+class ElgatoSensorEntityDescription(SensorEntityDescription):
     """Class describing Elgato sensor entities."""
 
     has_fn: Callable[[ElgatoData], bool] = lambda _: True
+    value_fn: Callable[[ElgatoData], float | int | None]
 
 
 SENSORS = [
@@ -104,16 +98,36 @@ SENSORS = [
         has_fn=lambda x: x.battery is not None,
         value_fn=lambda x: x.battery.input_charge_voltage if x.battery else None,
     ),
+    ElgatoSensorEntityDescription(
+        key="wifi_signal_strength",
+        translation_key="wifi_signal_strength",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        has_fn=lambda x: x.info.wifi is not None,
+        value_fn=lambda x: x.info.wifi.signal_strength if x.info.wifi else None,
+    ),
+    ElgatoSensorEntityDescription(
+        key="wifi_rssi",
+        translation_key="wifi_rssi",
+        entity_registry_enabled_default=False,
+        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        has_fn=lambda x: x.info.wifi is not None,
+        value_fn=lambda x: x.info.wifi.rssi if x.info.wifi else None,
+    ),
 ]
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: ElgatoConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Elgato sensor based on a config entry."""
-    coordinator: ElgatoDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
 
     async_add_entities(
         ElgatoSensorEntity(
@@ -144,6 +158,7 @@ class ElgatoSensorEntity(ElgatoEntity, SensorEntity):
         )
 
     @property
+    @override
     def native_value(self) -> float | int | None:
         """Return the sensor value."""
         return self.entity_description.value_fn(self.coordinator.data)

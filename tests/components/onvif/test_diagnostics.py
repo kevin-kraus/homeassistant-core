@@ -1,12 +1,13 @@
 """Test ONVIF diagnostics."""
-from syrupy import SnapshotAssertion
+
+from pytest_homeassistant.components.diagnostics import get_diagnostics_for_config_entry
+from pytest_homeassistant.typing import ClientSessionGenerator
+from syrupy.assertion import SnapshotAssertion
+from syrupy.filters import props
 
 from homeassistant.core import HomeAssistant
 
 from . import setup_onvif_integration
-
-from tests.components.diagnostics import get_diagnostics_for_config_entry
-from tests.typing import ClientSessionGenerator
 
 
 async def test_diagnostics(
@@ -18,4 +19,6 @@ async def test_diagnostics(
 
     entry, _, _ = await setup_onvif_integration(hass)
 
-    assert await get_diagnostics_for_config_entry(hass, hass_client, entry) == snapshot
+    assert await get_diagnostics_for_config_entry(hass, hass_client, entry) == snapshot(
+        exclude=props("created_at", "modified_at")
+    )

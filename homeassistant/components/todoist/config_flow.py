@@ -2,40 +2,44 @@
 
 from http import HTTPStatus
 import logging
-from typing import Any
+from typing import Any, override
 
+import probatio
 from requests.exceptions import HTTPError
 from todoist_api_python.api_async import TodoistAPIAsync
-import voluptuous as vol
 
-from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_TOKEN
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN
 
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-SETTINGS_URL = "https://todoist.com/app/settings/integrations"
+SETTINGS_URL = "https://app.todoist.com/app/settings/integrations/developer"
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
+STEP_USER_DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_TOKEN): str,
+        probatio.Required(probatio.Secret(CONF_TOKEN)): str,
     }
 )
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class TodoistConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for todoist."""
 
     VERSION = 1
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         if self._async_current_entries():
-            return self.async_abort(reason="single_instance_allowed")
+            return self.async_abort(
+                reason="single_instance_allowed",
+                translation_domain=HOMEASSISTANT_DOMAIN,
+            )
 
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -44,10 +48,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await api.get_tasks()
             except HTTPError as err:
                 if err.response.status_code == HTTPStatus.UNAUTHORIZED:
-                    errors["base"] = "invalid_access_token"
+                    errors["base"] = "invalid_api_key"
                 else:
                     errors["base"] = "cannot_connect"
-            except Exception:  # pylint: disable=broad-except
+            except Exception:
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:

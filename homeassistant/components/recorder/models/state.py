@@ -1,11 +1,10 @@
 """Models states in for Recorder."""
-from __future__ import annotations
 
 from datetime import datetime
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any, override
 
-from sqlalchemy.engine.row import Row
+from propcache.api import cached_property
 
 from homeassistant.const import (
     COMPRESSED_STATE_ATTRIBUTES,
@@ -14,12 +13,13 @@ from homeassistant.const import (
     COMPRESSED_STATE_STATE,
 )
 from homeassistant.core import Context, State
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util
 
 from .state_attributes import decode_attributes_from_source
-from .time import process_timestamp
 
 _LOGGER = logging.getLogger(__name__)
+
+EMPTY_CONTEXT = Context(id=None)
 
 
 def extract_metadata_ids(
@@ -36,86 +36,86 @@ def extract_metadata_ids(
 class LazyState(State):
     """A lazy version of core State after schema 31."""
 
-    __slots__ = [
-        "_row",
-        "_attributes",
-        "_last_changed_ts",
-        "_last_updated_ts",
-        "_context",
-        "attr_cache",
-    ]
-
     def __init__(  # pylint: disable=super-init-not-called
         self,
-        row: Row,
         attr_cache: dict[str, dict[str, Any]],
         start_time_ts: float | None,
         entity_id: str,
         state: str,
         last_updated_ts: float | None,
-        no_attributes: bool,
+        attributes_source: Any = None,
+        last_changed_ts: float | None = None,
+        last_reported_ts: float | None = None,
+        no_attributes: bool = False,
     ) -> None:
         """Init the lazy state."""
-        self._row = row
+        self._attributes_source = attributes_source
         self.entity_id = entity_id
         self.state = state or ""
         self._attributes: dict[str, Any] | None = None
         self._last_updated_ts: float | None = last_updated_ts or start_time_ts
-        self._last_changed_ts: float | None = None
-        self._context: Context | None = None
+        self._last_changed_ts = last_changed_ts
+        self._last_reported_ts = last_reported_ts
         self.attr_cache = attr_cache
+        self.context = EMPTY_CONTEXT
 
-    @property  # type: ignore[override]
-    def attributes(self) -> dict[str, Any]:
+    @cached_property
+    @override
+    def attributes(self) -> dict[str, Any]:  # type: ignore[override]
         """State attributes."""
-        if self._attributes is None:
-            self._attributes = decode_attributes_from_source(
-                getattr(self._row, "attributes", None), self.attr_cache
-            )
-        return self._attributes
+        return decode_attributes_from_source(self._attributes_source, self.attr_cache)
 
-    @attributes.setter
-    def attributes(self, value: dict[str, Any]) -> None:
-        """Set attributes."""
-        self._attributes = value
-
-    @property
-    def context(self) -> Context:
-        """State context."""
-        if self._context is None:
-            self._context = Context(id=None)
-        return self._context
-
-    @context.setter
-    def context(self, value: Context) -> None:
-        """Set context."""
-        self._context = value
-
-    @property
-    def last_changed(self) -> datetime:
+    @cached_property
+    @override
+    def last_changed(self) -> datetime:  # type: ignore[override]
         """Last changed datetime."""
-        if self._last_changed_ts is None:
-            self._last_changed_ts = (
-                getattr(self._row, "last_changed_ts", None) or self._last_updated_ts
-            )
-        return dt_util.utc_from_timestamp(self._last_changed_ts)
+        return dt_util.utc_from_timestamp(
+            self._last_changed_ts or self._last_updated_ts  # type: ignore[arg-type]
+        )
 
-    @last_changed.setter
-    def last_changed(self, value: datetime) -> None:
-        """Set last changed datetime."""
-        self._last_changed_ts = process_timestamp(value).timestamp()
+    @cached_property
+    @override
+    def last_reported(self) -> datetime:  # type: ignore[override]
+        """Last reported datetime."""
+        return dt_util.utc_from_timestamp(
+            self._last_reported_ts or self._last_updated_ts  # type: ignore[arg-type]
+        )
 
-    @property
-    def last_updated(self) -> datetime:
+    @cached_property
+    @override
+    def last_updated(self) -> datetime:  # type: ignore[override]
         """Last updated datetime."""
-        assert self._last_updated_ts is not None
+        if TYPE_CHECKING:
+            assert self._last_updated_ts is not None
         return dt_util.utc_from_timestamp(self._last_updated_ts)
 
-    @last_updated.setter
-    def last_updated(self, value: datetime) -> None:
-        """Set last updated datetime."""
-        self._last_updated_ts = process_timestamp(value).timestamp()
+    @cached_property
+    @override
+    def last_updated_timestamp(self) -> float:  # type: ignore[override]
+        """Last updated timestamp."""
+        if TYPE_CHECKING:
+            assert self._last_updated_ts is not None
+        return self._last_updated_ts
 
+    @cached_property
+    @override
+    def last_changed_timestamp(self) -> float:
+        """Last changed timestamp."""
+        ts = self._last_changed_ts or self._last_updated_ts
+        if TYPE_CHECKING:
+            assert ts is not None
+        return ts
+
+    @cached_property
+    @override
+    def last_reported_timestamp(self) -> float:
+        """Last reported timestamp."""
+        ts = self._last_reported_ts or self._last_updated_ts
+        if TYPE_CHECKING:
+            assert ts is not None
+        return ts
+
+    @override
     def as_dict(self) -> dict[str, Any]:  # type: ignore[override]
         """Return a dict representation of the LazyState.
 
@@ -138,26 +138,24 @@ class LazyState(State):
 
 
 def row_to_compressed_state(
-    row: Row,
     attr_cache: dict[str, dict[str, Any]],
     start_time_ts: float | None,
     entity_id: str,
     state: str,
     last_updated_ts: float | None,
-    no_attributes: bool,
+    attributes_source: Any = None,
+    last_changed_ts: float | None = None,
+    last_reported_ts: float | None = None,
+    no_attributes: bool = False,
 ) -> dict[str, Any]:
     """Convert a database row to a compressed state schema 41 and later."""
     comp_state: dict[str, Any] = {COMPRESSED_STATE_STATE: state}
     if not no_attributes:
         comp_state[COMPRESSED_STATE_ATTRIBUTES] = decode_attributes_from_source(
-            getattr(row, "attributes", None), attr_cache
+            attributes_source, attr_cache
         )
     row_last_updated_ts: float = last_updated_ts or start_time_ts  # type: ignore[assignment]
     comp_state[COMPRESSED_STATE_LAST_UPDATED] = row_last_updated_ts
-    if (
-        (row_last_changed_ts := getattr(row, "last_changed_ts", None))
-        and row_last_changed_ts
-        and row_last_updated_ts != row_last_changed_ts
-    ):
-        comp_state[COMPRESSED_STATE_LAST_CHANGED] = row_last_changed_ts
+    if last_changed_ts and row_last_updated_ts != last_changed_ts:
+        comp_state[COMPRESSED_STATE_LAST_CHANGED] = last_changed_ts
     return comp_state

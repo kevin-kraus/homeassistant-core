@@ -1,9 +1,10 @@
-"""Tests for honeywell component."""
+"""Tests for Honeywell component."""
+
 from unittest.mock import MagicMock
 
-from homeassistant.core import HomeAssistant
+from pytest_homeassistant.common import MockConfigEntry
 
-from tests.common import MockConfigEntry
+from homeassistant.core import HomeAssistant
 
 
 async def init_integration(

@@ -1,40 +1,64 @@
 """Tests for the Config Entry Flow helper."""
-from collections.abc import Generator
-from unittest.mock import Mock, PropertyMock, patch
+
+import asyncio
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
-
-from homeassistant import config_entries, data_entry_flow, setup
-from homeassistant.config import async_process_ha_core_config
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_entry_flow
-
-from tests.common import (
+from pytest_homeassistant.common import (
     MockConfigEntry,
     MockModule,
-    mock_entity_platform,
     mock_integration,
+    mock_platform,
 )
+
+from homeassistant import config_entries, data_entry_flow, setup
+from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, HomeAssistant
+from homeassistant.core_config import async_process_ha_core_config
+from homeassistant.helpers import config_entry_flow
+
+
+@contextmanager
+def _make_discovery_flow_conf(
+    has_discovered_devices: Callable[[], asyncio.Future[bool] | bool],
+) -> Generator[None]:
+    with patch.dict(config_entries.HANDLERS):
+        config_entry_flow.register_discovery_flow(
+            "test", "Test", has_discovered_devices
+        )
+        yield
 
 
 @pytest.fixture
-def discovery_flow_conf(hass: HomeAssistant) -> Generator[dict[str, bool], None, None]:
-    """Register a handler."""
+def async_discovery_flow_conf(hass: HomeAssistant) -> Generator[dict[str, bool]]:
+    """Register a handler with an async discovery function."""
     handler_conf = {"discovered": False}
 
     async def has_discovered_devices(hass: HomeAssistant) -> bool:
         """Mock if we have discovered devices."""
         return handler_conf["discovered"]
 
-    with patch.dict(config_entries.HANDLERS):
-        config_entry_flow.register_discovery_flow(
-            "test", "Test", has_discovered_devices
-        )
+    with _make_discovery_flow_conf(has_discovered_devices):
         yield handler_conf
 
 
 @pytest.fixture
-def webhook_flow_conf(hass: HomeAssistant) -> Generator[None, None, None]:
+def discovery_flow_conf(hass: HomeAssistant) -> Generator[dict[str, bool]]:
+    """Register a handler with a async friendly callback function."""
+    handler_conf = {"discovered": False}
+
+    def has_discovered_devices(hass: HomeAssistant) -> bool:
+        """Mock if we have discovered devices."""
+        return handler_conf["discovered"]
+
+    with _make_discovery_flow_conf(has_discovered_devices):
+        yield handler_conf
+    handler_conf = {"discovered": False}
+
+
+@pytest.fixture
+def webhook_flow_conf(hass: HomeAssistant) -> Generator[None]:
     """Register a handler."""
     with patch.dict(config_entries.HANDLERS):
         config_entry_flow.register_webhook_flow("test_single", "Test Single", {}, False)
@@ -55,8 +79,9 @@ async def test_single_entry_allowed(
     MockConfigEntry(domain="test").add_to_hass(hass)
     result = await flow.async_step_user()
 
-    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["type"] is data_entry_flow.FlowResultType.ABORT
     assert result["reason"] == "single_instance_allowed"
+    assert result["translation_domain"] == HOMEASSISTANT_DOMAIN
 
 
 async def test_user_no_devices_found(
@@ -70,6 +95,7 @@ async def test_user_no_devices_found(
 
     assert result["type"] == data_entry_flow.FlowResultType.ABORT
     assert result["reason"] == "no_devices_found"
+    assert result["translation_domain"] == HOMEASSISTANT_DOMAIN
 
 
 async def test_user_has_confirmation(
@@ -77,26 +103,51 @@ async def test_user_has_confirmation(
 ) -> None:
     """Test user requires confirmation to setup."""
     discovery_flow_conf["discovered"] = True
-    mock_entity_platform(hass, "config_flow.test", None)
+    mock_platform(hass, "test.config_flow", None)
 
     result = await hass.config_entries.flow.async_init(
-        "test", context={"source": config_entries.SOURCE_USER}, data={}
+        "test", context={"source": config_entries.SOURCE_USER}
     )
 
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
     assert result["step_id"] == "confirm"
 
     progress = hass.config_entries.flow.async_progress()
     assert len(progress) == 1
     assert progress[0]["flow_id"] == result["flow_id"]
     assert progress[0]["context"] == {
-        "confirm_only": True,
         "source": config_entries.SOURCE_USER,
         "unique_id": "test",
     }
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
-    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["type"] is data_entry_flow.FlowResultType.CREATE_ENTRY
+
+
+async def test_user_has_confirmation_async_discovery_flow(
+    hass: HomeAssistant, async_discovery_flow_conf: dict[str, bool]
+) -> None:
+    """Test user requires confirmation to setup with an async has_discovered_devices."""
+    async_discovery_flow_conf["discovered"] = True
+    mock_platform(hass, "test.config_flow", None)
+
+    result = await hass.config_entries.flow.async_init(
+        "test", context={"source": config_entries.SOURCE_USER}
+    )
+
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
+    assert result["step_id"] == "confirm"
+
+    progress = hass.config_entries.flow.async_progress()
+    assert len(progress) == 1
+    assert progress[0]["flow_id"] == result["flow_id"]
+    assert progress[0]["context"] == {
+        "source": config_entries.SOURCE_USER,
+        "unique_id": "test",
+    }
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["type"] is data_entry_flow.FlowResultType.CREATE_ENTRY
 
 
 @pytest.mark.parametrize(
@@ -104,6 +155,7 @@ async def test_user_has_confirmation(
     [
         config_entries.SOURCE_BLUETOOTH,
         config_entries.SOURCE_DISCOVERY,
+        config_entries.SOURCE_HOMEKIT,
         config_entries.SOURCE_MQTT,
         config_entries.SOURCE_SSDP,
         config_entries.SOURCE_ZEROCONF,
@@ -123,6 +175,23 @@ async def test_discovery_single_instance(
 
     assert result["type"] == data_entry_flow.FlowResultType.ABORT
     assert result["reason"] == "single_instance_allowed"
+    assert result["translation_domain"] == HOMEASSISTANT_DOMAIN
+
+
+async def test_discovery_confirm_single_instance(
+    hass: HomeAssistant, discovery_flow_conf: dict[str, bool]
+) -> None:
+    """Test confirming a discovery aborts once an entry exists."""
+    flow = config_entries.HANDLERS["test"]()
+    flow.hass = hass
+    flow.context = {"source": config_entries.SOURCE_DISCOVERY}
+
+    MockConfigEntry(domain="test").add_to_hass(hass)
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] is data_entry_flow.FlowResultType.ABORT
+    assert result["reason"] == "single_instance_allowed"
+    assert result["translation_domain"] == HOMEASSISTANT_DOMAIN
 
 
 @pytest.mark.parametrize(
@@ -184,45 +253,45 @@ async def test_multiple_discoveries(
     hass: HomeAssistant, discovery_flow_conf: dict[str, bool]
 ) -> None:
     """Test we only create one instance for multiple discoveries."""
-    mock_entity_platform(hass, "config_flow.test", None)
+    mock_platform(hass, "test.config_flow", None)
 
     result = await hass.config_entries.flow.async_init(
         "test", context={"source": config_entries.SOURCE_DISCOVERY}, data={}
     )
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
 
     # Second discovery
     result = await hass.config_entries.flow.async_init(
         "test", context={"source": config_entries.SOURCE_DISCOVERY}, data={}
     )
-    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["type"] is data_entry_flow.FlowResultType.ABORT
 
 
 async def test_only_one_in_progress(
     hass: HomeAssistant, discovery_flow_conf: dict[str, bool]
 ) -> None:
     """Test a user initialized one will finish and cancel discovered one."""
-    mock_entity_platform(hass, "config_flow.test", None)
+    mock_platform(hass, "test.config_flow", None)
 
     # Discovery starts flow
     result = await hass.config_entries.flow.async_init(
         "test", context={"source": config_entries.SOURCE_DISCOVERY}, data={}
     )
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
 
     # User starts flow
     result = await hass.config_entries.flow.async_init(
-        "test", context={"source": config_entries.SOURCE_USER}, data={}
+        "test", context={"source": config_entries.SOURCE_USER}
     )
 
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
 
     # Discovery flow has not been aborted
     assert len(hass.config_entries.flow.async_progress()) == 2
 
     # Discovery should be aborted once user confirms
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
-    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["type"] is data_entry_flow.FlowResultType.CREATE_ENTRY
     assert len(hass.config_entries.flow.async_progress()) == 0
 
 
@@ -230,20 +299,20 @@ async def test_import_abort_discovery(
     hass: HomeAssistant, discovery_flow_conf: dict[str, bool]
 ) -> None:
     """Test import will finish and cancel discovered one."""
-    mock_entity_platform(hass, "config_flow.test", None)
+    mock_platform(hass, "test.config_flow", None)
 
     # Discovery starts flow
     result = await hass.config_entries.flow.async_init(
         "test", context={"source": config_entries.SOURCE_DISCOVERY}, data={}
     )
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
 
     # Start import flow
     result = await hass.config_entries.flow.async_init(
         "test", context={"source": config_entries.SOURCE_IMPORT}, data={}
     )
 
-    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["type"] is data_entry_flow.FlowResultType.CREATE_ENTRY
 
     # Discovery flow has been aborted
     assert len(hass.config_entries.flow.async_progress()) == 0
@@ -274,18 +343,20 @@ async def test_import_single_instance(
 
     result = await flow.async_step_import(None)
     assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["reason"] == "single_instance_allowed"
+    assert result["translation_domain"] == HOMEASSISTANT_DOMAIN
 
 
 async def test_ignored_discoveries(
     hass: HomeAssistant, discovery_flow_conf: dict[str, bool]
 ) -> None:
     """Test we can ignore discovered entries."""
-    mock_entity_platform(hass, "config_flow.test", None)
+    mock_platform(hass, "test.config_flow", None)
 
     result = await hass.config_entries.flow.async_init(
         "test", context={"source": config_entries.SOURCE_DISCOVERY}, data={}
     )
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
 
     flow = next(
         (
@@ -307,7 +378,7 @@ async def test_ignored_discoveries(
     result = await hass.config_entries.flow.async_init(
         "test", context={"source": config_entries.SOURCE_DISCOVERY}, data={}
     )
-    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["type"] is data_entry_flow.FlowResultType.ABORT
 
 
 async def test_webhook_single_entry_allowed(
@@ -320,8 +391,9 @@ async def test_webhook_single_entry_allowed(
     MockConfigEntry(domain="test_single").add_to_hass(hass)
     result = await flow.async_step_user()
 
-    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["type"] is data_entry_flow.FlowResultType.ABORT
     assert result["reason"] == "single_instance_allowed"
+    assert result["translation_domain"] == HOMEASSISTANT_DOMAIN
 
 
 async def test_webhook_multiple_entries_allowed(
@@ -335,7 +407,7 @@ async def test_webhook_multiple_entries_allowed(
     hass.config.api = Mock(base_url="http://example.com")
 
     result = await flow.async_step_user()
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
 
 
 async def test_webhook_config_flow_registers_webhook(
@@ -351,7 +423,7 @@ async def test_webhook_config_flow_registers_webhook(
     )
     result = await flow.async_step_user(user_input={})
 
-    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["type"] is data_entry_flow.FlowResultType.CREATE_ENTRY
     assert result["data"]["webhook_id"] is not None
 
 
@@ -361,8 +433,8 @@ async def test_webhook_create_cloudhook(
     """Test cloudhook will be created if subscribed."""
     assert await setup.async_setup_component(hass, "cloud", {})
 
-    async_setup_entry = Mock(return_value=True)
-    async_unload_entry = Mock(return_value=True)
+    async_setup_entry = AsyncMock(return_value=None)
+    async_unload_entry = AsyncMock(return_value=None)
 
     mock_integration(
         hass,
@@ -373,29 +445,34 @@ async def test_webhook_create_cloudhook(
             async_remove_entry=config_entry_flow.webhook_async_remove_entry,
         ),
     )
-    mock_entity_platform(hass, "config_flow.test_single", None)
+    mock_platform(hass, "test_single.config_flow", None)
 
     result = await hass.config_entries.flow.async_init(
         "test_single", context={"source": config_entries.SOURCE_USER}
     )
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
 
-    with patch(
-        "hass_nabucasa.cloudhooks.Cloudhooks.async_create",
-        return_value={"cloudhook_url": "https://example.com"},
-    ) as mock_create, patch(
-        "hass_nabucasa.Cloud.subscription_expired",
-        new_callable=PropertyMock(return_value=False),
-    ), patch(
-        "hass_nabucasa.Cloud.is_logged_in",
-        new_callable=PropertyMock(return_value=True),
-    ), patch(
-        "hass_nabucasa.iot_base.BaseIoT.connected",
-        new_callable=PropertyMock(return_value=True),
+    with (
+        patch(
+            "hass_nabucasa.cloudhooks.Cloudhooks.async_create",
+            return_value={"cloudhook_url": "https://example.com"},
+        ) as mock_create,
+        patch(
+            "hass_nabucasa.Cloud.subscription_expired",
+            new_callable=PropertyMock(return_value=False),
+        ),
+        patch(
+            "hass_nabucasa.Cloud.is_logged_in",
+            new_callable=PropertyMock(return_value=True),
+        ),
+        patch(
+            "hass_nabucasa.iot_base.BaseIoT.connected",
+            new_callable=PropertyMock(return_value=True),
+        ),
     ):
         result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
 
-    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["type"] is data_entry_flow.FlowResultType.CREATE_ENTRY
     assert result["description_placeholders"]["webhook_url"] == "https://example.com"
     assert len(mock_create.mock_calls) == 1
     assert len(async_setup_entry.mock_calls) == 1
@@ -408,6 +485,7 @@ async def test_webhook_create_cloudhook(
 
     assert len(mock_delete.mock_calls) == 1
     assert result["require_restart"] is False
+    await hass.async_block_till_done()
 
 
 async def test_webhook_create_cloudhook_aborts_not_connected(
@@ -416,8 +494,8 @@ async def test_webhook_create_cloudhook_aborts_not_connected(
     """Test cloudhook aborts if subscribed but not connected."""
     assert await setup.async_setup_component(hass, "cloud", {})
 
-    async_setup_entry = Mock(return_value=True)
-    async_unload_entry = Mock(return_value=True)
+    async_setup_entry = AsyncMock(return_value=None)
+    async_unload_entry = AsyncMock(return_value=None)
 
     mock_integration(
         hass,
@@ -428,27 +506,126 @@ async def test_webhook_create_cloudhook_aborts_not_connected(
             async_remove_entry=config_entry_flow.webhook_async_remove_entry,
         ),
     )
-    mock_entity_platform(hass, "config_flow.test_single", None)
+    mock_platform(hass, "test_single.config_flow", None)
 
     result = await hass.config_entries.flow.async_init(
         "test_single", context={"source": config_entries.SOURCE_USER}
     )
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
 
-    with patch(
-        "hass_nabucasa.cloudhooks.Cloudhooks.async_create",
-        return_value={"cloudhook_url": "https://example.com"},
-    ), patch(
-        "hass_nabucasa.Cloud.subscription_expired",
-        new_callable=PropertyMock(return_value=False),
-    ), patch(
-        "hass_nabucasa.Cloud.is_logged_in",
-        new_callable=PropertyMock(return_value=True),
-    ), patch(
-        "hass_nabucasa.iot_base.BaseIoT.connected",
-        new_callable=PropertyMock(return_value=False),
+    with (
+        patch(
+            "hass_nabucasa.cloudhooks.Cloudhooks.async_create",
+            return_value={"cloudhook_url": "https://example.com"},
+        ),
+        patch(
+            "hass_nabucasa.Cloud.subscription_expired",
+            new_callable=PropertyMock(return_value=False),
+        ),
+        patch(
+            "hass_nabucasa.Cloud.is_logged_in",
+            new_callable=PropertyMock(return_value=True),
+        ),
+        patch(
+            "hass_nabucasa.iot_base.BaseIoT.connected",
+            new_callable=PropertyMock(return_value=False),
+        ),
     ):
         result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
 
-    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["type"] is data_entry_flow.FlowResultType.ABORT
     assert result["reason"] == "cloud_not_connected"
+    assert result["translation_domain"] == HOMEASSISTANT_DOMAIN
+
+
+async def test_webhook_reconfigure_flow(
+    hass: HomeAssistant, webhook_flow_conf: None
+) -> None:
+    """Test webhook reconfigure flow."""
+    config_entry = MockConfigEntry(
+        domain="test_single",
+        data={
+            "webhook_id": "12345",
+            "cloudhook": False,
+            "other_entry_data": "not_changed",
+        },
+    )
+    config_entry.add_to_hass(hass)
+
+    flow = config_entries.HANDLERS["test_single"]()
+    flow.hass = hass
+    flow.context = {
+        "source": config_entries.SOURCE_RECONFIGURE,
+        "entry_id": config_entry.entry_id,
+    }
+
+    await async_process_ha_core_config(
+        hass,
+        {"external_url": "https://example.com"},
+    )
+
+    result = await flow.async_step_reconfigure()
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+
+    result = await flow.async_step_reconfigure(user_input={})
+
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert result["description_placeholders"] == {
+        "webhook_url": "https://example.com/api/webhook/12345"
+    }
+    assert config_entry.data["webhook_id"] == "12345"
+    assert config_entry.data["cloudhook"] is False
+    assert config_entry.data["other_entry_data"] == "not_changed"
+
+
+async def test_webhook_reconfigure_cloudhook(
+    hass: HomeAssistant, webhook_flow_conf: None
+) -> None:
+    """Test reconfigure updates to cloudhook if subscribed."""
+    assert await setup.async_setup_component(hass, "cloud", {})
+
+    config_entry = MockConfigEntry(
+        domain="test_single", data={"webhook_id": "12345", "cloudhook": False}
+    )
+    config_entry.add_to_hass(hass)
+
+    flow = config_entries.HANDLERS["test_single"]()
+    flow.hass = hass
+    flow.context = {
+        "source": config_entries.SOURCE_RECONFIGURE,
+        "entry_id": config_entry.entry_id,
+    }
+
+    result = await flow.async_step_reconfigure()
+    assert result["type"] is data_entry_flow.FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+
+    with (
+        patch(
+            "hass_nabucasa.cloudhooks.Cloudhooks.async_create",
+            return_value={"cloudhook_url": "https://example.com"},
+        ) as mock_create,
+        patch(
+            "hass_nabucasa.Cloud.subscription_expired",
+            new_callable=PropertyMock(return_value=False),
+        ),
+        patch(
+            "hass_nabucasa.Cloud.is_logged_in",
+            new_callable=PropertyMock(return_value=True),
+        ),
+        patch(
+            "hass_nabucasa.iot_base.BaseIoT.connected",
+            new_callable=PropertyMock(return_value=True),
+        ),
+    ):
+        result = await flow.async_step_reconfigure(user_input={})
+
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert result["description_placeholders"] == {"webhook_url": "https://example.com"}
+    assert len(mock_create.mock_calls) == 1
+
+    assert config_entry.data["webhook_id"] == "12345"
+    assert config_entry.data["cloudhook"] is True

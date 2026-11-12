@@ -1,8 +1,10 @@
 """Test pegel_online component."""
+
 from unittest.mock import patch
 
 from aiopegelonline.models import Station, StationMeasurements
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components.pegel_online.const import CONF_STATION, DOMAIN
 from homeassistant.const import ATTR_LATITUDE, ATTR_LONGITUDE, ATTR_UNIT_OF_MEASUREMENT
@@ -20,8 +22,6 @@ from .const import (
     MOCK_STATION_MEASUREMENT_HANAU_BRIDGE,
     MOCK_STATION_MEASUREMENT_WUERZBURG,
 )
-
-from tests.common import MockConfigEntry
 
 
 @pytest.mark.parametrize(
@@ -105,13 +105,13 @@ from tests.common import MockConfigEntry
         ),
     ],
 )
+@pytest.mark.usefixtures("entity_registry_enabled_by_default")
 async def test_sensor(
     hass: HomeAssistant,
     mock_config_entry_data: dict,
     mock_station_details: Station,
     mock_station_measurement: StationMeasurements,
     expected_states: dict,
-    entity_registry_enabled_by_default: None,
 ) -> None:
     """Tests sensor entity."""
     entry = MockConfigEntry(

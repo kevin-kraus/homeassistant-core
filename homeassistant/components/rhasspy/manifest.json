@@ -1,9 +1,12 @@
 {
   "domain": "rhasspy",
   "name": "Rhasspy",
-  "codeowners": ["@balloob", "@synesthesiam"],
+  "categories": ["ai_voice.voice_assistants"],
+  "codeowners": ["@synesthesiam"],
   "config_flow": true,
+  "connectivity": ["network"],
   "dependencies": ["intent"],
   "documentation": "https://www.home-assistant.io/integrations/rhasspy",
-  "iot_class": "local_push"
+  "iot_class": "local_push",
+  "single_config_entry": true
 }

@@ -1,4 +1,5 @@
 """Collection of test helpers."""
+
 from fractions import Fraction
 import functools
 from functools import partial
@@ -24,7 +25,7 @@ DefaultSegment = partial(
     init=None,
     stream_id=0,
     start_time=FAKE_TIME,
-    stream_outputs=[],
+    _stream_outputs=[],
 )
 
 AUDIO_SAMPLE_RATE = 8000
@@ -52,14 +53,13 @@ def generate_audio_frame(pcm_mulaw=False):
 @functools.lru_cache(maxsize=1024)
 def frame_image_data(frame_i, total_frames):
     """Generate image content for a frame of a video."""
-    img = np.empty((480, 320, 3))
-    img[:, :, 0] = 0.5 + 0.5 * np.sin(2 * np.pi * (0 / 3 + frame_i / total_frames))
-    img[:, :, 1] = 0.5 + 0.5 * np.sin(2 * np.pi * (1 / 3 + frame_i / total_frames))
-    img[:, :, 2] = 0.5 + 0.5 * np.sin(2 * np.pi * (2 / 3 + frame_i / total_frames))
-
-    img = np.round(255 * img).astype(np.uint8)
-    img = np.clip(img, 0, 255)
-    return img
+    color = [
+        np.round(
+            255 * (0.5 + 0.5 * np.sin(2 * np.pi * (c / 3 + frame_i / total_frames)))
+        )
+        for c in range(3)
+    ]
+    return np.full((480, 320, 3), color, dtype=np.uint8)
 
 
 def generate_video(encoder, container_format, duration):
@@ -114,7 +114,7 @@ def remux_with_audio(source, container_format, audio_codec):
     output = io.BytesIO()
     output.name = "test.mov" if container_format == "mov" else "test.mp4"
     container = av.open(output, mode="w", format=container_format)
-    container.add_stream(template=av_source.streams.video[0])
+    container.add_stream_from_template(av_source.streams.video[0])
 
     a_packet = None
     last_a_dts = -1

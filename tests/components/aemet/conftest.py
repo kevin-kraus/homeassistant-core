@@ -1,4 +1,5 @@
 """Test fixtures for aemet."""
+
 from collections.abc import Generator
 from unittest.mock import AsyncMock, patch
 
@@ -6,9 +7,9 @@ import pytest
 
 
 @pytest.fixture
-def mock_setup_entry() -> Generator[AsyncMock, None, None]:
+def mock_setup_entry() -> Generator[AsyncMock]:
     """Override async_setup_entry."""
     with patch(
-        "homeassistant.components.aemet.async_setup_entry", return_value=True
+        "homeassistant.components.aemet.async_setup_entry", return_value=None
     ) as mock_setup_entry:
         yield mock_setup_entry

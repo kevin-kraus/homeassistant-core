@@ -14,7 +14,6 @@ are no active output formats, the background worker is shut down and access
 tokens are expired. Alternatively, a Stream can be configured with keepalive
 to always keep workers active.
 """
-from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping
@@ -26,18 +25,24 @@ import time
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, cast
 
-import voluptuous as vol
+import probatio
 from yarl import URL
 
-from homeassistant.components.logger import EVENT_LOGGING_CHANGED
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import (
+    CONF_VERIFY_SSL,
+    EVENT_HOMEASSISTANT_STOP,
+    EVENT_LOGGING_CHANGED,
+)
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
-import homeassistant.helpers.config_validation as cv
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.setup import SetupPhases, async_pause_setup
+from homeassistant.util.async_ import create_eager_task
 
 from .const import (
     ATTR_ENDPOINTS,
+    ATTR_PREFER_TCP,
     ATTR_SETTINGS,
     ATTR_STREAMS,
     CONF_EXTRA_PART_WAIT_TIME,
@@ -52,12 +57,14 @@ from .const import (
     MAX_SEGMENTS,
     OUTPUT_FORMATS,
     OUTPUT_IDLE_TIMEOUT,
+    OUTPUT_STARTUP_TIMEOUT,
     RECORDER_PROVIDER,
     RTSP_TRANSPORTS,
     SEGMENT_DURATION_ADJUSTER,
     SOURCE_TIMEOUT,
     STREAM_RESTART_INCREMENT,
     STREAM_RESTART_RESET_TIME,
+    StreamClientError,
 )
 from .core import (
     PROVIDERS,
@@ -69,6 +76,7 @@ from .core import (
     StreamSettings,
 )
 from .diagnostics import Diagnostics
+from .exceptions import StreamOpenClientError, StreamWorkerError
 from .hls import HlsStreamOutput, async_setup_hls
 
 if TYPE_CHECKING:
@@ -85,12 +93,42 @@ __all__ = [
     "OUTPUT_FORMATS",
     "RTSP_TRANSPORTS",
     "SOURCE_TIMEOUT",
-    "Stream",
-    "create_stream",
     "Orientation",
+    "Stream",
+    "StreamClientError",
+    "StreamOpenClientError",
+    "create_stream",
 ]
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def async_check_stream_client_error(
+    hass: HomeAssistant, source: str, pyav_options: dict[str, str] | None = None
+) -> None:
+    """Check if a stream can be successfully opened.
+
+    Raise StreamOpenClientError if an http client error is encountered.
+    """
+    await hass.loop.run_in_executor(
+        None, _check_stream_client_error, hass, source, pyav_options
+    )
+
+
+def _check_stream_client_error(
+    hass: HomeAssistant, source: str, options: dict[str, str] | None = None
+) -> None:
+    """Check if a stream can be successfully opened.
+
+    Raise StreamOpenClientError if an http client error is encountered.
+    """
+    from .worker import try_open_stream  # noqa: PLC0415
+
+    pyav_options, _ = _convert_stream_options(hass, source, options or {})
+    try:
+        try_open_stream(source, pyav_options).close()
+    except StreamWorkerError as err:
+        raise StreamOpenClientError(str(err), err.error_code) from err
 
 
 def redact_credentials(url: str) -> str:
@@ -106,6 +144,46 @@ def redact_credentials(url: str) -> str:
     return str(yurl.update_query(redacted_query_params))
 
 
+def _convert_stream_options(
+    hass: HomeAssistant,
+    stream_source: str,
+    stream_options: Mapping[str, str | bool | float],
+) -> tuple[dict[str, str], StreamSettings]:
+    """Convert options from stream options into PyAV options and stream settings."""
+    if DOMAIN not in hass.data:
+        raise HomeAssistantError("Stream integration is not set up.")
+
+    stream_settings = copy.copy(hass.data[DOMAIN][ATTR_SETTINGS])
+    try:
+        STREAM_OPTIONS_SCHEMA(stream_options)
+    except probatio.Invalid as exc:
+        raise HomeAssistantError(f"Invalid stream options: {exc}") from exc
+
+    # FFmpeg 9 verifies TLS peers by default; cameras use self-signed certificates
+    pyav_options: dict[str, str] = {
+        "tls_verify": "1" if stream_options.get(CONF_VERIFY_SSL) else "0"
+    }
+
+    if extra_wait_time := stream_options.get(CONF_EXTRA_PART_WAIT_TIME):
+        stream_settings.hls_part_timeout += extra_wait_time
+    if rtsp_transport := stream_options.get(CONF_RTSP_TRANSPORT):
+        assert isinstance(rtsp_transport, str)
+        # The PyAV options currently match the stream CONF constants, but this
+        # will not necessarily always be the case, so they are hard coded here
+        pyav_options["rtsp_transport"] = rtsp_transport
+    if stream_options.get(CONF_USE_WALLCLOCK_AS_TIMESTAMPS):
+        pyav_options["use_wallclock_as_timestamps"] = "1"
+
+    # For RTSP streams, prefer TCP
+    if isinstance(stream_source, str) and stream_source[:7] == "rtsp://":
+        pyav_options = {
+            "rtsp_flags": ATTR_PREFER_TCP,
+            "stimeout": "5000000",
+            **pyav_options,
+        }
+    return pyav_options, stream_settings
+
+
 def create_stream(
     hass: HomeAssistant,
     stream_source: str,
@@ -115,47 +193,21 @@ def create_stream(
 ) -> Stream:
     """Create a stream with the specified identifier based on the source url.
 
-    The stream_source is typically an rtsp url (though any url accepted by ffmpeg is fine) and
-    options (see STREAM_OPTIONS_SCHEMA) are converted and passed into pyav / ffmpeg.
+    The stream_source is typically an rtsp url (though any
+    url accepted by ffmpeg is fine) and options (see
+    STREAM_OPTIONS_SCHEMA) are converted and passed into
+    pyav / ffmpeg.
 
     The stream_label is a string used as an additional message in logging.
     """
-
-    def convert_stream_options(
-        hass: HomeAssistant, stream_options: Mapping[str, str | bool | float]
-    ) -> tuple[dict[str, str], StreamSettings]:
-        """Convert options from stream options into PyAV options and stream settings."""
-        stream_settings = copy.copy(hass.data[DOMAIN][ATTR_SETTINGS])
-        pyav_options: dict[str, str] = {}
-        try:
-            STREAM_OPTIONS_SCHEMA(stream_options)
-        except vol.Invalid as exc:
-            raise HomeAssistantError("Invalid stream options") from exc
-
-        if extra_wait_time := stream_options.get(CONF_EXTRA_PART_WAIT_TIME):
-            stream_settings.hls_part_timeout += extra_wait_time
-        if rtsp_transport := stream_options.get(CONF_RTSP_TRANSPORT):
-            assert isinstance(rtsp_transport, str)
-            # The PyAV options currently match the stream CONF constants, but this
-            # will not necessarily always be the case, so they are hard coded here
-            pyav_options["rtsp_transport"] = rtsp_transport
-        if stream_options.get(CONF_USE_WALLCLOCK_AS_TIMESTAMPS):
-            pyav_options["use_wallclock_as_timestamps"] = "1"
-
-        return pyav_options, stream_settings
 
     if DOMAIN not in hass.config.components:
         raise HomeAssistantError("Stream integration is not set up.")
 
     # Convert extra stream options into PyAV options and stream settings
-    pyav_options, stream_settings = convert_stream_options(hass, options)
-    # For RTSP streams, prefer TCP
-    if isinstance(stream_source, str) and stream_source[:7] == "rtsp://":
-        pyav_options = {
-            "rtsp_flags": "prefer_tcp",
-            "stimeout": "5000000",
-            **pyav_options,
-        }
+    pyav_options, stream_settings = _convert_stream_options(
+        hass, stream_source, options
+    )
 
     stream = Stream(
         hass,
@@ -169,42 +221,46 @@ def create_stream(
     return stream
 
 
-DOMAIN_SCHEMA = vol.Schema(
+DOMAIN_SCHEMA = probatio.Schema(
     {
-        vol.Optional(CONF_LL_HLS, default=True): cv.boolean,
-        vol.Optional(CONF_SEGMENT_DURATION, default=6): vol.All(
-            cv.positive_float, vol.Range(min=2, max=10)
+        probatio.Optional(CONF_LL_HLS, default=True): cv.boolean,
+        probatio.Optional(CONF_SEGMENT_DURATION, default=6): probatio.All(
+            cv.positive_float, probatio.Range(min=2, max=10)
         ),
-        vol.Optional(CONF_PART_DURATION, default=1): vol.All(
-            cv.positive_float, vol.Range(min=0.2, max=1.5)
+        probatio.Optional(CONF_PART_DURATION, default=1): probatio.All(
+            cv.positive_float, probatio.Range(min=0.2, max=1.5)
         ),
     }
 )
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
         DOMAIN: DOMAIN_SCHEMA,
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
 
 
-@callback
-def update_pyav_logging(_event: Event | None = None) -> None:
-    """Adjust libav logging to only log when the stream logger is at DEBUG."""
+def set_pyav_logging(enable: bool) -> None:
+    """Turn PyAV logging on or off."""
+    import av  # noqa: PLC0415
 
-    def set_pyav_logging(enable: bool) -> None:
-        """Turn PyAV logging on or off."""
-        import av  # pylint: disable=import-outside-toplevel
-
-        av.logging.set_level(av.logging.VERBOSE if enable else av.logging.FATAL)
-
-    # enable PyAV logging iff Stream logger is set to debug
-    set_pyav_logging(logging.getLogger(__name__).isEnabledFor(logging.DEBUG))
+    av.logging.set_level(av.logging.VERBOSE if enable else av.logging.FATAL)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up stream."""
+    debug_enabled = _LOGGER.isEnabledFor(logging.DEBUG)
+
+    @callback
+    def update_pyav_logging(_event: Event | None = None) -> None:
+        """Adjust libav logging to only log when the stream logger is at DEBUG."""
+        nonlocal debug_enabled
+        if (new_debug_enabled := _LOGGER.isEnabledFor(logging.DEBUG)) == debug_enabled:
+            return
+        debug_enabled = new_debug_enabled
+        # enable PyAV logging iff Stream logger is set to debug
+        set_pyav_logging(new_debug_enabled)
 
     # Only pass through PyAV log messages if stream logging is above DEBUG
     cancel_logging_listener = hass.bus.async_listen(
@@ -214,11 +270,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     # at logging.WARNING. Set those Logger levels to logging.ERROR
     for logging_namespace in ("libav.mp4", "libav.swscaler"):
         logging.getLogger(logging_namespace).setLevel(logging.ERROR)
-    update_pyav_logging()
+
+    # This will load av so we run it in the executor
+    with async_pause_setup(hass, SetupPhases.WAIT_IMPORT_PACKAGES):
+        await hass.async_add_executor_job(set_pyav_logging, debug_enabled)
 
     # Keep import here so that we can import stream integration without installing reqs
-    # pylint: disable-next=import-outside-toplevel
-    from .recorder import async_setup_recorder
+    from .recorder import async_setup_recorder  # noqa: PLC0415
 
     hass.data[DOMAIN] = {}
     hass.data[DOMAIN][ATTR_ENDPOINTS] = {}
@@ -250,7 +308,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         for stream in hass.data[DOMAIN][ATTR_STREAMS]:
             stream.dynamic_stream_settings.preload_stream = False
         if awaitables := [
-            asyncio.create_task(stream.stop())
+            create_eager_task(stream.stop())
             for stream in hass.data[DOMAIN][ATTR_STREAMS]
         ]:
             await asyncio.wait(awaitables)
@@ -314,11 +372,14 @@ class Stream:
         # without concern about self._outputs being modified from another thread.
         return MappingProxyType(self._outputs.copy())
 
-    def add_provider(
-        self, fmt: str, timeout: int = OUTPUT_IDLE_TIMEOUT
-    ) -> StreamOutput:
+    def add_provider(self, fmt: str, timeout: int | None = None) -> StreamOutput:
         """Add provider output stream."""
         if not (provider := self._outputs.get(fmt)):
+            startup_timeout = OUTPUT_STARTUP_TIMEOUT
+            if timeout is None:
+                timeout = OUTPUT_IDLE_TIMEOUT
+            else:
+                startup_timeout = timeout
 
             async def idle_callback() -> None:
                 if (
@@ -330,7 +391,7 @@ class Stream:
 
             provider = PROVIDERS[fmt](
                 self.hass,
-                IdleTimer(self.hass, timeout, idle_callback),
+                IdleTimer(self.hass, timeout, idle_callback, startup_timeout),
                 self._stream_settings,
                 self.dynamic_stream_settings,
             )
@@ -400,17 +461,24 @@ class Stream:
         self._fast_restart_once = True
         self._thread_quit.set()
 
+    def _set_state(self, available: bool) -> None:
+        """Set the stream state by updating the callback."""
+        # Call with call_soon_threadsafe since we know _async_update_state is always
+        # all callback function instead of using add_job which would have to work
+        # it out each time
+        self.hass.loop.call_soon_threadsafe(self._async_update_state, available)
+
     def _run_worker(self) -> None:
         """Handle consuming streams and restart keepalive streams."""
-        # Keep import here so that we can import stream integration without installing reqs
-        # pylint: disable-next=import-outside-toplevel
-        from .worker import StreamState, StreamWorkerError, stream_worker
+        # Keep import here so that we can import stream
+        # integration without installing reqs
+        from .worker import StreamState, stream_worker  # noqa: PLC0415
 
         stream_state = StreamState(self.hass, self.outputs, self._diagnostics)
         wait_timeout = 0
         while not self._thread_quit.wait(timeout=wait_timeout):
             start_time = time.time()
-            self.hass.add_job(self._async_update_state, True)
+            self._set_state(True)
             self._diagnostics.set_value(
                 "keepalive", self.dynamic_stream_settings.preload_stream
             )
@@ -434,7 +502,8 @@ class Stream:
             stream_state.discontinuity()
             if not _should_retry() or self._thread_quit.is_set():
                 if self._fast_restart_once:
-                    # The stream source is updated, restart without any delay and reset the retry
+                    # The stream source is updated, restart
+                    # without any delay and reset the retry
                     # backoff for the new url.
                     wait_timeout = 0
                     self._fast_restart_once = False
@@ -442,10 +511,11 @@ class Stream:
                     continue
                 break
 
-            self.hass.add_job(self._async_update_state, False)
+            self._set_state(False)
             # To avoid excessive restarts, wait before restarting
-            # As the required recovery time may be different for different setups, start
-            # with trying a short wait_timeout and increase it on each reconnection attempt.
+            # As the required recovery time may be different
+            # for different setups, start with trying a short
+            # wait_timeout and increase it on each attempt.
             # Reset the wait_timeout after the worker has been up for several minutes
             if time.time() - start_time > STREAM_RESTART_RESET_TIME:
                 wait_timeout = 0
@@ -458,9 +528,10 @@ class Stream:
             )
 
         async def worker_finished() -> None:
-            # The worker is no checking availability of the stream and can no longer track
-            # availability so mark it as available, otherwise the frontend may not be able to
-            # interact with the stream.
+            # The worker is no longer checking availability
+            # of the stream and can no longer track it so
+            # mark it as available, otherwise the frontend
+            # may not be able to interact with the stream.
             if not self.available:
                 self._async_update_state(True)
             # We can call remove_provider() sequentially as the wrapped _stop() function
@@ -498,19 +569,25 @@ class Stream:
     ) -> None:
         """Make a .mp4 recording from a provided stream."""
 
-        # Keep import here so that we can import stream integration without installing reqs
-        # pylint: disable-next=import-outside-toplevel
-        from .recorder import RecorderOutput
+        # Keep import here so that we can import stream
+        # integration without installing reqs
+        from .recorder import RecorderOutput  # noqa: PLC0415
 
         # Check for file access
         if not self.hass.config.is_allowed_path(video_path):
-            raise HomeAssistantError(f"Can't write {video_path}, no access to path!")
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="path_not_allowed",
+                translation_placeholders={"filename": video_path},
+            )
 
         # Add recorder
         if recorder := self.outputs().get(RECORDER_PROVIDER):
             assert isinstance(recorder, RecorderOutput)
-            raise HomeAssistantError(
-                f"Stream already recording to {recorder.video_path}!"
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="already_recording",
+                translation_placeholders={"filename": recorder.video_path},
             )
         recorder = cast(
             RecorderOutput, self.add_provider(RECORDER_PROVIDER, timeout=duration)
@@ -562,10 +639,11 @@ def _should_retry() -> bool:
     return True
 
 
-STREAM_OPTIONS_SCHEMA: Final = vol.Schema(
+STREAM_OPTIONS_SCHEMA: Final = probatio.Schema(
     {
-        vol.Optional(CONF_RTSP_TRANSPORT): vol.In(RTSP_TRANSPORTS),
-        vol.Optional(CONF_USE_WALLCLOCK_AS_TIMESTAMPS): bool,
-        vol.Optional(CONF_EXTRA_PART_WAIT_TIME): cv.positive_float,
+        probatio.Optional(CONF_RTSP_TRANSPORT): probatio.In(RTSP_TRANSPORTS),
+        probatio.Optional(CONF_USE_WALLCLOCK_AS_TIMESTAMPS): bool,
+        probatio.Optional(CONF_EXTRA_PART_WAIT_TIME): cv.positive_float,
+        probatio.Optional(CONF_VERIFY_SSL): bool,
     }
 )

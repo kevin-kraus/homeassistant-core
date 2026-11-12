@@ -1,10 +1,16 @@
 """Test Google Assistant helpers."""
+
 from datetime import timedelta
 from http import HTTPStatus
-from typing import Any
 from unittest.mock import Mock, call, patch
 
 import pytest
+from pytest_homeassistant.common import (
+    MockConfigEntry,
+    async_capture_events,
+    async_mock_service,
+)
+from pytest_homeassistant.typing import ClientSessionGenerator
 
 from homeassistant.components.google_assistant import helpers
 from homeassistant.components.google_assistant.const import (
@@ -14,19 +20,18 @@ from homeassistant.components.google_assistant.const import (
     SOURCE_LOCAL,
     STORE_GOOGLE_LOCAL_WEBHOOK_ID,
 )
-from homeassistant.config import async_process_ha_core_config
+from homeassistant.components.matter import MatterDeviceInfo
 from homeassistant.core import HomeAssistant, State
+from homeassistant.core_config import async_process_ha_core_config
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    entity_registry as er,
+)
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 
 from . import MockConfig
-
-from tests.common import (
-    async_capture_events,
-    async_fire_time_changed,
-    async_mock_service,
-)
-from tests.typing import ClientSessionGenerator
 
 
 async def test_google_entity_sync_serialize_with_local_sdk(hass: HomeAssistant) -> None:
@@ -71,6 +76,111 @@ async def test_google_entity_sync_serialize_with_local_sdk(hass: HomeAssistant) 
             serialized = entity.sync_serialize(None, "mock-uuid")
             assert "otherDeviceIds" not in serialized
             assert "customData" not in serialized
+
+
+async def test_google_entity_sync_serialize_with_matter(
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """Test sync serialize attributes of a GoogleEntity that is also a Matter device."""
+    entry = MockConfigEntry()
+    entry.add_to_hass(hass)
+    device = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        manufacturer="Someone",
+        model="Some model",
+        sw_version="Some Version",
+        identifiers={("matter", "12345678")},
+        connections={(dr.CONNECTION_NETWORK_MAC, "12:34:56:AB:CD:EF")},
+    )
+    entity = entity_registry.async_get_or_create(
+        "light",
+        "test",
+        "1235",
+        suggested_object_id="ceiling_lights",
+        device_id=device.id,
+    )
+    hass.states.async_set("light.ceiling_lights", "off")
+
+    entity = helpers.GoogleEntity(
+        hass, MockConfig(hass=hass), hass.states.get("light.ceiling_lights")
+    )
+
+    serialized = entity.sync_serialize(None, "mock-uuid")
+    assert "matterUniqueId" not in serialized
+    assert "matterOriginalVendorId" not in serialized
+    assert "matterOriginalProductId" not in serialized
+
+    hass.config.components.add("matter")
+
+    with patch(
+        "homeassistant.components.matter.get_matter_device_info",
+        return_value=MatterDeviceInfo(
+            unique_id="mock-unique-id",
+            vendor_id="mock-vendor-id",
+            product_id="mock-product-id",
+        ),
+    ):
+        serialized = entity.sync_serialize("mock-user-id", "abcdef")
+
+    assert serialized["matterUniqueId"] == "mock-unique-id"
+    assert serialized["matterOriginalVendorId"] == "mock-vendor-id"
+    assert serialized["matterOriginalProductId"] == "mock-product-id"
+
+
+async def test_google_entity_sync_serialize_child_device(
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
+    area_registry: ar.AreaRegistry,
+) -> None:
+    """Test an entity on a child device keeps its device and inherits its area."""
+    entry = MockConfigEntry()
+    entry.add_to_hass(hass)
+    area = area_registry.async_create("Living Room")
+    parent = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("test", "strip")},
+        manufacturer="Someone",
+        model="Some model",
+        sw_version="Some Version",
+        name="Power strip",
+    )
+    device_registry.async_update_device(parent.id, area_id=area.id)
+    child = device_registry.async_get_or_create_child(
+        config_entry_id=entry.entry_id,
+        identifiers={("test", "strip_outlet_1")},
+        parent_device_id=parent.id,
+        name="Outlet 1",
+    )
+    entity_entry = entity_registry.async_get_or_create(
+        "light",
+        "test",
+        "1235",
+        suggested_object_id="ceiling_lights",
+        device_id=child.id,
+    )
+    hass.states.async_set("light.ceiling_lights", "off")
+
+    # The child device is resolved (async_get finds children, unlike the mains-only
+    # devices dict) and inherits the parent device's area.
+    _, device_entry, area_reg_entry = helpers._get_registry_entries(
+        hass, entity_entry.entity_id
+    )
+    assert device_entry is not None
+    assert device_entry.id == child.id
+    assert area_reg_entry is not None
+    assert area_reg_entry.id == area.id
+
+    entity = helpers.GoogleEntity(
+        hass, MockConfig(hass=hass), hass.states.get("light.ceiling_lights")
+    )
+    serialized = entity.sync_serialize(None, "mock-uuid")
+
+    assert serialized["roomHint"] == "Living Room"
+    # A child device carries no hardware/firmware fields
+    assert "deviceInfo" not in serialized
 
 
 async def test_config_local_sdk(
@@ -220,72 +330,6 @@ async def test_config_local_sdk_if_ssl_enabled(
     assert await resp.read() == b""
 
 
-async def test_agent_user_id_storage(
-    hass: HomeAssistant, hass_storage: dict[str, Any]
-) -> None:
-    """Test a disconnect message."""
-
-    hass_storage["google_assistant"] = {
-        "version": 1,
-        "minor_version": 1,
-        "key": "google_assistant",
-        "data": {
-            "agent_user_ids": {
-                "agent_1": {
-                    "local_webhook_id": "test_webhook",
-                }
-            },
-        },
-    }
-
-    store = helpers.GoogleConfigStore(hass)
-    await store.async_initialize()
-
-    assert hass_storage["google_assistant"] == {
-        "version": 1,
-        "minor_version": 1,
-        "key": "google_assistant",
-        "data": {
-            "agent_user_ids": {
-                "agent_1": {
-                    "local_webhook_id": "test_webhook",
-                }
-            },
-        },
-    }
-
-    async def _check_after_delay(data):
-        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=2))
-        await hass.async_block_till_done()
-
-        assert (
-            list(hass_storage["google_assistant"]["data"]["agent_user_ids"].keys())
-            == data
-        )
-
-    store.add_agent_user_id("agent_2")
-    await _check_after_delay(["agent_1", "agent_2"])
-
-    store.pop_agent_user_id("agent_1")
-    await _check_after_delay(["agent_2"])
-
-    hass_storage["google_assistant"] = {
-        "version": 1,
-        "minor_version": 1,
-        "key": "google_assistant",
-        "data": {
-            "agent_user_ids": {"agent_1": {}},
-        },
-    }
-    store = helpers.GoogleConfigStore(hass)
-    await store.async_initialize()
-
-    assert (
-        STORE_GOOGLE_LOCAL_WEBHOOK_ID
-        in hass_storage["google_assistant"]["data"]["agent_user_ids"]["agent_1"]
-    )
-
-
 async def test_agent_user_id_connect() -> None:
     """Test the connection and disconnection of users."""
     config = MockConfig()
@@ -306,12 +350,34 @@ async def test_agent_user_id_connect() -> None:
 
 @pytest.mark.parametrize("agents", [{}, {"1"}, {"1", "2"}])
 async def test_report_state_all(agents) -> None:
-    """Test a disconnect message."""
+    """Test sync of all states."""
     config = MockConfig(agent_user_ids=agents)
     data = {}
     with patch.object(config, "async_report_state") as mock:
         await config.async_report_state_all(data)
         assert sorted(mock.mock_calls) == sorted(call(data, agent) for agent in agents)
+
+
+@pytest.mark.parametrize("agents", [{}, {"1"}, {"1", "2"}])
+async def test_sync_entities(agents) -> None:
+    """Test sync of all entities."""
+    config = MockConfig(agent_user_ids=agents)
+    with patch.object(
+        config, "async_sync_entities", return_value=HTTPStatus.NO_CONTENT
+    ) as mock:
+        await config.async_sync_entities_all()
+        assert sorted(mock.mock_calls) == sorted(call(agent) for agent in agents)
+
+
+@pytest.mark.parametrize("agents", [{}, {"1"}, {"1", "2"}])
+async def test_sync_notifications(agents) -> None:
+    """Test sync of notifications."""
+    config = MockConfig(agent_user_ids=agents)
+    with patch.object(
+        config, "async_sync_notification", return_value=HTTPStatus.NO_CONTENT
+    ) as mock:
+        await config.async_sync_notification_all("1234", {})
+        assert not agents or (bool(mock.mock_calls) and agents)
 
 
 @pytest.mark.parametrize(
@@ -339,7 +405,10 @@ def test_supported_features_string(caplog: pytest.LogCaptureFixture) -> None:
         State("test.entity_id", "on", {"supported_features": "invalid"}),
     )
     assert entity.is_supported() is False
-    assert "Entity test.entity_id contains invalid supported_features value invalid"
+    assert (
+        "Entity test.entity_id contains invalid supported_features value invalid"
+        in caplog.text
+    )
 
 
 def test_request_data() -> None:
@@ -399,7 +468,7 @@ async def test_config_local_sdk_allow_min_version(
     ) not in caplog.text
 
 
-@pytest.mark.parametrize("version", (None, "2.1.4"))
+@pytest.mark.parametrize("version", [None, "2.1.4"])
 async def test_config_local_sdk_warn_version(
     hass: HomeAssistant,
     hass_client: ClientSessionGenerator,

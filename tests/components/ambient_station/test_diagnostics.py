@@ -1,25 +1,25 @@
 """Test Ambient PWS diagnostics."""
-from syrupy import SnapshotAssertion
 
-from homeassistant.components.ambient_station import DOMAIN
+from pytest_homeassistant.components.diagnostics import get_diagnostics_for_config_entry
+from pytest_homeassistant.typing import ClientSessionGenerator
+from syrupy.assertion import SnapshotAssertion
+from syrupy.filters import props
+
+from homeassistant.components.ambient_station import AmbientStationConfigEntry
 from homeassistant.core import HomeAssistant
-
-from tests.components.diagnostics import get_diagnostics_for_config_entry
-from tests.typing import ClientSessionGenerator
 
 
 async def test_entry_diagnostics(
     hass: HomeAssistant,
-    config_entry,
+    config_entry: AmbientStationConfigEntry,
     hass_client: ClientSessionGenerator,
     data_station,
     setup_config_entry,
     snapshot: SnapshotAssertion,
 ) -> None:
     """Test config entry diagnostics."""
-    ambient = hass.data[DOMAIN][config_entry.entry_id]
+    ambient = config_entry.runtime_data
     ambient.stations = data_station
-    assert (
-        await get_diagnostics_for_config_entry(hass, hass_client, config_entry)
-        == snapshot
-    )
+    assert await get_diagnostics_for_config_entry(
+        hass, hass_client, config_entry
+    ) == snapshot(exclude=props("created_at", "modified_at"))

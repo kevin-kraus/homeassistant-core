@@ -1,22 +1,19 @@
 """Helper methods to handle the time in Home Assistant."""
-from __future__ import annotations
 
 import bisect
 from contextlib import suppress
 import datetime as dt
-from functools import partial
-import platform
+from functools import lru_cache, partial
 import re
-import time
-from typing import Any
+from typing import Any, Literal, overload
 import zoneinfo
 
+from aiozoneinfo import async_get_time_zone as _async_get_time_zone
 import ciso8601
 
 DATE_STR_FORMAT = "%Y-%m-%d"
 UTC = dt.UTC
 DEFAULT_TIME_ZONE: dt.tzinfo = dt.UTC
-CLOCK_MONOTONIC_COARSE = 6
 
 # EPOCHORDINAL is not exposed as a constant
 # https://github.com/python/cpython/blob/3.10/Lib/zoneinfo/_zoneinfo.py#L12
@@ -29,7 +26,7 @@ DATETIME_RE = re.compile(
     r"(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})"
     r"[T ](?P<hour>\d{1,2}):(?P<minute>\d{1,2})"
     r"(?::(?P<second>\d{1,2})(?:\.(?P<microsecond>\d{1,6})\d{0,6})?)?"
-    r"(?P<tzinfo>Z|[+-]\d{2}(?::?\d{2})?)?$"
+    r"(?P<tzinfo>Z|[+-]\d{2}(?::?\d{2}(?::?\d{2})?)?)?$"
 )
 
 # Copyright (c) Django Software Foundation and individual contributors.
@@ -76,6 +73,12 @@ POSTGRES_INTERVAL_RE = re.compile(
 )
 
 
+@lru_cache(maxsize=1)
+def get_default_time_zone() -> dt.tzinfo:
+    """Get the default time zone."""
+    return DEFAULT_TIME_ZONE
+
+
 def set_default_time_zone(time_zone: dt.tzinfo) -> None:
     """Set a default time zone to be used when none is specified.
 
@@ -87,28 +90,63 @@ def set_default_time_zone(time_zone: dt.tzinfo) -> None:
     assert isinstance(time_zone, dt.tzinfo)
 
     DEFAULT_TIME_ZONE = time_zone
+    get_default_time_zone.cache_clear()
 
 
-def get_time_zone(time_zone_str: str) -> dt.tzinfo | None:
+def get_time_zone(time_zone_str: str) -> zoneinfo.ZoneInfo | None:
+    """Get time zone from string. Return None if unable to determine.
+
+    Must be run in the executor if the ZoneInfo is not already
+    in the cache. If you are not sure, use async_get_time_zone.
+    """
+    try:
+        return zoneinfo.ZoneInfo(time_zone_str)
+    # Malformed keys raise ValueError, overlong ones OSError
+    except zoneinfo.ZoneInfoNotFoundError, ValueError, OSError:
+        return None
+
+
+async def async_get_time_zone(time_zone_str: str) -> zoneinfo.ZoneInfo | None:
     """Get time zone from string. Return None if unable to determine.
 
     Async friendly.
     """
     try:
-        return zoneinfo.ZoneInfo(time_zone_str)
-    except zoneinfo.ZoneInfoNotFoundError:
+        return await _async_get_time_zone(time_zone_str)
+    # Malformed keys raise ValueError, overlong ones OSError
+    except zoneinfo.ZoneInfoNotFoundError, ValueError, OSError:
         return None
 
 
 # We use a partial here since it is implemented in native code
 # and avoids the global lookup of UTC
-utcnow: partial[dt.datetime] = partial(dt.datetime.now, UTC)
+utcnow = partial(dt.datetime.now, UTC)
 utcnow.__doc__ = "Get now in UTC time."
 
 
 def now(time_zone: dt.tzinfo | None = None) -> dt.datetime:
     """Get now in specified time zone."""
     return dt.datetime.now(time_zone or DEFAULT_TIME_ZONE)
+
+
+def naive_now() -> dt.datetime:
+    """Get now as a naive datetime in system local time.
+
+    The returned datetime has no tzinfo.
+    Prefer the time zone aware `now` helper unless
+    a naive datetime is explicitly required.
+
+    A valid use case for a naive datetime is for example when
+    a 3rd party library requires a naive datetime in local time.
+    In that case, this helper can be used to get the current time
+    in the expected format.
+
+    Use time.time() when calculating a relative time.
+    For example, to calculate the time until a future event,
+    do `event_time - time.time()`
+    instead of `event_time - datetime.datetime.now().timestamp()`.
+    """
+    return dt.datetime.now()
 
 
 def as_utc(dattim: dt.datetime) -> dt.datetime:
@@ -152,19 +190,6 @@ utc_from_timestamp = partial(dt.datetime.fromtimestamp, tz=UTC)
 """Return a UTC time from a timestamp."""
 
 
-def utc_to_timestamp(utc_dt: dt.datetime) -> float:
-    """Fast conversion of a datetime in UTC to a timestamp."""
-    # Taken from
-    # https://github.com/python/cpython/blob/3.10/Lib/zoneinfo/_zoneinfo.py#L185
-    return (
-        (utc_dt.toordinal() - EPOCHORDINAL) * 86400
-        + utc_dt.hour * 3600
-        + utc_dt.minute * 60
-        + utc_dt.second
-        + (utc_dt.microsecond / 1000000)
-    )
-
-
 def start_of_local_day(dt_or_d: dt.date | dt.datetime | None = None) -> dt.datetime:
     """Return local datetime object of start of day from date or datetime."""
     if dt_or_d is None:
@@ -180,18 +205,38 @@ def start_of_local_day(dt_or_d: dt.date | dt.datetime | None = None) -> dt.datet
 # Copyright (c) Django Software Foundation and individual contributors.
 # All rights reserved.
 # https://github.com/django/django/blob/main/LICENSE
-def parse_datetime(dt_str: str) -> dt.datetime | None:
+@overload
+def parse_datetime(dt_str: str) -> dt.datetime | None: ...
+
+
+@overload
+def parse_datetime(dt_str: str, *, raise_on_error: Literal[True]) -> dt.datetime: ...
+
+
+@overload
+def parse_datetime(
+    dt_str: str, *, raise_on_error: Literal[False]
+) -> dt.datetime | None: ...
+
+
+def parse_datetime(dt_str: str, *, raise_on_error: bool = False) -> dt.datetime | None:
     """Parse a string and return a datetime.datetime.
 
     This function supports time zone offsets. When the input contains one,
     the output uses a timezone with a fixed offset from UTC.
     Raises ValueError if the input is well formatted but not a valid datetime.
-    Returns None if the input isn't well formatted.
+
+    If the input isn't well formatted, returns None if raise_on_error is False
+    or raises ValueError if it's True.
     """
+    # First try if the string can be parsed by the fast ciso8601 library
     with suppress(ValueError, IndexError):
         return ciso8601.parse_datetime(dt_str)
 
+    # ciso8601 failed to parse the string, fall back to regex
     if not (match := DATETIME_RE.match(dt_str)):
+        if raise_on_error:
+            raise ValueError
         return None
     kws: dict[str, Any] = match.groupdict()
     if kws["microsecond"]:
@@ -202,9 +247,12 @@ def parse_datetime(dt_str: str) -> dt.datetime | None:
     if tzinfo_str == "Z":
         tzinfo = UTC
     elif tzinfo_str is not None:
-        offset_mins = int(tzinfo_str[-2:]) if len(tzinfo_str) > 3 else 0
-        offset_hours = int(tzinfo_str[1:3])
-        offset = dt.timedelta(hours=offset_hours, minutes=offset_mins)
+        offset_digits = tzinfo_str[1:].replace(":", "")
+        offset = dt.timedelta(
+            hours=int(offset_digits[:2]),
+            minutes=int(offset_digits[2:4] or 0),
+            seconds=int(offset_digits[4:] or 0),
+        )
         if tzinfo_str[0] == "-":
             offset = -offset
         tzinfo = dt.timezone(offset)
@@ -263,41 +311,117 @@ def parse_time(time_str: str) -> dt.time | None:
         minute = int(parts[1])
         second = int(parts[2]) if len(parts) > 2 else 0
         return dt.time(hour, minute, second)
-    except ValueError:
-        # ValueError if value cannot be converted to an int or not in range
+    except ValueError, OverflowError:
+        # ValueError if value cannot be converted to an int or not in range,
+        # OverflowError if it does not even fit in a C int
         return None
 
 
-def get_age(date: dt.datetime) -> str:
-    """Take a datetime and return its "age" as a string.
-
-    The age can be in second, minute, hour, day, month or year. Only the
-    biggest unit is considered, e.g. if it's 2 days and 3 hours, "2 days" will
-    be returned.
-    Make sure date is not in the future, or else it won't work.
-    """
+def _get_timestring(timediff: float, precision: int = 1) -> str:
+    """Return a string representation of a time diff."""
 
     def formatn(number: int, unit: str) -> str:
         """Add "unit" if it's plural."""
         if number == 1:
-            return f"1 {unit}"
-        return f"{number:d} {unit}s"
+            return f"1 {unit} "
+        return f"{number:d} {unit}s "
+
+    if timediff == 0.0:
+        return "0 seconds"
+
+    units = ("year", "month", "day", "hour", "minute", "second")
+
+    factors = (365 * 24 * 60 * 60, 30 * 24 * 60 * 60, 24 * 60 * 60, 60 * 60, 60, 1)
+
+    # Round at the last shown unit up front, so it carries into the larger units
+    remainder = timediff
+    current_precision = 0
+    for current_factor in factors:
+        if remainder < current_factor:
+            continue
+        current_precision += 1
+        if current_precision == precision:
+            months = (timediff % factors[0]) // factors[1]
+            timediff += round(remainder / current_factor) * current_factor - remainder
+            rounded_months = (timediff % factors[0]) // factors[1]
+            # 12 months are 5 days short of a year, so rounding to them ends the year
+            if rounded_months >= 12 and (months < 12 or current_factor == factors[1]):
+                timediff += factors[0] - timediff % factors[0]
+            break
+        remainder %= current_factor
+
+    result_string: str = ""
+    current_precision = 0
+
+    for i, current_factor in enumerate(factors):
+        selected_unit = units[i]
+        if timediff < current_factor:
+            continue
+        current_precision = current_precision + 1
+        if current_precision == precision:
+            return (
+                result_string + formatn(round(timediff / current_factor), selected_unit)
+            ).rstrip()
+        curr_diff = int(timediff // current_factor)
+        result_string += formatn(curr_diff, selected_unit)
+        timediff -= (curr_diff) * current_factor
+
+    return result_string.rstrip()
+
+
+def get_age(date: dt.datetime, precision: int = 1) -> str:
+    """Take a datetime and return its "age" as a string.
+
+    The age can be in second, minute, hour, day, month and year.
+
+    precision is the number of units to return, with the last unit rounded.
+    precision=0 returns all units (no early rounding, except for sub-second values).
+
+    The date must be in the past or a ValueError will be raised.
+    """
 
     delta = (now() - date).total_seconds()
+
     rounded_delta = round(delta)
 
-    units = ["second", "minute", "hour", "day", "month"]
-    factors = [60, 60, 24, 30, 12]
-    selected_unit = "year"
+    if rounded_delta < 0:
+        raise ValueError("Time value is in the future")
+    return _get_timestring(rounded_delta, precision)
 
-    for i, next_factor in enumerate(factors):
-        if rounded_delta < next_factor:
-            selected_unit = units[i]
-            break
-        delta /= next_factor
-        rounded_delta = round(delta)
 
-    return formatn(rounded_delta, selected_unit)
+def get_time_remaining(date: dt.datetime, precision: int = 1) -> str:
+    """Take a datetime and return its "time remaining" as a string.
+
+    The time remaining can be in second, minute, hour, day, month and year.
+
+    precision is the number of units to return, with the last unit rounded.
+    precision=0 returns all units (no early rounding, except for sub-second values).
+
+    The date must be in the future or a ValueError will be raised.
+    """
+
+    delta = (date - now()).total_seconds()
+
+    rounded_delta = round(delta)
+
+    if rounded_delta < 0:
+        raise ValueError("Time value is in the past")
+
+    return _get_timestring(rounded_delta, precision)
+
+
+def timedelta_string(delta: dt.timedelta, precision: int = 1) -> str:
+    """Return a string representation of a timedelta.
+
+    The result can be in seconds, minutes, hours, days, months and years.
+
+    precision is the number of units to return, with the last unit rounded.
+    precision=0 returns all units (no early rounding, except for sub-second values).
+
+    Negative timedeltas are treated as their absolute value.
+    """
+    rounded_delta = round(abs(delta.total_seconds()))
+    return _get_timestring(rounded_delta, precision)
 
 
 def parse_time_expression(parameter: Any, min_value: int, max_value: int) -> list[int]:
@@ -307,7 +431,9 @@ def parse_time_expression(parameter: Any, min_value: int, max_value: int) -> lis
     elif isinstance(parameter, str):
         if parameter.startswith("/"):
             parameter = int(parameter[1:])
-            res = [x for x in range(min_value, max_value + 1) if x % parameter == 0]
+            res = list(
+                range(min_value + (-min_value % parameter), max_value + 1, parameter)
+            )
         else:
             res = [int(parameter)]
 
@@ -326,12 +452,23 @@ def parse_time_expression(parameter: Any, min_value: int, max_value: int) -> lis
     return res
 
 
-def _dst_offset_diff(dattim: dt.datetime) -> dt.timedelta:
-    """Return the offset when crossing the DST barrier."""
-    delta = dt.timedelta(hours=24)
-    return (dattim + delta).utcoffset() - (  # type: ignore[operator]
-        dattim - delta
-    ).utcoffset()
+def _second_fold_start(dattim: dt.datetime) -> dt.datetime:
+    """Return the first wall time of the second fold of an ambiguous datetime.
+
+    The result has fold=1. The transition is searched in UTC, between the
+    first and second fold readings of dattim, to the second.
+    """
+    tzinfo = dattim.tzinfo
+    low = dattim.replace(microsecond=0, fold=0).astimezone(UTC)
+    first_fold_offset = low.astimezone(tzinfo).utcoffset()
+    high = dattim.replace(microsecond=0, fold=1).astimezone(UTC)
+    while (gap := int((high - low).total_seconds())) > 1:
+        middle = low + dt.timedelta(seconds=gap // 2)
+        if middle.astimezone(tzinfo).utcoffset() == first_fold_offset:
+            low = middle
+        else:
+            high = middle
+    return high.astimezone(tzinfo).replace(fold=1)
 
 
 def _lower_bound(arr: list[int], cmp: int) -> int | None:
@@ -373,7 +510,8 @@ def find_next_time_expression_time(
             next_second = seconds[0]
             result += dt.timedelta(minutes=1)
 
-        result = result.replace(second=next_second)
+        if result.second != next_second:
+            result = result.replace(second=next_second)
 
         # Match next minute
         next_minute = _lower_bound(minutes, result.minute)
@@ -386,7 +524,8 @@ def find_next_time_expression_time(
             next_minute = minutes[0]
             result += dt.timedelta(hours=1)
 
-        result = result.replace(minute=next_minute)
+        if result.minute != next_minute:
+            result = result.replace(minute=next_minute)
 
         # Match next hour
         next_hour = _lower_bound(hours, result.hour)
@@ -399,7 +538,8 @@ def find_next_time_expression_time(
             next_hour = hours[0]
             result += dt.timedelta(days=1)
 
-        result = result.replace(hour=next_hour)
+        if result.hour != next_hour:
+            result = result.replace(hour=next_hour)
 
         if result.tzinfo in (None, UTC):
             # Using UTC, no DST checking needed
@@ -447,15 +587,14 @@ def find_next_time_expression_time(
             # longer matches within the fold).
             #   -> Check if result matches in the next fold. If so, emit that match
 
-            # Turn back the time by the DST offset, effectively run the algorithm on
-            # the first fold. If it matches on the first fold, that means it will also
-            # match on the second one.
+            # Run the algorithm from the start of the second fold. The whole second
+            # fold comes after `now`, so its first match is the next one.
 
             # Example: 2021.10.31 02:45:00+02:00 with pattern 02:30
             #   -> 2021.10.31 02:30:00+01:00
 
             check_result = find_next_time_expression_time(
-                now + _dst_offset_diff(now), seconds, minutes, hours
+                _second_fold_start(now), seconds, minutes, hours
             )
             if _datetime_ambiguous(check_result):
                 return check_result.replace(fold=1)
@@ -476,29 +615,3 @@ def _datetime_ambiguous(dattim: dt.datetime) -> bool:
     assert dattim.tzinfo is not None
     opposite_fold = dattim.replace(fold=not dattim.fold)
     return _datetime_exists(dattim) and dattim.utcoffset() != opposite_fold.utcoffset()
-
-
-def __gen_monotonic_time_coarse() -> partial[float]:
-    """Return a function that provides monotonic time in seconds.
-
-    This is the coarse version of time_monotonic, which is faster but less accurate.
-
-    Since many arm64 and 32-bit platforms don't support VDSO with time.monotonic
-    because of errata, we can't rely on the kernel to provide a fast
-    monotonic time.
-
-    https://lore.kernel.org/lkml/20170404171826.25030-1-marc.zyngier@arm.com/
-    """
-    # We use a partial here since its implementation is in native code
-    # which allows us to avoid the overhead of the global lookup
-    # of CLOCK_MONOTONIC_COARSE.
-    return partial(time.clock_gettime, CLOCK_MONOTONIC_COARSE)
-
-
-monotonic_time_coarse = time.monotonic
-with suppress(Exception):
-    if (
-        platform.system() == "Linux"
-        and abs(time.monotonic() - __gen_monotonic_time_coarse()()) < 1
-    ):
-        monotonic_time_coarse = __gen_monotonic_time_coarse()

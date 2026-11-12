@@ -1,11 +1,12 @@
 """Test fixtures for the Thread integration."""
 
+from unittest.mock import MagicMock
+
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components import thread
 from homeassistant.core import HomeAssistant
-
-from tests.common import MockConfigEntry
 
 CONFIG_ENTRY_DATA = {}
 
@@ -24,5 +25,5 @@ async def thread_config_entry_fixture(hass: HomeAssistant):
 
 
 @pytest.fixture(autouse=True)
-def use_mocked_zeroconf(mock_async_zeroconf):
+def use_mocked_zeroconf(mock_async_zeroconf: MagicMock) -> None:
     """Mock zeroconf in all tests."""

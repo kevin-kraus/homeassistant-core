@@ -134,11 +134,30 @@ SSDP = {
         {
             "st": "urn:schemas-frontier-silicon-com:undok:fsapi:1",
         },
+        {
+            "st": "urn:schemas-frontier-silicon-com:invalid:fsapi:1",
+        },
+    ],
+    "harman_luxury": [
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:1",
+            "manufacturer": "Harman Luxury Audio",
+        },
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:2",
+            "manufacturer": "Harman Luxury Audio",
+        },
     ],
     "harmony": [
         {
             "deviceType": "urn:myharmony-com:device:harmony:1",
             "manufacturer": "Logitech",
+        },
+    ],
+    "hegel": [
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:1",
+            "manufacturer": "Hegel",
         },
     ],
     "heos": [
@@ -166,6 +185,13 @@ SSDP = {
             "st": "urn:hyperion-project.org:device:basic:1",
         },
     ],
+    "imeon_inverter": [
+        {
+            "deviceType": "urn:schemas-upnp-org:device:Basic:1",
+            "manufacturer": "IMEON",
+            "st": "upnp:rootdevice",
+        },
+    ],
     "isy994": [
         {
             "deviceType": "urn:udi-com:device:X_Insteon_Lighting_Device:1",
@@ -188,14 +214,29 @@ SSDP = {
             "manufacturer": "ZyXEL Communications Corp.",
         },
     ],
-    "konnected": [
-        {
-            "manufacturer": "konnected.io",
-        },
-    ],
     "lametric": [
         {
             "deviceType": "urn:schemas-upnp-org:device:LaMetric:1",
+        },
+    ],
+    "libresync": [
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:1",
+            "manufacturer": "LibreWireless",
+        },
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:1",
+            "modelDescription": "LibreSyncDMR",
+        },
+    ],
+    "lyngdorf": [
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:2",
+            "manufacturer": "Lyngdorf",
+        },
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:2",
+            "manufacturer": "Steinway Lyngdorf",
         },
     ],
     "nanoleaf": [
@@ -211,6 +252,12 @@ SSDP = {
         {
             "st": "nanoleaf:nl52",
         },
+        {
+            "st": "nanoleaf:nl69",
+        },
+        {
+            "st": "inanoleaf:nl81",
+        },
     ],
     "netgear": [
         {
@@ -222,6 +269,44 @@ SSDP = {
         {
             "deviceType": "urn:schemas-upnp-org:device:Basic:1",
             "manufacturer": "The OctoPrint Project",
+        },
+    ],
+    "onkyo": [
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:1",
+            "manufacturer": "ONKYO",
+        },
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:2",
+            "manufacturer": "ONKYO",
+        },
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:3",
+            "manufacturer": "ONKYO",
+        },
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:1",
+            "manufacturer": "Onkyo & Pioneer Corporation",
+        },
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:2",
+            "manufacturer": "Onkyo & Pioneer Corporation",
+        },
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:3",
+            "manufacturer": "Onkyo & Pioneer Corporation",
+        },
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:1",
+            "manufacturer": "Pioneer",
+        },
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:2",
+            "manufacturer": "Pioneer",
+        },
+        {
+            "deviceType": "urn:schemas-upnp-org:device:MediaRenderer:3",
+            "manufacturer": "Pioneer",
         },
     ],
     "openhome": [
@@ -284,7 +369,7 @@ SSDP = {
             "manufacturer": "Synology",
         },
     ],
-    "unifi": [
+    "unifi_discovery": [
         {
             "manufacturer": "Ubiquiti Networks",
             "modelDescription": "UniFi Dream Machine",
@@ -297,19 +382,9 @@ SSDP = {
             "manufacturer": "Ubiquiti Networks",
             "modelDescription": "UniFi Dream Machine SE",
         },
-    ],
-    "unifiprotect": [
         {
             "manufacturer": "Ubiquiti Networks",
-            "modelDescription": "UniFi Dream Machine",
-        },
-        {
-            "manufacturer": "Ubiquiti Networks",
-            "modelDescription": "UniFi Dream Machine Pro",
-        },
-        {
-            "manufacturer": "Ubiquiti Networks",
-            "modelDescription": "UniFi Dream Machine SE",
+            "modelDescription": "UniFi Dream Machine Pro Max",
         },
     ],
     "upnp": [
@@ -326,6 +401,16 @@ SSDP = {
             "nt": "urn:schemas-upnp-org:device:InternetGatewayDevice:2",
         },
     ],
+    "victron_gx": [
+        {
+            "X_MqttOnLan": "1",
+            "manufacturer": "Victron Energy",
+        },
+        {
+            "X_MqttTokenPairing": "1",
+            "manufacturer": "Victron Energy",
+        },
+    ],
     "webostv": [
         {
             "st": "urn:lge-com:service:webos-second-screen:1",
@@ -339,6 +424,16 @@ SSDP = {
     "wilight": [
         {
             "manufacturer": "All Automacao Ltda",
+        },
+    ],
+    "xbox": [
+        {
+            "manufacturer": "Microsoft Corporation",
+            "modelName": "Xbox 360",
+        },
+        {
+            "manufacturer": "Microsoft Corporation",
+            "modelName": "Xbox One",
         },
     ],
     "yamaha_musiccast": [

@@ -1,4 +1,5 @@
 """Tests for the IoTaWatt integration."""
+
 from iotawattpy.sensor import Sensor
 
 INPUT_SENSOR = Sensor(
@@ -21,4 +22,14 @@ OUTPUT_SENSOR = Sensor(
     begin="",
     mac_addr="mock-mac",
     fromStart=True,
+)
+VAR_OUTPUT_SENSOR = Sensor(
+    channel="N/A",
+    base_name="My VAR Sensor",
+    suffix=None,
+    io_type="Output",
+    unit="VAR",
+    value=500,
+    begin="",
+    mac_addr="mock-mac",
 )

@@ -1,10 +1,13 @@
 {
   "domain": "discovergy",
-  "name": "Discovergy",
+  "name": "inexogy",
+  "categories": ["energy.meters_monitoring"],
   "codeowners": ["@jpbede"],
   "config_flow": true,
+  "connectivity": ["cloud"],
   "documentation": "https://www.home-assistant.io/integrations/discovergy",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "requirements": ["pydiscovergy==2.0.3"]
+  "quality_scale": "platinum",
+  "requirements": ["pydiscovergy==3.0.2"]
 }

@@ -1,34 +1,63 @@
 """Generic Z-Wave Entity Class."""
-from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from typing import Any, override
 
-from zwave_js_server.const import NodeStatus
 from zwave_js_server.exceptions import BaseZwaveJSServerError
 from zwave_js_server.model.driver import Driver
+from zwave_js_server.model.endpoint import Endpoint
+from zwave_js_server.model.node import EndpointGroup, Node as ZwaveNode
 from zwave_js_server.model.value import (
     SetValueResult,
     Value as ZwaveValue,
     get_value_id_str,
 )
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.device_registry import ChildDeviceInfo, DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity import Entity, EntityDescription
 from homeassistant.helpers.typing import UNDEFINED
 
-from .const import DOMAIN, LOGGER
-from .discovery import ZwaveDiscoveryInfo
-from .helpers import get_device_id, get_unique_id, get_valueless_base_unique_id
+from .const import (
+    DOMAIN,
+    EVENT_METADATA_UPDATED,
+    EVENT_VALUE_ADDED,
+    EVENT_VALUE_REMOVED,
+    EVENT_VALUE_UPDATED,
+    LOGGER,
+)
+from .helpers import (
+    get_device_id,
+    get_device_info,
+    get_unique_id,
+    get_valueless_base_unique_id,
+)
+from .models import (
+    BaseDiscoverySchemaDataTemplate,
+    PlatformZwaveDiscoveryInfo,
+    ZwaveDiscoveryInfo,
+    ZwaveJSConfigEntry,
+)
 
-EVENT_VALUE_UPDATED = "value updated"
-EVENT_VALUE_REMOVED = "value removed"
-EVENT_DEAD = "dead"
-EVENT_ALIVE = "alive"
+
+@dataclass(kw_only=True)
+class NewZwaveDiscoveryInfo(PlatformZwaveDiscoveryInfo):
+    """Info discovered from (primary) ZWave Value to create entity.
+
+    This is the new discovery info that will replace ZwaveDiscoveryInfo.
+    """
+
+    entity_class: type[ZWaveBaseEntity]
+    # the entity description to use
+    entity_description: EntityDescription
+    # helper data to use in platform setup
+    platform_data: Any = None
+    # data template to use in platform logic
+    platform_data_template: BaseDiscoverySchemaDataTemplate | None = None
 
 
 class ZWaveBaseEntity(Entity):
@@ -36,16 +65,22 @@ class ZWaveBaseEntity(Entity):
 
     _attr_should_poll = False
     _attr_has_entity_name = True
+    info: ZwaveDiscoveryInfo | NewZwaveDiscoveryInfo
 
     def __init__(
-        self, config_entry: ConfigEntry, driver: Driver, info: ZwaveDiscoveryInfo
+        self,
+        config_entry: ZwaveJSConfigEntry,
+        driver: Driver,
+        info: ZwaveDiscoveryInfo | NewZwaveDiscoveryInfo,
     ) -> None:
         """Initialize a generic Z-Wave device entity."""
         self.config_entry = config_entry
         self.driver = driver
         self.info = info
+        self._primary_value_removed = False
+        primary_value = info.primary_value
         # entities requiring additional values, can add extra ids to this list
-        self.watched_value_ids = {self.info.primary_value.value_id}
+        self.watched_value_ids = {primary_value.value_id}
 
         if self.info.additional_value_ids_to_watch:
             self.watched_value_ids = self.watched_value_ids.union(
@@ -53,17 +88,34 @@ class ZWaveBaseEntity(Entity):
             )
 
         # Entity class attributes
+        if isinstance(info, NewZwaveDiscoveryInfo):
+            self.entity_description = info.entity_description
+        else:
+            if (enabled_default := info.entity_registry_enabled_default) is False:
+                self._attr_entity_registry_enabled_default = enabled_default
+            if (entity_category := info.entity_category) is not None:
+                self._attr_entity_category = entity_category
+        # The node device is precreated in the main handler. Endpoint child devices
+        # are created on demand via the device_info property for values that the
+        # device config assigns to a labeled endpoint or a non-main endpoint group.
+        self._endpoint_device: Endpoint | EndpointGroup | None = info.endpoint_device
         self._attr_name = self.generate_name()
-        self._attr_unique_id = get_unique_id(driver, self.info.primary_value.value_id)
-        if self.info.entity_registry_enabled_default is False:
-            self._attr_entity_registry_enabled_default = False
-        if self.info.entity_category is not None:
-            self._attr_entity_category = self.info.entity_category
-        if self.info.assumed_state:
-            self._attr_assumed_state = True
-        # device is precreated in main handler
-        self._attr_device_info = DeviceInfo(
-            identifiers={get_device_id(driver, self.info.node)},
+        self._attr_unique_id = get_unique_id(driver, primary_value.value_id)
+        self._attr_assumed_state = self.info.assumed_state
+
+    @property
+    @override
+    def device_info(self) -> DeviceInfo | ChildDeviceInfo | None:
+        """Return device info for this entity."""
+        if (endpoint_device := self._endpoint_device) is None:
+            return DeviceInfo(identifiers={get_device_id(self.driver, self.info.node)})
+        parent_device_id = dr.async_get_device_id_by_identifier(
+            self.hass,
+            get_device_id(self.driver, self.info.node),
+            config_entry_id=self.config_entry.entry_id,
+        )
+        return get_device_info(
+            self.driver, self.info.node, endpoint_device, parent_device_id
         )
 
     @callback
@@ -109,14 +161,19 @@ class ZWaveBaseEntity(Entity):
             self.entity_id,
         )
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Call when entity is added."""
         # Add value_changed callbacks.
         self.async_on_remove(
             self.info.node.on(EVENT_VALUE_UPDATED, self._value_changed)
         )
+        self.async_on_remove(self.info.node.on(EVENT_VALUE_ADDED, self._value_added))
         self.async_on_remove(
             self.info.node.on(EVENT_VALUE_REMOVED, self._value_removed)
+        )
+        self.async_on_remove(
+            self.info.node.on(EVENT_METADATA_UPDATED, self._metadata_updated)
         )
         self.async_on_remove(
             async_dispatcher_connect(
@@ -140,11 +197,6 @@ class ZWaveBaseEntity(Entity):
                 self.async_remove,
             )
         )
-
-        for status_event in (EVENT_ALIVE, EVENT_DEAD):
-            self.async_on_remove(
-                self.info.node.on(status_event, self._node_status_alive_or_dead)
-            )
 
         self.async_on_remove(
             async_dispatcher_connect(
@@ -191,39 +243,68 @@ class ZWaveBaseEntity(Entity):
         if additional_info := [item for item in (additional_info or []) if item]:
             name = f"{name} {' '.join(additional_info)}"
 
-        # Only append endpoint to name if there are equivalent values on a lower
-        # endpoint
-        if primary_value.endpoint is not None and any(
-            get_value_id_str(
-                self.info.node,
-                primary_value.command_class,
-                primary_value.property_,
-                endpoint=endpoint_idx,
-                property_key=primary_value.property_key,
-            )
-            in self.info.node.values
-            for endpoint_idx in range(0, primary_value.endpoint)
-        ):
-            name += f" ({primary_value.endpoint})"
+        # Disambiguate entities that would otherwise share a name because an equivalent
+        # value exists on another endpoint of the same device. On the node device a lower
+        # endpoint carrying the value appends a numeric suffix (the lowest endpoint stays
+        # unsuffixed). On a group child device every endpoint of the group that shares the
+        # value is labeled, since each endpoint's label is meaningful on its own. A
+        # per-endpoint child device holds a single endpoint, so its entities already get a
+        # clean name from that device.
+        endpoint = primary_value.endpoint
+        endpoint_device = self._endpoint_device
+        if endpoint:
+            if endpoint_device is None:
+                sibling_endpoints: Iterable[int] = range(endpoint)
+            elif isinstance(endpoint_device, EndpointGroup):
+                sibling_endpoints = [
+                    group_endpoint.index
+                    for group_endpoint in endpoint_device.endpoints
+                    if group_endpoint.index != endpoint
+                ]
+            else:
+                sibling_endpoints = ()
+            if any(
+                get_value_id_str(
+                    self.info.node,
+                    primary_value.command_class,
+                    primary_value.property_,
+                    endpoint=sibling_endpoint,
+                    property_key=primary_value.property_key,
+                )
+                in self.info.node.values
+                for sibling_endpoint in sibling_endpoints
+            ):
+                name = f"{name} {self._endpoint_name_suffix(endpoint)}".strip()
 
-        return name
+        return name.strip()
+
+    def _endpoint_name_suffix(self, endpoint: int) -> str:
+        """Return a suffix distinguishing an endpoint from its siblings on a device.
+
+        Inside an endpoint-group child device the endpoint's own label is more meaningful
+        than a number, so it is preferred, with the redundant group-label prefix removed
+        (the child device is already named by the group label). Falls back to the endpoint
+        index when no usable label is available.
+        """
+        if isinstance(self._endpoint_device, EndpointGroup) and (
+            label := self.info.node.endpoints[endpoint].endpoint_label
+        ):
+            group_label = self._endpoint_device.label
+            if group_label and label.startswith(group_label):
+                label = label[len(group_label) :].strip()
+            if label:
+                return label
+        return f"({endpoint})"
 
     @property
+    @override
     def available(self) -> bool:
         """Return entity availability."""
         return (
             self.driver.client.connected
             and bool(self.info.node.ready)
-            and self.info.node.status != NodeStatus.DEAD
+            and not self._primary_value_removed
         )
-
-    @callback
-    def _node_status_alive_or_dead(self, event_data: dict) -> None:
-        """Call when node status changes to alive or dead.
-
-        Should not be overridden by subclasses.
-        """
-        self.async_write_ha_state()
 
     @callback
     def _value_changed(self, event_data: dict) -> None:
@@ -266,7 +347,83 @@ class ZWaveBaseEntity(Entity):
             value_id,
         )
 
-        self.hass.async_create_task(self.async_remove())
+        self._primary_value_removed = True
+        self.async_write_ha_state()
+
+    @callback
+    def _value_added(self, event_data: dict) -> None:
+        """Call when a value associated with our node is added.
+
+        Should not be overridden by subclasses.
+        """
+        value = event_data["value"]
+
+        if value.value_id != self.info.primary_value.value_id:
+            return
+
+        LOGGER.debug(
+            "[%s] Primary value %s was added",
+            self.entity_id,
+            value.value_id,
+        )
+
+        self.info.primary_value = value
+        self._primary_value_removed = False
+        self.on_value_update()
+        self.async_write_ha_state()
+
+    @callback
+    def should_rediscover_on_metadata_update(self) -> bool:
+        """Check if a metadata update requires entity rediscovery.
+
+        To be overridden by subclasses that need to detect metadata changes.
+        Return True if the entity needs to be removed and re-discovered.
+        """
+        return False
+
+    @callback
+    def _metadata_updated(self, event_data: dict) -> None:
+        """Handle metadata update requiring entity rediscovery.
+
+        Should not be overridden by subclasses.
+        """
+        value = event_data["value"]
+        if value.value_id != self.info.primary_value.value_id:
+            return
+
+        if not self.should_rediscover_on_metadata_update():
+            return
+
+        LOGGER.debug(
+            "[%s] Metadata options changed for %s, removing for rediscovery",
+            self.entity_id,
+            value.value_id,
+        )
+
+        self.hass.async_create_task(self._async_remove_and_rediscover(value))
+
+    async def _async_remove_and_rediscover(self, value: ZwaveValue) -> None:
+        """Remove entity and trigger re-discovery with updated metadata."""
+        assert self.device_entry is not None
+        controller_events = (
+            self.config_entry.runtime_data.driver_events.controller_events
+        )
+
+        # Remove entity first so the unique_id is freed up
+        await self.async_remove()
+
+        # discovered_value_ids is keyed by the node device id, not the child device id.
+        node_device_id = dr.async_get_device_id_by_identifier(
+            self.hass,
+            get_device_id(self.driver, self.info.node),
+            config_entry_id=self.config_entry.entry_id,
+        )
+        controller_events.discovered_value_ids[node_device_id].discard(value.value_id)
+        node_events = controller_events.node_events
+        value_updates_disc_info = node_events.value_updates_disc_info[
+            value.node.node_id
+        ]
+        node_events.async_on_value_added(value_updates_disc_info, value)
 
     @callback
     def get_zwave_value(
@@ -334,5 +491,69 @@ class ZWaveBaseEntity(Entity):
                 value, new_value, options=options, wait_for_result=wait_for_result
             )
         except BaseZwaveJSServerError as err:
-            LOGGER.error("Unable to set value %s: %s", value.value_id, err)
-            raise HomeAssistantError from err
+            raise HomeAssistantError(
+                f"Unable to set value {value.value_id}: {err}"
+            ) from err
+
+
+class ZWaveNodeBaseEntity(Entity):
+    """Base entity class for Z-Wave node-level (non-value) entities.
+
+    Used for entities that exist for the whole node rather than a specific
+    Z-Wave Value (e.g. firmware update, ping button, node status sensor).
+    """
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+
+    # Subclasses can opt in to also being removed when a node starts a
+    # reinterview. Useful for entities whose existence depends on CCs that
+    # may disappear during reinterview.
+    _remove_on_reinterview = False
+
+    def __init__(self, driver: Driver, node: ZwaveNode) -> None:
+        """Initialize a Z-Wave node-level entity."""
+        self.driver = driver
+        self.node = node
+
+        self._base_unique_id = get_valueless_base_unique_id(driver, node)
+        # device may not be precreated in main handler yet
+        self._attr_device_info = get_device_info(driver, node)
+
+    async def async_poll_value(self, _: bool) -> None:
+        """Poll a value (no-op for entities not backed by a Z-Wave Value)."""
+        # We log an error instead of raising an exception because this service
+        # call occurs in a separate task since it is called via the dispatcher
+        # and we don't want to raise the exception in that separate task because
+        # it is confusing to the user.
+        LOGGER.error(
+            "There is no value to refresh for %s so the zwave_js.refresh_value"
+            " service won't work for it",
+            self.entity_id,
+        )
+
+    @override
+    async def async_added_to_hass(self) -> None:
+        """Call when entity is added."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self.unique_id}_poll_value",
+                self.async_poll_value,
+            )
+        )
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._base_unique_id}_remove_entity",
+                self.async_remove,
+            )
+        )
+        if self._remove_on_reinterview:
+            self.async_on_remove(
+                async_dispatcher_connect(
+                    self.hass,
+                    f"{DOMAIN}_{self._base_unique_id}_remove_entity_on_interview_started",
+                    self.async_remove,
+                )
+            )

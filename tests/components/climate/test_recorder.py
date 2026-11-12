@@ -1,10 +1,11 @@
 """The tests for climate recorder."""
-from __future__ import annotations
 
 from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
+from pytest_homeassistant.common import async_fire_time_changed
+from pytest_homeassistant.components.recorder.common import async_wait_recording_done
 
 from homeassistant.components import climate
 from homeassistant.components.climate import (
@@ -16,6 +17,7 @@ from homeassistant.components.climate import (
     ATTR_MIN_TEMP,
     ATTR_PRESET_MODES,
     ATTR_SWING_MODES,
+    ATTR_TARGET_HUMIDITY_STEP,
     ATTR_TARGET_TEMP_STEP,
 )
 from homeassistant.components.recorder import Recorder
@@ -24,9 +26,6 @@ from homeassistant.const import ATTR_FRIENDLY_NAME, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
-
-from tests.common import async_fire_time_changed
-from tests.components.recorder.common import async_wait_recording_done
 
 
 @pytest.fixture(autouse=True)
@@ -57,13 +56,14 @@ async def test_exclude_attributes(recorder_mock: Recorder, hass: HomeAssistant) 
     assert len(states) > 1
     for entity_states in states.values():
         for state in entity_states:
-            assert ATTR_PRESET_MODES not in state.attributes
-            assert ATTR_HVAC_MODES not in state.attributes
             assert ATTR_FAN_MODES not in state.attributes
+            assert ATTR_FRIENDLY_NAME in state.attributes
+            assert ATTR_HVAC_MODES not in state.attributes
             assert ATTR_SWING_MODES not in state.attributes
-            assert ATTR_MIN_TEMP not in state.attributes
+            assert ATTR_MAX_HUMIDITY not in state.attributes
             assert ATTR_MAX_TEMP not in state.attributes
             assert ATTR_MIN_HUMIDITY not in state.attributes
-            assert ATTR_MAX_HUMIDITY not in state.attributes
+            assert ATTR_MIN_TEMP not in state.attributes
+            assert ATTR_PRESET_MODES not in state.attributes
+            assert ATTR_TARGET_HUMIDITY_STEP not in state.attributes
             assert ATTR_TARGET_TEMP_STEP not in state.attributes
-            assert ATTR_FRIENDLY_NAME in state.attributes

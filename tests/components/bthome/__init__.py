@@ -1,9 +1,11 @@
 """Tests for the BTHome integration."""
 
+from pytest_homeassistant.components.bluetooth import (
+    generate_advertisement_data,
+    generate_ble_device,
+)
 
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
-
-from tests.components.bluetooth import generate_advertisement_data, generate_ble_device
 
 TEMP_HUMI_SERVICE_INFO = BluetoothServiceInfoBleak(
     name="ATC 8D18B2",
@@ -19,6 +21,7 @@ TEMP_HUMI_SERVICE_INFO = BluetoothServiceInfoBleak(
     advertisement=generate_advertisement_data(local_name="Not it"),
     time=0,
     connectable=False,
+    tx_power=-127,
 )
 
 TEMP_HUMI_ENCRYPTED_SERVICE_INFO = BluetoothServiceInfoBleak(
@@ -37,6 +40,7 @@ TEMP_HUMI_ENCRYPTED_SERVICE_INFO = BluetoothServiceInfoBleak(
     advertisement=generate_advertisement_data(local_name="Not it"),
     time=0,
     connectable=False,
+    tx_power=-127,
 )
 
 PRST_SERVICE_INFO = BluetoothServiceInfoBleak(
@@ -55,6 +59,7 @@ PRST_SERVICE_INFO = BluetoothServiceInfoBleak(
     advertisement=generate_advertisement_data(local_name="prst"),
     time=0,
     connectable=False,
+    tx_power=-127,
 )
 
 INVALID_PAYLOAD = BluetoothServiceInfoBleak(
@@ -71,6 +76,7 @@ INVALID_PAYLOAD = BluetoothServiceInfoBleak(
     advertisement=generate_advertisement_data(local_name="Not it"),
     time=0,
     connectable=False,
+    tx_power=-127,
 )
 
 NOT_BTHOME_SERVICE_INFO = BluetoothServiceInfoBleak(
@@ -85,6 +91,7 @@ NOT_BTHOME_SERVICE_INFO = BluetoothServiceInfoBleak(
     advertisement=generate_advertisement_data(local_name="Not it"),
     time=0,
     connectable=False,
+    tx_power=-127,
 )
 
 
@@ -104,6 +111,7 @@ def make_bthome_v1_adv(address: str, payload: bytes) -> BluetoothServiceInfoBlea
         advertisement=generate_advertisement_data(local_name="Test Device"),
         time=0,
         connectable=False,
+        tx_power=-127,
     )
 
 
@@ -125,6 +133,7 @@ def make_encrypted_bthome_v1_adv(
         advertisement=generate_advertisement_data(local_name="ATC 8F80A5"),
         time=0,
         connectable=False,
+        tx_power=-127,
     )
 
 
@@ -144,4 +153,5 @@ def make_bthome_v2_adv(address: str, payload: bytes) -> BluetoothServiceInfoBlea
         advertisement=generate_advertisement_data(local_name="Test Device"),
         time=0,
         connectable=False,
+        tx_power=-127,
     )

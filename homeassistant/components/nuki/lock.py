@@ -1,72 +1,42 @@
 """Nuki.io lock platform."""
-from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, TypeVar
+from typing import Any, override
 
 from pynuki import NukiLock, NukiOpener
 from pynuki.constants import MODE_OPENER_CONTINUOUS
 from pynuki.device import NukiDevice
 from requests.exceptions import RequestException
-import voluptuous as vol
 
 from homeassistant.components.lock import LockEntity, LockEntityFeature
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv, entity_platform
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import NukiCoordinator, NukiEntity
-from .const import (
-    ATTR_BATTERY_CRITICAL,
-    ATTR_ENABLE,
-    ATTR_NUKI_ID,
-    ATTR_UNLATCH,
-    DATA_COORDINATOR,
-    DATA_LOCKS,
-    DATA_OPENERS,
-    DOMAIN as NUKI_DOMAIN,
-    ERROR_STATES,
-)
+from .const import ERROR_STATES
+from .coordinator import NukiConfigEntry
+from .entity import NukiEntity
 from .helpers import CannotConnect
-
-_NukiDeviceT = TypeVar("_NukiDeviceT", bound=NukiDevice)
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: NukiConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Nuki lock platform."""
-    data = hass.data[NUKI_DOMAIN][entry.entry_id]
-    coordinator: NukiCoordinator = data[DATA_COORDINATOR]
+    entry_data = entry.runtime_data
+    coordinator = entry_data.coordinator
 
     entities: list[NukiDeviceEntity] = [
-        NukiLockEntity(coordinator, lock) for lock in data[DATA_LOCKS]
+        NukiLockEntity(coordinator, lock) for lock in entry_data.locks
     ]
     entities.extend(
-        [NukiOpenerEntity(coordinator, opener) for opener in data[DATA_OPENERS]]
+        [NukiOpenerEntity(coordinator, opener) for opener in entry_data.openers]
     )
     async_add_entities(entities)
 
-    platform = entity_platform.async_get_current_platform()
-    platform.async_register_entity_service(
-        "lock_n_go",
-        {
-            vol.Optional(ATTR_UNLATCH, default=False): cv.boolean,
-        },
-        "lock_n_go",
-    )
 
-    platform.async_register_entity_service(
-        "set_continuous_mode",
-        {
-            vol.Required(ATTR_ENABLE): cv.boolean,
-        },
-        "set_continuous_mode",
-    )
-
-
-class NukiDeviceEntity(NukiEntity[_NukiDeviceT], LockEntity):
+class NukiDeviceEntity[_NukiDeviceT: NukiDevice](NukiEntity[_NukiDeviceT], LockEntity):
     """Representation of a Nuki device."""
 
     _attr_has_entity_name = True
@@ -75,32 +45,29 @@ class NukiDeviceEntity(NukiEntity[_NukiDeviceT], LockEntity):
     _attr_name = None
 
     @property
+    @override
     def unique_id(self) -> str | None:
         """Return a unique ID."""
         return self._nuki_device.nuki_id
 
     @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the device specific state attributes."""
-        return {
-            ATTR_BATTERY_CRITICAL: self._nuki_device.battery_critical,
-            ATTR_NUKI_ID: self._nuki_device.nuki_id,
-        }
-
-    @property
+    @override
     def available(self) -> bool:
         """Return True if entity is available."""
         return super().available and self._nuki_device.state not in ERROR_STATES
 
     @abstractmethod
+    @override
     def lock(self, **kwargs: Any) -> None:
         """Lock the device."""
 
     @abstractmethod
+    @override
     def unlock(self, **kwargs: Any) -> None:
         """Unlock the device."""
 
     @abstractmethod
+    @override
     def open(self, **kwargs: Any) -> None:
         """Open the door latch."""
 
@@ -109,10 +76,12 @@ class NukiLockEntity(NukiDeviceEntity[NukiLock]):
     """Representation of a Nuki lock."""
 
     @property
+    @override
     def is_locked(self) -> bool:
         """Return true if lock is locked."""
         return self._nuki_device.is_locked
 
+    @override
     def lock(self, **kwargs: Any) -> None:
         """Lock the device."""
         try:
@@ -120,6 +89,7 @@ class NukiLockEntity(NukiDeviceEntity[NukiLock]):
         except RequestException as err:
             raise CannotConnect from err
 
+    @override
     def unlock(self, **kwargs: Any) -> None:
         """Unlock the device."""
         try:
@@ -127,6 +97,7 @@ class NukiLockEntity(NukiDeviceEntity[NukiLock]):
         except RequestException as err:
             raise CannotConnect from err
 
+    @override
     def open(self, **kwargs: Any) -> None:
         """Open the door latch."""
         try:
@@ -150,6 +121,7 @@ class NukiOpenerEntity(NukiDeviceEntity[NukiOpener]):
     """Representation of a Nuki opener."""
 
     @property
+    @override
     def is_locked(self) -> bool:
         """Return true if either ring-to-open or continuous mode is enabled."""
         return not (
@@ -157,6 +129,7 @@ class NukiOpenerEntity(NukiDeviceEntity[NukiOpener]):
             or self._nuki_device.mode == MODE_OPENER_CONTINUOUS
         )
 
+    @override
     def lock(self, **kwargs: Any) -> None:
         """Disable ring-to-open."""
         try:
@@ -164,6 +137,7 @@ class NukiOpenerEntity(NukiDeviceEntity[NukiOpener]):
         except RequestException as err:
             raise CannotConnect from err
 
+    @override
     def unlock(self, **kwargs: Any) -> None:
         """Enable ring-to-open."""
         try:
@@ -171,6 +145,7 @@ class NukiOpenerEntity(NukiDeviceEntity[NukiOpener]):
         except RequestException as err:
             raise CannotConnect from err
 
+    @override
     def open(self, **kwargs: Any) -> None:
         """Buzz open the door."""
         try:

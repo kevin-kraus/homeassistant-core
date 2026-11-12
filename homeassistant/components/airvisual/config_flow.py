@@ -1,10 +1,10 @@
 """Define a config flow manager for AirVisual."""
-from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
+import probatio
 from pyairvisual.cloud_api import (
     CloudAPI,
     InvalidKeyError,
@@ -13,19 +13,22 @@ from pyairvisual.cloud_api import (
     UnauthorizedError,
 )
 from pyairvisual.errors import AirVisualError
-import voluptuous as vol
 
-from homeassistant import config_entries
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import (
+    SOURCE_REAUTH,
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+)
 from homeassistant.const import (
     CONF_API_KEY,
+    CONF_COUNTRY,
     CONF_LATITUDE,
     CONF_LONGITUDE,
     CONF_SHOW_ON_MAP,
     CONF_STATE,
 )
 from homeassistant.core import callback
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import aiohttp_client, config_validation as cv
 from homeassistant.helpers.schema_config_entry_flow import (
     SchemaFlowFormStep,
@@ -35,7 +38,6 @@ from homeassistant.helpers.schema_config_entry_flow import (
 from . import async_get_geography_id
 from .const import (
     CONF_CITY,
-    CONF_COUNTRY,
     CONF_INTEGRATION_TYPE,
     DOMAIN,
     INTEGRATION_TYPE_GEOGRAPHY_COORDS,
@@ -43,17 +45,19 @@ from .const import (
     LOGGER,
 )
 
-API_KEY_DATA_SCHEMA = vol.Schema({vol.Required(CONF_API_KEY): cv.string})
+API_KEY_DATA_SCHEMA = probatio.Schema(
+    {probatio.Required(probatio.Secret(CONF_API_KEY)): cv.string}
+)
 GEOGRAPHY_NAME_SCHEMA = API_KEY_DATA_SCHEMA.extend(
     {
-        vol.Required(CONF_CITY): cv.string,
-        vol.Required(CONF_STATE): cv.string,
-        vol.Required(CONF_COUNTRY): cv.string,
+        probatio.Required(CONF_CITY): cv.string,
+        probatio.Required(CONF_STATE): cv.string,
+        probatio.Required(CONF_COUNTRY): cv.string,
     }
 )
-PICK_INTEGRATION_TYPE_SCHEMA = vol.Schema(
+PICK_INTEGRATION_TYPE_SCHEMA = probatio.Schema(
     {
-        vol.Required("type"): vol.In(
+        probatio.Required("type"): probatio.In(
             [
                 INTEGRATION_TYPE_GEOGRAPHY_COORDS,
                 INTEGRATION_TYPE_GEOGRAPHY_NAME,
@@ -62,15 +66,15 @@ PICK_INTEGRATION_TYPE_SCHEMA = vol.Schema(
     }
 )
 
-OPTIONS_SCHEMA = vol.Schema(
-    {vol.Required(CONF_SHOW_ON_MAP): bool},
+OPTIONS_SCHEMA = probatio.Schema(
+    {probatio.Required(CONF_SHOW_ON_MAP): bool},
 )
 OPTIONS_FLOW = {
     "init": SchemaFlowFormStep(OPTIONS_SCHEMA),
 }
 
 
-class AirVisualFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
+class AirVisualFlowHandler(ConfigFlow, domain=DOMAIN):
     """Handle an AirVisual config flow."""
 
     VERSION = 3
@@ -81,14 +85,14 @@ class AirVisualFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self._geo_id: str | None = None
 
     @property
-    def geography_coords_schema(self) -> vol.Schema:
+    def geography_coords_schema(self) -> probatio.Schema:
         """Return the data schema for the cloud API."""
         return API_KEY_DATA_SCHEMA.extend(
             {
-                vol.Required(
+                probatio.Required(
                     CONF_LATITUDE, default=self.hass.config.latitude
                 ): cv.latitude,
-                vol.Required(
+                probatio.Required(
                     CONF_LONGITUDE, default=self.hass.config.longitude
                 ): cv.longitude,
             }
@@ -96,7 +100,7 @@ class AirVisualFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def _async_finish_geography(
         self, user_input: dict[str, str], integration_type: str
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Validate a Cloud API key."""
         errors = {}
         websession = aiohttp_client.async_get_clientsession(self.hass)
@@ -126,7 +130,7 @@ class AirVisualFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
                 try:
                     await coro
-                except (InvalidKeyError, KeyExpiredError, UnauthorizedError):
+                except InvalidKeyError, KeyExpiredError, UnauthorizedError:
                     errors[CONF_API_KEY] = "invalid_api_key"
                 except NotFoundError:
                     errors[CONF_CITY] = "location_not_found"
@@ -141,12 +145,11 @@ class AirVisualFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
                 valid_keys.add(user_input[CONF_API_KEY])
 
-        if existing_entry := await self.async_set_unique_id(self._geo_id):
-            self.hass.config_entries.async_update_entry(existing_entry, data=user_input)
-            self.hass.async_create_task(
-                self.hass.config_entries.async_reload(existing_entry.entry_id)
+        if self.source == SOURCE_REAUTH:
+            return self.async_update_reload_and_abort(
+                self._get_reauth_entry(),
+                data_updates={CONF_API_KEY: user_input[CONF_API_KEY]},
             )
-            return self.async_abort(reason="reauth_successful")
 
         return self.async_create_entry(
             title=f"Cloud API ({self._geo_id})",
@@ -155,7 +158,7 @@ class AirVisualFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def _async_init_geography(
         self, user_input: dict[str, str], integration_type: str
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initialization of the integration via the cloud API."""
         self._geo_id = async_get_geography_id(user_input)
         await self._async_set_unique_id(self._geo_id)
@@ -169,11 +172,12 @@ class AirVisualFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(config_entry: ConfigEntry) -> SchemaOptionsFlowHandler:
         """Define the config flow to handle options."""
         return SchemaOptionsFlowHandler(config_entry, OPTIONS_FLOW)
 
-    async def async_step_import(self, import_data: dict[str, str]) -> FlowResult:
+    async def async_step_import(self, import_data: dict[str, str]) -> ConfigFlowResult:
         """Handle import of config entry version 1 data."""
         import_source = import_data.pop("import_source")
         if import_source == "geography_by_coords":
@@ -182,7 +186,7 @@ class AirVisualFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_geography_by_coords(
         self, user_input: dict[str, str] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initialization of the cloud API based on latitude/longitude."""
         if not user_input:
             return self.async_show_form(
@@ -195,7 +199,7 @@ class AirVisualFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_geography_by_name(
         self, user_input: dict[str, str] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initialization of the cloud API based on city/state/country."""
         if not user_input:
             return self.async_show_form(
@@ -206,7 +210,9 @@ class AirVisualFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             user_input, INTEGRATION_TYPE_GEOGRAPHY_NAME
         )
 
-    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> FlowResult:
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
         """Handle configuration by re-auth."""
         self._entry_data_for_reauth = entry_data
         self._geo_id = async_get_geography_id(entry_data)
@@ -214,7 +220,7 @@ class AirVisualFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, str] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle re-auth completion."""
         if not user_input:
             return self.async_show_form(
@@ -227,9 +233,10 @@ class AirVisualFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             conf, self._entry_data_for_reauth[CONF_INTEGRATION_TYPE]
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, str] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the start of the config flow."""
         if not user_input:
             return self.async_show_form(

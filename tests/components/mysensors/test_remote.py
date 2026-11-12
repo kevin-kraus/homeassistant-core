@@ -1,5 +1,4 @@
 """Provide tests for mysensors remote platform."""
-from __future__ import annotations
 
 from collections.abc import Callable
 from unittest.mock import MagicMock, call
@@ -14,7 +13,12 @@ from homeassistant.components.remote import (
     SERVICE_LEARN_COMMAND,
     SERVICE_SEND_COMMAND,
 )
-from homeassistant.const import ATTR_ENTITY_ID, SERVICE_TURN_OFF, SERVICE_TURN_ON
+from homeassistant.const import (
+    ATTR_BATTERY_LEVEL,
+    ATTR_ENTITY_ID,
+    SERVICE_TURN_OFF,
+    SERVICE_TURN_ON,
+)
 from homeassistant.core import HomeAssistant
 
 
@@ -31,6 +35,7 @@ async def test_ir_transceiver(
 
     assert state
     assert state.state == "off"
+    assert state.attributes[ATTR_BATTERY_LEVEL] == 0
 
     # Test turn on
     await hass.services.async_call(

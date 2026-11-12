@@ -1,10 +1,12 @@
 """Test the DenonAVR config flow."""
+
 from unittest.mock import patch
 
+from denonavr.exceptions import AvrNetworkError
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
-from homeassistant import config_entries, data_entry_flow
-from homeassistant.components import ssdp
+from homeassistant import config_entries
 from homeassistant.components.denonavr.config_flow import (
     CONF_MANUFACTURER,
     CONF_SERIAL_NUMBER,
@@ -19,8 +21,13 @@ from homeassistant.components.denonavr.config_flow import (
 )
 from homeassistant.const import CONF_HOST, CONF_MODEL
 from homeassistant.core import HomeAssistant
-
-from tests.common import MockConfigEntry
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.service_info.ssdp import (
+    ATTR_UPNP_MANUFACTURER,
+    ATTR_UPNP_MODEL_NAME,
+    ATTR_UPNP_SERIAL,
+    SsdpServiceInfo,
+)
 
 TEST_HOST = "1.2.3.4"
 TEST_HOST2 = "5.6.7.8"
@@ -40,32 +47,43 @@ TEST_DISCOVER_2_RECEIVER = [{CONF_HOST: TEST_HOST}, {CONF_HOST: TEST_HOST2}]
 @pytest.fixture(name="denonavr_connect", autouse=True)
 def denonavr_connect_fixture():
     """Mock denonavr connection and entry setup."""
-    with patch(
-        "homeassistant.components.denonavr.receiver.DenonAVR.async_setup",
-        return_value=None,
-    ), patch(
-        "homeassistant.components.denonavr.receiver.DenonAVR.async_update",
-        return_value=None,
-    ), patch(
-        "homeassistant.components.denonavr.receiver.DenonAVR.support_sound_mode",
-        return_value=True,
-    ), patch(
-        "homeassistant.components.denonavr.receiver.DenonAVR.name",
-        TEST_NAME,
-    ), patch(
-        "homeassistant.components.denonavr.receiver.DenonAVR.model_name",
-        TEST_MODEL,
-    ), patch(
-        "homeassistant.components.denonavr.receiver.DenonAVR.serial_number",
-        TEST_SERIALNUMBER,
-    ), patch(
-        "homeassistant.components.denonavr.receiver.DenonAVR.manufacturer",
-        TEST_MANUFACTURER,
-    ), patch(
-        "homeassistant.components.denonavr.receiver.DenonAVR.receiver_type",
-        TEST_RECEIVER_TYPE,
-    ), patch(
-        "homeassistant.components.denonavr.async_setup_entry", return_value=True
+    with (
+        patch(
+            "homeassistant.components.denonavr.receiver.DenonAVR.async_setup",
+            return_value=None,
+        ),
+        patch(
+            "homeassistant.components.denonavr.receiver.DenonAVR.async_update",
+            return_value=None,
+        ),
+        patch(
+            "homeassistant.components.denonavr.receiver.DenonAVR.support_sound_mode",
+            return_value=True,
+        ),
+        patch(
+            "homeassistant.components.denonavr.receiver.DenonAVR.name",
+            TEST_NAME,
+        ),
+        patch(
+            "homeassistant.components.denonavr.receiver.DenonAVR.model_name",
+            TEST_MODEL,
+        ),
+        patch(
+            "homeassistant.components.denonavr.receiver.DenonAVR.serial_number",
+            TEST_SERIALNUMBER,
+        ),
+        patch(
+            "homeassistant.components.denonavr.receiver.DenonAVR.manufacturer",
+            TEST_MANUFACTURER,
+        ),
+        patch(
+            "homeassistant.components.denonavr.receiver.DenonAVR.receiver_type",
+            TEST_RECEIVER_TYPE,
+        ),
+        patch(
+            "homeassistant.components.denonavr.async_setup_entry",
+            return_value=None,
+        ),
     ):
         yield
 
@@ -79,7 +97,7 @@ async def test_config_flow_manual_host_success(hass: HomeAssistant) -> None:
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert result["errors"] == {}
 
@@ -88,7 +106,7 @@ async def test_config_flow_manual_host_success(hass: HomeAssistant) -> None:
         {CONF_HOST: TEST_HOST},
     )
 
-    assert result["type"] == "create_entry"
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == TEST_NAME
     assert result["data"] == {
         CONF_HOST: TEST_HOST,
@@ -97,6 +115,7 @@ async def test_config_flow_manual_host_success(hass: HomeAssistant) -> None:
         CONF_MANUFACTURER: TEST_MANUFACTURER,
         CONF_SERIAL_NUMBER: TEST_SERIALNUMBER,
     }
+    assert result["result"].unique_id == TEST_UNIQUE_ID
     assert result["options"] == {CONF_USE_TELNET: True}
 
 
@@ -109,7 +128,7 @@ async def test_config_flow_manual_discover_1_success(hass: HomeAssistant) -> Non
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert result["errors"] == {}
 
@@ -122,7 +141,7 @@ async def test_config_flow_manual_discover_1_success(hass: HomeAssistant) -> Non
             {},
         )
 
-    assert result["type"] == "create_entry"
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == TEST_NAME
     assert result["data"] == {
         CONF_HOST: TEST_HOST,
@@ -131,6 +150,7 @@ async def test_config_flow_manual_discover_1_success(hass: HomeAssistant) -> Non
         CONF_MANUFACTURER: TEST_MANUFACTURER,
         CONF_SERIAL_NUMBER: TEST_SERIALNUMBER,
     }
+    assert result["result"].unique_id == TEST_UNIQUE_ID
     assert result["options"] == {CONF_USE_TELNET: True}
 
 
@@ -143,7 +163,7 @@ async def test_config_flow_manual_discover_2_success(hass: HomeAssistant) -> Non
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert result["errors"] == {}
 
@@ -156,7 +176,7 @@ async def test_config_flow_manual_discover_2_success(hass: HomeAssistant) -> Non
             {},
         )
 
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "select"
     assert result["errors"] == {}
 
@@ -165,7 +185,7 @@ async def test_config_flow_manual_discover_2_success(hass: HomeAssistant) -> Non
         {"select_host": TEST_HOST2},
     )
 
-    assert result["type"] == "create_entry"
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == TEST_NAME
     assert result["data"] == {
         CONF_HOST: TEST_HOST2,
@@ -174,6 +194,7 @@ async def test_config_flow_manual_discover_2_success(hass: HomeAssistant) -> Non
         CONF_MANUFACTURER: TEST_MANUFACTURER,
         CONF_SERIAL_NUMBER: TEST_SERIALNUMBER,
     }
+    assert result["result"].unique_id == TEST_UNIQUE_ID
     assert result["options"] == {CONF_USE_TELNET: True}
 
 
@@ -186,7 +207,7 @@ async def test_config_flow_manual_discover_error(hass: HomeAssistant) -> None:
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert result["errors"] == {}
 
@@ -199,9 +220,20 @@ async def test_config_flow_manual_discover_error(hass: HomeAssistant) -> None:
             {},
         )
 
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert result["errors"] == {"base": "discovery_error"}
+
+    with patch(
+        "homeassistant.components.denonavr.config_flow.denonavr.async_discover",
+        return_value=TEST_DISCOVER_1_RECEIVER,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {},
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
 async def test_config_flow_manual_host_no_serial(hass: HomeAssistant) -> None:
@@ -213,7 +245,7 @@ async def test_config_flow_manual_host_no_serial(hass: HomeAssistant) -> None:
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert result["errors"] == {}
 
@@ -226,7 +258,8 @@ async def test_config_flow_manual_host_no_serial(hass: HomeAssistant) -> None:
             {CONF_HOST: TEST_HOST},
         )
 
-    assert result["type"] == "create_entry"
+    # pylint: disable-next=home-assistant-tests-config-flow-unique-id
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == TEST_NAME
     assert result["data"] == {
         CONF_HOST: TEST_HOST,
@@ -246,23 +279,26 @@ async def test_config_flow_manual_host_connection_error(hass: HomeAssistant) -> 
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert result["errors"] == {}
 
-    with patch(
-        "homeassistant.components.denonavr.receiver.DenonAVR.async_setup",
-        side_effect=AvrTimoutError("Timeout", "async_setup"),
-    ), patch(
-        "homeassistant.components.denonavr.receiver.DenonAVR.receiver_type",
-        None,
+    with (
+        patch(
+            "homeassistant.components.denonavr.receiver.DenonAVR.async_setup",
+            side_effect=AvrTimoutError("Timeout", "async_setup"),
+        ),
+        patch(
+            "homeassistant.components.denonavr.receiver.DenonAVR.receiver_type",
+            None,
+        ),
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             {CONF_HOST: TEST_HOST},
         )
 
-    assert result["type"] == "abort"
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "cannot_connect"
 
 
@@ -275,7 +311,7 @@ async def test_config_flow_manual_host_no_device_info(hass: HomeAssistant) -> No
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert result["errors"] == {}
 
@@ -288,7 +324,7 @@ async def test_config_flow_manual_host_no_device_info(hass: HomeAssistant) -> No
             {CONF_HOST: TEST_HOST},
         )
 
-    assert result["type"] == "abort"
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "cannot_connect"
 
 
@@ -297,19 +333,19 @@ async def test_config_flow_ssdp(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_SSDP},
-        data=ssdp.SsdpServiceInfo(
+        data=SsdpServiceInfo(
             ssdp_usn="mock_usn",
             ssdp_st="mock_st",
             ssdp_location=TEST_SSDP_LOCATION,
             upnp={
-                ssdp.ATTR_UPNP_MANUFACTURER: TEST_MANUFACTURER,
-                ssdp.ATTR_UPNP_MODEL_NAME: TEST_MODEL,
-                ssdp.ATTR_UPNP_SERIAL: TEST_SERIALNUMBER,
+                ATTR_UPNP_MANUFACTURER: TEST_MANUFACTURER,
+                ATTR_UPNP_MODEL_NAME: TEST_MODEL,
+                ATTR_UPNP_SERIAL: TEST_SERIALNUMBER,
             },
         ),
     )
 
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "confirm"
 
     result = await hass.config_entries.flow.async_configure(
@@ -317,7 +353,7 @@ async def test_config_flow_ssdp(hass: HomeAssistant) -> None:
         {},
     )
 
-    assert result["type"] == "create_entry"
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == TEST_NAME
     assert result["data"] == {
         CONF_HOST: TEST_HOST,
@@ -326,6 +362,7 @@ async def test_config_flow_ssdp(hass: HomeAssistant) -> None:
         CONF_MANUFACTURER: TEST_MANUFACTURER,
         CONF_SERIAL_NUMBER: TEST_SERIALNUMBER,
     }
+    assert result["result"].unique_id == TEST_UNIQUE_ID
     assert result["options"] == {CONF_USE_TELNET: True}
 
 
@@ -337,19 +374,19 @@ async def test_config_flow_ssdp_not_denon(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_SSDP},
-        data=ssdp.SsdpServiceInfo(
+        data=SsdpServiceInfo(
             ssdp_usn="mock_usn",
             ssdp_st="mock_st",
             ssdp_location=TEST_SSDP_LOCATION,
             upnp={
-                ssdp.ATTR_UPNP_MANUFACTURER: "NotSupported",
-                ssdp.ATTR_UPNP_MODEL_NAME: TEST_MODEL,
-                ssdp.ATTR_UPNP_SERIAL: TEST_SERIALNUMBER,
+                ATTR_UPNP_MANUFACTURER: "NotSupported",
+                ATTR_UPNP_MODEL_NAME: TEST_MODEL,
+                ATTR_UPNP_SERIAL: TEST_SERIALNUMBER,
             },
         ),
     )
 
-    assert result["type"] == "abort"
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "not_denonavr_manufacturer"
 
 
@@ -361,18 +398,47 @@ async def test_config_flow_ssdp_missing_info(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_SSDP},
-        data=ssdp.SsdpServiceInfo(
+        data=SsdpServiceInfo(
             ssdp_usn="mock_usn",
             ssdp_st="mock_st",
             ssdp_location=TEST_SSDP_LOCATION,
             upnp={
-                ssdp.ATTR_UPNP_MANUFACTURER: TEST_MANUFACTURER,
+                ATTR_UPNP_MANUFACTURER: TEST_MANUFACTURER,
             },
         ),
     )
 
-    assert result["type"] == "abort"
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "not_denonavr_missing"
+
+
+async def test_config_flow_ssdp_no_receiver_api(hass: HomeAssistant) -> None:
+    """Failed flow initialized by ssdp discovery.
+
+    HEOS-only devices (like a Denon Home speaker) are discovered, but don't
+    serve the receiver API.
+    """
+    with patch(
+        "homeassistant.components.denonavr.receiver.DenonAVR.async_setup",
+        side_effect=AvrNetworkError("NetworkError", "async_setup"),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_SSDP},
+            data=SsdpServiceInfo(
+                ssdp_usn="mock_usn",
+                ssdp_st="mock_st",
+                ssdp_location=TEST_SSDP_LOCATION,
+                upnp={
+                    ATTR_UPNP_MANUFACTURER: TEST_MANUFACTURER,
+                    ATTR_UPNP_MODEL_NAME: "Denon Home 150",
+                    ATTR_UPNP_SERIAL: TEST_SERIALNUMBER,
+                },
+            ),
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "cannot_connect"
 
 
 async def test_config_flow_ssdp_ignored_model(hass: HomeAssistant) -> None:
@@ -383,19 +449,19 @@ async def test_config_flow_ssdp_ignored_model(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_SSDP},
-        data=ssdp.SsdpServiceInfo(
+        data=SsdpServiceInfo(
             ssdp_usn="mock_usn",
             ssdp_st="mock_st",
             ssdp_location=TEST_SSDP_LOCATION,
             upnp={
-                ssdp.ATTR_UPNP_MANUFACTURER: TEST_MANUFACTURER,
-                ssdp.ATTR_UPNP_MODEL_NAME: TEST_IGNORED_MODEL,
-                ssdp.ATTR_UPNP_SERIAL: TEST_SERIALNUMBER,
+                ATTR_UPNP_MANUFACTURER: TEST_MANUFACTURER,
+                ATTR_UPNP_MODEL_NAME: TEST_IGNORED_MODEL,
+                ATTR_UPNP_SERIAL: TEST_SERIALNUMBER,
             },
         ),
     )
 
-    assert result["type"] == "abort"
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "not_denonavr_manufacturer"
 
 
@@ -421,7 +487,7 @@ async def test_options_flow(hass: HomeAssistant) -> None:
 
     result = await hass.config_entries.options.async_init(config_entry.entry_id)
 
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "init"
 
     result = await hass.config_entries.options.async_configure(
@@ -434,7 +500,7 @@ async def test_options_flow(hass: HomeAssistant) -> None:
         },
     )
 
-    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert config_entry.options == {
         CONF_SHOW_ALL_SOURCES: True,
         CONF_ZONE2: True,
@@ -455,7 +521,7 @@ async def test_config_flow_manual_host_no_serial_double_config(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert result["errors"] == {}
 
@@ -468,7 +534,8 @@ async def test_config_flow_manual_host_no_serial_double_config(
             {CONF_HOST: TEST_HOST},
         )
 
-    assert result["type"] == "create_entry"
+    # pylint: disable-next=home-assistant-tests-config-flow-unique-id
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == TEST_NAME
     assert result["data"] == {
         CONF_HOST: TEST_HOST,
@@ -482,7 +549,7 @@ async def test_config_flow_manual_host_no_serial_double_config(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    assert result["type"] == "form"
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert result["errors"] == {}
 
@@ -495,5 +562,5 @@ async def test_config_flow_manual_host_no_serial_double_config(
             {CONF_HOST: TEST_HOST},
         )
 
-    assert result["type"] == "abort"
+    assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"

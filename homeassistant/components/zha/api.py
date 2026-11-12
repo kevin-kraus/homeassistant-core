@@ -1,17 +1,16 @@
 """API for Zigbee Home Automation."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING, Literal
 
+from zha.application.const import RadioType
 from zigpy.backups import NetworkBackup
 from zigpy.config import CONF_DEVICE, CONF_DEVICE_PATH
 from zigpy.types import Channels
 from zigpy.util import pick_optimal_channel
 
-from .core.const import CONF_RADIO_TYPE, DOMAIN, RadioType
-from .core.gateway import ZHAGateway
-from .core.helpers import get_zha_data, get_zha_gateway
+from .const import CONF_RADIO_TYPE, DOMAIN
+from .helpers import get_zha_data, get_zha_gateway
+from .radio_manager import ZhaRadioManager
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -22,14 +21,12 @@ def _get_config_entry(hass: HomeAssistant) -> ConfigEntry:
     """Find the singleton ZHA config entry, if one exists."""
 
     # If ZHA is already running, use its config entry
-    try:
-        zha_gateway = get_zha_gateway(hass)
-    except ValueError:
-        pass
-    else:
-        return zha_gateway.config_entry
+    zha_data = get_zha_data(hass)
 
-    # Otherwise, find one
+    if zha_data.config_entry is not None:
+        return zha_data.config_entry
+
+    # Otherwise, find an inactive one
     entries = hass.config_entries.async_entries(DOMAIN)
 
     if len(entries) != 1:
@@ -55,21 +52,10 @@ async def async_get_last_network_settings(
     if config_entry is None:
         config_entry = _get_config_entry(hass)
 
-    config = get_zha_data(hass).yaml_config
-    zha_gateway = ZHAGateway(hass, config, config_entry)
+    radio_mgr = ZhaRadioManager.from_config_entry(hass, config_entry)
 
-    app_controller_cls, app_config = zha_gateway.get_application_controller_data()
-    app = app_controller_cls(app_config)
-
-    try:
-        await app._load_db()  # pylint: disable=protected-access
-        settings = max(app.backups, key=lambda b: b.backup_time)
-    except ValueError:
-        settings = None
-    finally:
-        await app.shutdown()
-
-    return settings
+    async with radio_mgr.create_zigpy_app(connect=False) as app:
+        return app.backups.most_recent_backup()
 
 
 async def async_get_network_settings(

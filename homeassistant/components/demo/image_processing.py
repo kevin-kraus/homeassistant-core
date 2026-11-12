@@ -1,5 +1,6 @@
 """Support for the demo image processing."""
-from __future__ import annotations
+
+from typing import override
 
 from homeassistant.components.image_processing import (
     FaceInformation,
@@ -10,14 +11,14 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 
-def setup_platform(
+async def async_setup_platform(
     hass: HomeAssistant,
     config: ConfigType,
-    add_entities: AddEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
     """Set up the demo image processing platform."""
-    add_entities(
+    async_add_entities(
         [
             DemoImageProcessingFace("camera.demo_camera", "Demo Face"),
         ]
@@ -35,16 +36,19 @@ class DemoImageProcessingFace(ImageProcessingFaceEntity):
         self._camera = camera_entity
 
     @property
+    @override
     def camera_entity(self) -> str:
         """Return camera entity id from process pictures."""
         return self._camera
 
     @property
+    @override
     def confidence(self) -> int:
         """Return minimum confidence for send events."""
         return 80
 
-    def process_image(self, image: bytes) -> None:
+    @override
+    async def async_process_image(self, image: bytes) -> None:
         """Process image."""
         demo_data = [
             FaceInformation(
@@ -57,4 +61,4 @@ class DemoImageProcessingFace(ImageProcessingFaceEntity):
             FaceInformation(confidence=62.53, name="Luna"),
         ]
 
-        self.process_faces(demo_data, 4)
+        self.async_process_faces(demo_data, 4)

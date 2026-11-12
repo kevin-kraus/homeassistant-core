@@ -1,27 +1,40 @@
 """Test schlage switch."""
-from unittest.mock import Mock
+
+from collections.abc import Awaitable, Callable
+from unittest.mock import Mock, patch
+
+from pytest_homeassistant.common import snapshot_platform
+from syrupy.assertion import SnapshotAssertion
 
 from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_ENTITY_ID, SERVICE_TURN_OFF, SERVICE_TURN_ON
+from homeassistant.const import (
+    ATTR_ENTITY_ID,
+    SERVICE_TURN_OFF,
+    SERVICE_TURN_ON,
+    Platform,
+)
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+
+from . import MockSchlageConfigEntry
 
 
-async def test_switch_device_registry(
-    hass: HomeAssistant, mock_added_config_entry: ConfigEntry
+async def test_switch_attributes(
+    hass: HomeAssistant,
+    mock_add_config_entry: Callable[[], Awaitable[MockSchlageConfigEntry]],
+    entity_registry: er.EntityRegistry,
+    snapshot: SnapshotAssertion,
 ) -> None:
-    """Test switch is added to device registry."""
-    device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device(identifiers={("schlage", "test")})
-    assert device.model == "<model-name>"
-    assert device.sw_version == "1.0"
-    assert device.name == "Vault Door"
-    assert device.manufacturer == "Schlage"
+    """Test switch attributes."""
+    with patch("homeassistant.components.schlage.PLATFORMS", [Platform.SWITCH]):
+        config_entry = await mock_add_config_entry()
+        await snapshot_platform(hass, entity_registry, snapshot, config_entry.entry_id)
 
 
 async def test_beeper_services(
-    hass: HomeAssistant, mock_lock: Mock, mock_added_config_entry: ConfigEntry
+    hass: HomeAssistant,
+    mock_lock: Mock,
+    mock_added_config_entry: MockSchlageConfigEntry,
 ) -> None:
     """Test BeeperSwitch services."""
     await hass.services.async_call(
@@ -47,7 +60,9 @@ async def test_beeper_services(
 
 
 async def test_lock_and_leave_services(
-    hass: HomeAssistant, mock_lock: Mock, mock_added_config_entry: ConfigEntry
+    hass: HomeAssistant,
+    mock_lock: Mock,
+    mock_added_config_entry: MockSchlageConfigEntry,
 ) -> None:
     """Test LockAndLeaveSwitch services."""
     await hass.services.async_call(

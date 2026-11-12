@@ -5,7 +5,6 @@ This will return a request id that has to be used for future calls.
 A callback has to be provided to `request_config` which will be called when
 the user has submitted configuration information.
 """
-from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import suppress
@@ -13,16 +12,27 @@ from datetime import datetime
 import functools as ft
 from typing import Any
 
-from homeassistant.const import ATTR_ENTITY_PICTURE, ATTR_FRIENDLY_NAME
-from homeassistant.core import HomeAssistant, ServiceCall, callback as async_callback
+import probatio
+
+from homeassistant.const import EntityStateAttribute
+from homeassistant.core import (
+    HassJob,
+    HomeAssistant,
+    ServiceCall,
+    callback as async_callback,
+)
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity import async_generate_entity_id
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.frame import ReportBehavior, report_usage
+from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.loader import bind_hass
 from homeassistant.util.async_ import run_callback_threadsafe
 
 _KEY_INSTANCE = "configurator"
+
+# The configurator integration is deprecated and can be removed in HA Core 2027.10
+_BREAKS_IN_HA_VERSION = "2027.10"
 
 DATA_REQUESTS = "configurator_requests"
 
@@ -43,14 +53,60 @@ SERVICE_CONFIGURE = "configure"
 STATE_CONFIGURE = "configure"
 STATE_CONFIGURED = "configured"
 
-ConfiguratorCallback = Callable[[list[dict[str, str]]], None]
+type ConfiguratorCallback = Callable[[list[dict[str, str]]], None]
 
 CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
+__all__ = [
+    "DOMAIN",
+]
 
-@bind_hass
+
+def _report_deprecation() -> None:
+    """Report use of the deprecated configurator integration."""
+    report_usage(
+        "uses the deprecated configurator integration, which should be replaced "
+        "by a config flow",
+        breaks_in_ha_version=_BREAKS_IN_HA_VERSION,
+        core_behavior=ReportBehavior.LOG,
+        exclude_integrations={DOMAIN},
+    )
+
+
 @async_callback
 def async_request_config(
+    hass: HomeAssistant,
+    name: str,
+    callback: ConfiguratorCallback | None = None,
+    description: str | None = None,
+    description_image: str | None = None,
+    submit_caption: str | None = None,
+    fields: list[dict[str, str]] | None = None,
+    link_name: str | None = None,
+    link_url: str | None = None,
+    entity_picture: str | None = None,
+) -> str:
+    """Create a new request for configuration.
+
+    Will return an ID to be used for subsequent calls.
+    """
+    _report_deprecation()
+    return _async_request_config(
+        hass,
+        name,
+        callback=callback,
+        description=description,
+        description_image=description_image,
+        submit_caption=submit_caption,
+        fields=fields,
+        link_name=link_name,
+        link_url=link_url,
+        entity_picture=entity_picture,
+    )
+
+
+@async_callback
+def _async_request_config(
     hass: HomeAssistant,
     name: str,
     callback: ConfiguratorCallback | None = None,
@@ -87,18 +143,17 @@ def async_request_config(
     return request_id
 
 
-@bind_hass
 def request_config(hass: HomeAssistant, *args: Any, **kwargs: Any) -> str:
     """Create a new request for configuration.
 
     Will return an ID to be used for sequent calls.
     """
+    _report_deprecation()
     return run_callback_threadsafe(
-        hass.loop, ft.partial(async_request_config, hass, *args, **kwargs)
+        hass.loop, ft.partial(_async_request_config, hass, *args, **kwargs)
     ).result()
 
 
-@bind_hass
 @async_callback
 def async_notify_errors(hass: HomeAssistant, request_id: str, error: str) -> None:
     """Add errors to a config request."""
@@ -106,7 +161,6 @@ def async_notify_errors(hass: HomeAssistant, request_id: str, error: str) -> Non
         _get_requests(hass)[request_id].async_notify_errors(request_id, error)
 
 
-@bind_hass
 def notify_errors(hass: HomeAssistant, request_id: str, error: str) -> None:
     """Add errors to a config request."""
     return run_callback_threadsafe(
@@ -114,7 +168,6 @@ def notify_errors(hass: HomeAssistant, request_id: str, error: str) -> None:
     ).result()
 
 
-@bind_hass
 @async_callback
 def async_request_done(hass: HomeAssistant, request_id: str) -> None:
     """Mark a configuration request as done."""
@@ -122,7 +175,6 @@ def async_request_done(hass: HomeAssistant, request_id: str) -> None:
         _get_requests(hass).pop(request_id).async_request_done(request_id)
 
 
-@bind_hass
 def request_done(hass: HomeAssistant, request_id: str) -> None:
     """Mark a configuration request as done."""
     return run_callback_threadsafe(
@@ -150,8 +202,14 @@ class Configurator:
         self._requests: dict[
             str, tuple[str, list[dict[str, str]], ConfiguratorCallback | None]
         ] = {}
-        hass.services.async_register(
-            DOMAIN, SERVICE_CONFIGURE, self.async_handle_service_call
+        # Deprecated integration, to be removed in 2027.10
+        # pylint: disable-next=home-assistant-action-registered-outside-services-module
+        async_register_admin_service(
+            hass,
+            DOMAIN,
+            SERVICE_CONFIGURE,
+            self.async_handle_service_call,
+            schema=probatio.Schema({}, extra=probatio.ALLOW_EXTRA),
         )
 
     @async_callback
@@ -177,8 +235,8 @@ class Configurator:
         data = {
             ATTR_CONFIGURE_ID: request_id,
             ATTR_FIELDS: fields,
-            ATTR_FRIENDLY_NAME: name,
-            ATTR_ENTITY_PICTURE: entity_picture,
+            EntityStateAttribute.FRIENDLY_NAME: name,
+            EntityStateAttribute.ENTITY_PICTURE: entity_picture,
         }
 
         data.update(
@@ -244,7 +302,9 @@ class Configurator:
 
         # field validation goes here?
         if callback and (
-            job := self.hass.async_add_job(callback, call.data.get(ATTR_FIELDS, {}))
+            job := self.hass.async_run_hass_job(
+                HassJob(callback), call.data.get(ATTR_FIELDS, {})
+            )
         ):
             await job
 

@@ -1,5 +1,6 @@
 """Support for Tellstick Net/Telstick Live sensors."""
-from __future__ import annotations
+
+from typing import override
 
 from homeassistant.components import sensor
 from homeassistant.components.sensor import (
@@ -8,7 +9,6 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     LIGHT_LUX,
     PERCENTAGE,
@@ -22,10 +22,11 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .. import tellduslive
-from .entry import TelldusLiveEntity
+from . import TelldusLiveConfigEntry
+from .const import DOMAIN, TELLDUS_DISCOVERY_NEW
+from .entity import TelldusLiveEntity
 
 SENSOR_TYPE_TEMPERATURE = "temp"
 SENSOR_TYPE_HUMIDITY = "humidity"
@@ -119,20 +120,22 @@ SENSOR_TYPES: dict[str, SensorEntityDescription] = {
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    config_entry: TelldusLiveConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up tellduslive sensors dynamically."""
 
     async def async_discover_sensor(device_id):
         """Discover and add a discovered sensor."""
-        client = hass.data[tellduslive.DOMAIN]
+        client = config_entry.runtime_data.client
         async_add_entities([TelldusLiveSensor(client, device_id)])
 
-    async_dispatcher_connect(
-        hass,
-        tellduslive.TELLDUS_DISCOVERY_NEW.format(sensor.DOMAIN, tellduslive.DOMAIN),
-        async_discover_sensor,
+    config_entry.async_on_unload(
+        async_dispatcher_connect(
+            hass,
+            TELLDUS_DISCOVERY_NEW.format(sensor.DOMAIN, DOMAIN),
+            async_discover_sensor,
+        )
     )
 
 
@@ -142,13 +145,13 @@ class TelldusLiveSensor(TelldusLiveEntity, SensorEntity):
     def __init__(self, client, device_id):
         """Initialize TelldusLiveSensor."""
         super().__init__(client, device_id)
-        self._attr_unique_id = "{}-{}-{}".format(*device_id)
         if desc := SENSOR_TYPES.get(self._type):
             self.entity_description = desc
         else:
             self._attr_name = None
 
     @property
+    @override
     def device_id(self):
         """Return id of the device."""
         return self._id[0]
@@ -176,9 +179,10 @@ class TelldusLiveSensor(TelldusLiveEntity, SensorEntity):
     @property
     def _value_as_humidity(self):
         """Return the value as humidity."""
-        return int(round(float(self._value)))
+        return round(float(self._value))
 
     @property
+    @override
     def native_value(self):
         """Return the state of the sensor."""
         if not self.available:
@@ -190,3 +194,9 @@ class TelldusLiveSensor(TelldusLiveEntity, SensorEntity):
         if self._type == SENSOR_TYPE_LUMINANCE:
             return self._value_as_luminance
         return self._value
+
+    @property
+    @override
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return "-".join(map(str, self._id))

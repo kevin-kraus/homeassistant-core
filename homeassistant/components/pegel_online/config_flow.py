@@ -1,12 +1,11 @@
 """Config flow for PEGELONLINE."""
-from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
 from aiopegelonline import CONNECT_ERRORS, PegelOnline
-import voluptuous as vol
+import probatio
 
-from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import (
     CONF_LATITUDE,
     CONF_LOCATION,
@@ -14,7 +13,6 @@ from homeassistant.const import (
     CONF_RADIUS,
     UnitOfLength,
 )
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     LocationSelector,
@@ -29,7 +27,7 @@ from homeassistant.helpers.selector import (
 from .const import CONF_STATION, DEFAULT_RADIUS, DOMAIN
 
 
-class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
+class FlowHandler(ConfigFlow, domain=DOMAIN):
     """Handle a config flow."""
 
     VERSION = 1
@@ -40,9 +38,10 @@ class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self._data: dict[str, Any] = {}
         self._stations: dict[str, str] = {}
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle a flow initialized by the user."""
         if not user_input:
             return self._show_form_user()
@@ -69,7 +68,7 @@ class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_select_station(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the step select_station of a flow initialized by the user."""
         if not user_input:
             stations = [
@@ -78,9 +77,9 @@ class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="select_station",
                 description_placeholders={"stations_count": str(len(self._stations))},
-                data_schema=vol.Schema(
+                data_schema=probatio.Schema(
                     {
-                        vol.Required(CONF_STATION): SelectSelector(
+                        probatio.Required(CONF_STATION): SelectSelector(
                             SelectSelectorConfig(
                                 options=stations, mode=SelectSelectorMode.DROPDOWN
                             )
@@ -101,14 +100,14 @@ class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self,
         user_input: dict[str, Any] | None = None,
         errors: dict[str, Any] | None = None,
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         if user_input is None:
             user_input = {}
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    probatio.Required(
                         CONF_LOCATION,
                         default=user_input.get(
                             CONF_LOCATION,
@@ -118,7 +117,7 @@ class FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                             },
                         ),
                     ): LocationSelector(),
-                    vol.Required(
+                    probatio.Required(
                         CONF_RADIUS, default=user_input.get(CONF_RADIUS, DEFAULT_RADIUS)
                     ): NumberSelector(
                         NumberSelectorConfig(

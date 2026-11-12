@@ -1,13 +1,13 @@
 """Tests for the diagnostics data provided by the Nut integration."""
 
+from pytest_homeassistant.components.diagnostics import get_diagnostics_for_config_entry
+from pytest_homeassistant.typing import ClientSessionGenerator
+
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.components.nut.diagnostics import TO_REDACT
 from homeassistant.core import HomeAssistant
 
 from .util import async_init_integration
-
-from tests.components.diagnostics import get_diagnostics_for_config_entry
-from tests.typing import ClientSessionGenerator
 
 
 async def test_diagnostics(
@@ -39,5 +39,5 @@ async def test_diagnostics(
     result = await get_diagnostics_for_config_entry(
         hass, hass_client, mock_config_entry
     )
-    assert result["entry"] == entry_dict
+    assert result["entry"] == entry_dict | {"discovery_keys": {}}
     assert result["nut_data"] == nut_data_dict

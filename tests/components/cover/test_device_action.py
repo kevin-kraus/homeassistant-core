@@ -1,8 +1,16 @@
 """The tests for Cover device actions."""
+
 import pytest
+from pytest_homeassistant.common import (
+    MockConfigEntry,
+    async_get_device_automation_capabilities,
+    async_get_device_automations,
+    async_mock_service,
+    setup_test_component_platform,
+)
 from pytest_unordered import unordered
 
-import homeassistant.components.automation as automation
+from homeassistant.components import automation
 from homeassistant.components.cover import DOMAIN, CoverEntityFeature
 from homeassistant.components.device_automation import DeviceAutomationType
 from homeassistant.const import CONF_PLATFORM, EntityCategory
@@ -11,17 +19,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.entity_registry import RegistryEntryHider
 from homeassistant.setup import async_setup_component
 
-from tests.common import (
-    MockConfigEntry,
-    async_get_device_automation_capabilities,
-    async_get_device_automations,
-    async_mock_service,
-)
-
-
-@pytest.fixture(autouse=True, name="stub_blueprint_populate")
-def stub_blueprint_populate_autouse(stub_blueprint_populate: None) -> None:
-    """Stub copying the blueprints to the config folder."""
+from .common import MockCover
 
 
 @pytest.mark.parametrize(
@@ -93,12 +91,12 @@ async def test_get_actions(
 
 @pytest.mark.parametrize(
     ("hidden_by", "entity_category"),
-    (
+    [
         (RegistryEntryHider.INTEGRATION, None),
         (RegistryEntryHider.USER, None),
         (None, EntityCategory.CONFIG),
         (None, EntityCategory.DIAGNOSTIC),
-    ),
+    ],
 )
 async def test_get_actions_hidden_auxiliary(
     hass: HomeAssistant,
@@ -132,7 +130,7 @@ async def test_get_actions_hidden_auxiliary(
             "entity_id": entity_entry.id,
             "metadata": {"secondary": True},
         }
-        for action in ["close"]
+        for action in ("close",)
     ]
     actions = await async_get_device_automations(
         hass, DeviceAutomationType.ACTION, device_entry.id
@@ -144,26 +142,20 @@ async def test_get_action_capabilities(
     hass: HomeAssistant,
     device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
 ) -> None:
     """Test we get the expected capabilities from a cover action."""
-    platform = getattr(hass.components, f"test.{DOMAIN}")
-    platform.init(empty=True)
-    platform.ENTITIES.append(
-        platform.MockCover(
-            name="Set position cover",
-            is_on=True,
-            unique_id="unique_set_pos_cover",
-            current_cover_position=50,
-            supported_features=CoverEntityFeature.OPEN
-            | CoverEntityFeature.CLOSE
-            | CoverEntityFeature.STOP
-            | CoverEntityFeature.OPEN_TILT
-            | CoverEntityFeature.CLOSE_TILT
-            | CoverEntityFeature.STOP_TILT,
-        ),
+    ent = MockCover(
+        name="Set position cover",
+        unique_id="unique_set_pos_cover",
+        current_cover_position=50,
+        supported_features=CoverEntityFeature.OPEN
+        | CoverEntityFeature.CLOSE
+        | CoverEntityFeature.STOP
+        | CoverEntityFeature.OPEN_TILT
+        | CoverEntityFeature.CLOSE_TILT
+        | CoverEntityFeature.STOP_TILT,
     )
-    ent = platform.ENTITIES[0]
+    setup_test_component_platform(hass, DOMAIN, [ent])
     assert await async_setup_component(hass, DOMAIN, {DOMAIN: {CONF_PLATFORM: "test"}})
     await hass.async_block_till_done()
 
@@ -194,26 +186,20 @@ async def test_get_action_capabilities_legacy(
     hass: HomeAssistant,
     device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
 ) -> None:
     """Test we get the expected capabilities from a cover action."""
-    platform = getattr(hass.components, f"test.{DOMAIN}")
-    platform.init(empty=True)
-    platform.ENTITIES.append(
-        platform.MockCover(
-            name="Set position cover",
-            is_on=True,
-            unique_id="unique_set_pos_cover",
-            current_cover_position=50,
-            supported_features=CoverEntityFeature.OPEN
-            | CoverEntityFeature.CLOSE
-            | CoverEntityFeature.STOP
-            | CoverEntityFeature.OPEN_TILT
-            | CoverEntityFeature.CLOSE_TILT
-            | CoverEntityFeature.STOP_TILT,
-        ),
+    ent = MockCover(
+        name="Set position cover",
+        unique_id="unique_set_pos_cover",
+        current_cover_position=50,
+        supported_features=CoverEntityFeature.OPEN
+        | CoverEntityFeature.CLOSE
+        | CoverEntityFeature.STOP
+        | CoverEntityFeature.OPEN_TILT
+        | CoverEntityFeature.CLOSE_TILT
+        | CoverEntityFeature.STOP_TILT,
     )
-    ent = platform.ENTITIES[0]
+    setup_test_component_platform(hass, DOMAIN, [ent])
     assert await async_setup_component(hass, DOMAIN, {DOMAIN: {CONF_PLATFORM: "test"}})
     await hass.async_block_till_done()
 
@@ -245,12 +231,11 @@ async def test_get_action_capabilities_set_pos(
     hass: HomeAssistant,
     device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
+    mock_cover_entities: list[MockCover],
 ) -> None:
     """Test we get the expected capabilities from a cover action."""
-    platform = getattr(hass.components, f"test.{DOMAIN}")
-    platform.init()
-    ent = platform.ENTITIES[1]
+    setup_test_component_platform(hass, DOMAIN, mock_cover_entities)
+    ent = mock_cover_entities[1]
     assert await async_setup_component(hass, DOMAIN, {DOMAIN: {CONF_PLATFORM: "test"}})
     await hass.async_block_till_done()
 
@@ -269,6 +254,7 @@ async def test_get_action_capabilities_set_pos(
             {
                 "name": "position",
                 "optional": True,
+                "required": False,
                 "type": "integer",
                 "default": 0,
                 "valueMax": 100,
@@ -296,12 +282,11 @@ async def test_get_action_capabilities_set_tilt_pos(
     hass: HomeAssistant,
     device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
+    mock_cover_entities: list[MockCover],
 ) -> None:
     """Test we get the expected capabilities from a cover action."""
-    platform = getattr(hass.components, f"test.{DOMAIN}")
-    platform.init()
-    ent = platform.ENTITIES[3]
+    setup_test_component_platform(hass, DOMAIN, mock_cover_entities)
+    ent = mock_cover_entities[3]
     assert await async_setup_component(hass, DOMAIN, {DOMAIN: {CONF_PLATFORM: "test"}})
     await hass.async_block_till_done()
 
@@ -320,6 +305,7 @@ async def test_get_action_capabilities_set_tilt_pos(
             {
                 "name": "position",
                 "optional": True,
+                "required": False,
                 "type": "integer",
                 "default": 0,
                 "valueMax": 100,
@@ -351,11 +337,20 @@ async def test_get_action_capabilities_set_tilt_pos(
 
 async def test_action(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
+    mock_cover_entities: list[MockCover],
 ) -> None:
     """Test for cover actions."""
-    entry = entity_registry.async_get_or_create(DOMAIN, "test", "5678")
+    config_entry = MockConfigEntry(domain="test", data={})
+    config_entry.add_to_hass(hass)
+    device_entry = device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, "12:34:56:AB:CD:EF")},
+    )
+    entry = entity_registry.async_get_or_create(
+        DOMAIN, "test", "5678", device_id=device_entry.id
+    )
 
     assert await async_setup_component(
         hass,
@@ -366,7 +361,7 @@ async def test_action(
                     "trigger": {"platform": "event", "event_type": "test_event_open"},
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entry.id,
                         "type": "open",
                     },
@@ -375,7 +370,7 @@ async def test_action(
                     "trigger": {"platform": "event", "event_type": "test_event_close"},
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entry.id,
                         "type": "close",
                     },
@@ -384,7 +379,7 @@ async def test_action(
                     "trigger": {"platform": "event", "event_type": "test_event_stop"},
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entry.id,
                         "type": "stop",
                     },
@@ -394,9 +389,9 @@ async def test_action(
     )
     await hass.async_block_till_done()
 
-    open_calls = async_mock_service(hass, "cover", "open_cover")
-    close_calls = async_mock_service(hass, "cover", "close_cover")
-    stop_calls = async_mock_service(hass, "cover", "stop_cover")
+    open_calls = async_mock_service(hass, DOMAIN, "open_cover")
+    close_calls = async_mock_service(hass, DOMAIN, "close_cover")
+    stop_calls = async_mock_service(hass, DOMAIN, "stop_cover")
 
     hass.bus.async_fire("test_event_open")
     await hass.async_block_till_done()
@@ -429,11 +424,20 @@ async def test_action(
 
 async def test_action_legacy(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
+    mock_cover_entities: list[MockCover],
 ) -> None:
     """Test for cover actions."""
-    entry = entity_registry.async_get_or_create(DOMAIN, "test", "5678")
+    config_entry = MockConfigEntry(domain="test", data={})
+    config_entry.add_to_hass(hass)
+    device_entry = device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, "12:34:56:AB:CD:EF")},
+    )
+    entry = entity_registry.async_get_or_create(
+        DOMAIN, "test", "5678", device_id=device_entry.id
+    )
 
     assert await async_setup_component(
         hass,
@@ -444,7 +448,7 @@ async def test_action_legacy(
                     "trigger": {"platform": "event", "event_type": "test_event_open"},
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entry.id,
                         "type": "open",
                     },
@@ -454,7 +458,7 @@ async def test_action_legacy(
     )
     await hass.async_block_till_done()
 
-    open_calls = async_mock_service(hass, "cover", "open_cover")
+    open_calls = async_mock_service(hass, DOMAIN, "open_cover")
 
     hass.bus.async_fire("test_event_open")
     await hass.async_block_till_done()
@@ -467,11 +471,20 @@ async def test_action_legacy(
 
 async def test_action_tilt(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
+    mock_cover_entities: list[MockCover],
 ) -> None:
     """Test for cover tilt actions."""
-    entry = entity_registry.async_get_or_create(DOMAIN, "test", "5678")
+    config_entry = MockConfigEntry(domain="test", data={})
+    config_entry.add_to_hass(hass)
+    device_entry = device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, "12:34:56:AB:CD:EF")},
+    )
+    entry = entity_registry.async_get_or_create(
+        DOMAIN, "test", "5678", device_id=device_entry.id
+    )
 
     assert await async_setup_component(
         hass,
@@ -482,7 +495,7 @@ async def test_action_tilt(
                     "trigger": {"platform": "event", "event_type": "test_event_open"},
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entry.id,
                         "type": "open_tilt",
                     },
@@ -491,7 +504,7 @@ async def test_action_tilt(
                     "trigger": {"platform": "event", "event_type": "test_event_close"},
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entry.id,
                         "type": "close_tilt",
                     },
@@ -501,8 +514,8 @@ async def test_action_tilt(
     )
     await hass.async_block_till_done()
 
-    open_calls = async_mock_service(hass, "cover", "open_cover_tilt")
-    close_calls = async_mock_service(hass, "cover", "close_cover_tilt")
+    open_calls = async_mock_service(hass, DOMAIN, "open_cover_tilt")
+    close_calls = async_mock_service(hass, DOMAIN, "close_cover_tilt")
 
     hass.bus.async_fire("test_event_open")
     await hass.async_block_till_done()
@@ -529,11 +542,20 @@ async def test_action_tilt(
 
 async def test_action_set_position(
     hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
-    enable_custom_integrations: None,
+    mock_cover_entities: list[MockCover],
 ) -> None:
     """Test for cover set position actions."""
-    entry = entity_registry.async_get_or_create(DOMAIN, "test", "5678")
+    config_entry = MockConfigEntry(domain="test", data={})
+    config_entry.add_to_hass(hass)
+    device_entry = device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, "12:34:56:AB:CD:EF")},
+    )
+    entry = entity_registry.async_get_or_create(
+        DOMAIN, "test", "5678", device_id=device_entry.id
+    )
 
     assert await async_setup_component(
         hass,
@@ -547,7 +569,7 @@ async def test_action_set_position(
                     },
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entry.id,
                         "type": "set_position",
                         "position": 25,
@@ -560,7 +582,7 @@ async def test_action_set_position(
                     },
                     "action": {
                         "domain": DOMAIN,
-                        "device_id": "abcdefgh",
+                        "device_id": device_entry.id,
                         "entity_id": entry.id,
                         "type": "set_tilt_position",
                         "position": 75,
@@ -571,8 +593,8 @@ async def test_action_set_position(
     )
     await hass.async_block_till_done()
 
-    cover_pos_calls = async_mock_service(hass, "cover", "set_cover_position")
-    tilt_pos_calls = async_mock_service(hass, "cover", "set_cover_tilt_position")
+    cover_pos_calls = async_mock_service(hass, DOMAIN, "set_cover_position")
+    tilt_pos_calls = async_mock_service(hass, DOMAIN, "set_cover_tilt_position")
 
     hass.bus.async_fire("test_event_set_pos")
     await hass.async_block_till_done()

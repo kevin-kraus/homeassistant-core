@@ -1,16 +1,12 @@
 """Provides helpers for Z-Wave JS device automations."""
-from __future__ import annotations
 
-from zwave_js_server.client import Client as ZwaveClient
 from zwave_js_server.model.value import ConfigurationValue
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 
-from .const import DATA_CLIENT, DOMAIN
-
-NODE_STATUSES = ["asleep", "awake", "dead", "alive"]
+from .const import DOMAIN
 
 CONF_SUBTYPE = "subtype"
 CONF_VALUE_ID = "value_id"
@@ -38,21 +34,14 @@ def generate_config_parameter_subtype(config_value: ConfigurationValue) -> str:
 @callback
 def async_bypass_dynamic_config_validation(hass: HomeAssistant, device_id: str) -> bool:
     """Return whether device's config entries are not loaded."""
-    dev_reg = dr.async_get(hass)
-    if (device := dev_reg.async_get(device_id)) is None:
-        raise ValueError(f"Device {device_id} not found")
-    entry = next(
-        (
-            config_entry
-            for config_entry in hass.config_entries.async_entries(DOMAIN)
-            if config_entry.entry_id in device.config_entries
-            and config_entry.state == ConfigEntryState.LOADED
-        ),
-        None,
+    device, config_entry = dr.async_get_device_and_config_entry_for_domain(
+        hass, device_id, domain=DOMAIN
     )
-    if not entry:
+    if device is None:
+        raise ValueError(f"Device {device_id} not found")
+    if not config_entry or config_entry.state is not ConfigEntryState.LOADED:
         return True
 
     # The driver may not be ready when the config entry is loaded.
-    client: ZwaveClient = hass.data[DOMAIN][entry.entry_id][DATA_CLIENT]
+    client = config_entry.runtime_data.client
     return client.driver is None

@@ -1,18 +1,18 @@
 """The test for the Facebook notify module."""
+
 import base64
 from http import HTTPStatus
 import logging
 from unittest.mock import patch
 
 import pytest
+from pytest_homeassistant.common import assert_setup_component
 import requests_mock
 
 from homeassistant.components import notify
-import homeassistant.components.clicksend_tts.notify as cs_tts
+from homeassistant.components.clicksend_tts import notify as cs_tts
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
-
-from tests.common import assert_setup_component
 
 # Infos from https://developers.clicksend.com/docs/rest/v3/#testing
 TEST_USERNAME = "nocredit"
@@ -45,7 +45,7 @@ def mock_clicksend_tts_notify():
         yield ns
 
 
-async def setup_notify(hass):
+async def setup_notify(hass: HomeAssistant) -> None:
     """Test setup."""
     with assert_setup_component(1, notify.DOMAIN) as config:
         assert await async_setup_component(hass, notify.DOMAIN, CONFIG)

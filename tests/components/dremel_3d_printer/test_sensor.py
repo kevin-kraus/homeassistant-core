@@ -1,8 +1,10 @@
 """Sensor tests for the Dremel 3D Printer integration."""
+
 from datetime import datetime
-from unittest.mock import AsyncMock
 
 from freezegun.api import FrozenDateTimeFactory
+import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components.dremel_3d_printer.const import DOMAIN
 from homeassistant.components.sensor import (
@@ -22,14 +24,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 from homeassistant.util.dt import UTC
 
-from tests.common import MockConfigEntry
 
-
+@pytest.mark.usefixtures("connection", "entity_registry_enabled_by_default")
 async def test_sensors(
     hass: HomeAssistant,
-    connection,
     config_entry: MockConfigEntry,
-    entity_registry_enabled_by_default: AsyncMock,
     freezer: FrozenDateTimeFactory,
 ) -> None:
     """Test we get sensor data."""

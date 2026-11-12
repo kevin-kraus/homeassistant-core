@@ -1,231 +1,106 @@
 """Web socket API for Zigbee Home Automation devices."""
-from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
-import voluptuous as vol
+import probatio
+from zha.application.const import (
+    ATTR_ATTRIBUTE,
+    ATTR_CLUSTER_ID,
+    ATTR_CLUSTER_TYPE,
+    ATTR_ENDPOINT_ID,
+    ATTR_IEEE,
+    ATTR_MANUFACTURER,
+    ATTR_MEMBERS,
+    ATTR_TYPE,
+    CLUSTER_COMMAND_SERVER,
+    CLUSTER_COMMANDS_CLIENT,
+    CLUSTER_COMMANDS_SERVER,
+    CLUSTER_TYPE_IN,
+    CLUSTER_TYPE_OUT,
+    ZHA_GW_MSG,
+)
+from zha.application.gateway import Gateway
+from zha.application.helpers import async_is_bindable_target, get_matched_clusters
+from zha.exceptions import ZHAException
+from zha.zigbee.device import ZigbeeDevice
+from zha.zigbee.group import GroupMemberReference
 import zigpy.backups
 from zigpy.config import CONF_DEVICE
 from zigpy.config.validators import cv_boolean
-from zigpy.types.named import EUI64
+from zigpy.types.named import EUI64, KeyData
+from zigpy.typing import (
+    UNDEFINED as ZIGPY_UNDEFINED,
+    UndefinedType as ZigpyUndefinedType,
+)
 from zigpy.zcl.clusters.security import IasAce
 import zigpy.zdo.types as zdo_types
 
 from homeassistant.components import websocket_api
-from homeassistant.const import ATTR_COMMAND, ATTR_ID, ATTR_NAME
-from homeassistant.core import HomeAssistant, ServiceCall, callback
-from homeassistant.helpers import entity_registry as er
-import homeassistant.helpers.config_validation as cv
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_ID, ATTR_NAME
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.service import async_register_admin_service
 
 from .api import (
     async_change_channel,
     async_get_active_network_settings,
     async_get_radio_type,
 )
-from .core.const import (
-    ATTR_ARGS,
-    ATTR_ATTRIBUTE,
-    ATTR_CLUSTER_ID,
-    ATTR_CLUSTER_TYPE,
-    ATTR_COMMAND_TYPE,
-    ATTR_ENDPOINT_ID,
-    ATTR_IEEE,
-    ATTR_LEVEL,
-    ATTR_MANUFACTURER,
-    ATTR_MEMBERS,
-    ATTR_PARAMS,
-    ATTR_TYPE,
-    ATTR_VALUE,
-    ATTR_WARNING_DEVICE_DURATION,
-    ATTR_WARNING_DEVICE_MODE,
-    ATTR_WARNING_DEVICE_STROBE,
-    ATTR_WARNING_DEVICE_STROBE_DUTY_CYCLE,
-    ATTR_WARNING_DEVICE_STROBE_INTENSITY,
-    BINDINGS,
-    CLUSTER_COMMAND_SERVER,
-    CLUSTER_COMMANDS_CLIENT,
-    CLUSTER_COMMANDS_SERVER,
-    CLUSTER_HANDLER_IAS_WD,
-    CLUSTER_TYPE_IN,
-    CLUSTER_TYPE_OUT,
+from .const import (
+    ATTR_DURATION,
+    ATTR_INSTALL_CODE,
+    ATTR_QR_CODE,
+    ATTR_SOURCE_IEEE,
     CUSTOM_CONFIGURATION,
-    DOMAIN,
     EZSP_OVERWRITE_EUI64,
     GROUP_ID,
     GROUP_IDS,
     GROUP_NAME,
-    MFG_CLUSTER_ID_START,
-    WARNING_DEVICE_MODE_EMERGENCY,
-    WARNING_DEVICE_SOUND_HIGH,
-    WARNING_DEVICE_SQUAWK_MODE_ARMED,
-    WARNING_DEVICE_STROBE_HIGH,
-    WARNING_DEVICE_STROBE_YES,
+    RESPONSE,
+    SIGNAL_DEVICE_RECONFIGURE_EVENT,
     ZHA_ALARM_OPTIONS,
-    ZHA_CLUSTER_HANDLER_MSG,
-    ZHA_CONFIG_SCHEMAS,
+    ZHA_OPTIONS,
 )
-from .core.gateway import EntityReference
-from .core.group import GroupMember
-from .core.helpers import (
+from .helpers import (
+    CONF_ZHA_ALARM_SCHEMA,
+    CONF_ZHA_OPTIONS_SCHEMA,
+    IEEE_SCHEMA,
+    SERVICE_PERMIT_PARAMS,
+    EntityReference,
+    ZHAGatewayProxy,
     async_cluster_exists,
-    async_is_bindable_target,
     cluster_command_schema_to_vol_schema,
-    convert_install_code,
-    get_matched_clusters,
+    get_config_entry,
     get_zha_gateway,
-    qr_to_install_code,
+    get_zha_gateway_proxy,
 )
 
 if TYPE_CHECKING:
-    from homeassistant.components.websocket_api.connection import ActiveConnection
-
-    from .core.device import ZHADevice
-    from .core.gateway import ZHAGateway
+    from homeassistant.components.websocket_api import ActiveConnection
 
 _LOGGER = logging.getLogger(__name__)
 
 TYPE = "type"
 CLIENT = "client"
 ID = "id"
-RESPONSE = "response"
 DEVICE_INFO = "device_info"
 
-ATTR_DURATION = "duration"
-ATTR_GROUP = "group"
-ATTR_IEEE_ADDRESS = "ieee_address"
-ATTR_INSTALL_CODE = "install_code"
 ATTR_NEW_CHANNEL = "new_channel"
-ATTR_SOURCE_IEEE = "source_ieee"
 ATTR_TARGET_IEEE = "target_ieee"
-ATTR_QR_CODE = "qr_code"
 
-SERVICE_PERMIT = "permit"
-SERVICE_REMOVE = "remove"
-SERVICE_SET_ZIGBEE_CLUSTER_ATTRIBUTE = "set_zigbee_cluster_attribute"
-SERVICE_ISSUE_ZIGBEE_CLUSTER_COMMAND = "issue_zigbee_cluster_command"
-SERVICE_ISSUE_ZIGBEE_GROUP_COMMAND = "issue_zigbee_group_command"
+BINDINGS = "bindings"
+
 SERVICE_DIRECT_ZIGBEE_BIND = "issue_direct_zigbee_bind"
 SERVICE_DIRECT_ZIGBEE_UNBIND = "issue_direct_zigbee_unbind"
-SERVICE_WARNING_DEVICE_SQUAWK = "warning_device_squawk"
-SERVICE_WARNING_DEVICE_WARN = "warning_device_warn"
 SERVICE_ZIGBEE_BIND = "service_zigbee_bind"
-IEEE_SERVICE = "ieee_based_service"
-
-IEEE_SCHEMA = vol.All(cv.string, EUI64.convert)
-
-# typing typevar
-_T = TypeVar("_T")
 
 
-def _ensure_list_if_present(value: _T | None) -> list[_T] | list[Any] | None:
-    """Wrap value in list if it is provided and not one."""
-    if value is None:
-        return None
-    return cast("list[_T]", value) if isinstance(value, list) else [value]
-
-
-SERVICE_PERMIT_PARAMS = {
-    vol.Optional(ATTR_IEEE): IEEE_SCHEMA,
-    vol.Optional(ATTR_DURATION, default=60): vol.All(
-        vol.Coerce(int), vol.Range(0, 254)
-    ),
-    vol.Inclusive(ATTR_SOURCE_IEEE, "install_code"): IEEE_SCHEMA,
-    vol.Inclusive(ATTR_INSTALL_CODE, "install_code"): vol.All(
-        cv.string, convert_install_code
-    ),
-    vol.Exclusive(ATTR_QR_CODE, "install_code"): vol.All(cv.string, qr_to_install_code),
-}
-
-SERVICE_SCHEMAS = {
-    SERVICE_PERMIT: vol.Schema(
-        vol.All(
-            cv.deprecated(ATTR_IEEE_ADDRESS, replacement_key=ATTR_IEEE),
-            SERVICE_PERMIT_PARAMS,
-        )
-    ),
-    IEEE_SERVICE: vol.Schema(
-        vol.All(
-            cv.deprecated(ATTR_IEEE_ADDRESS, replacement_key=ATTR_IEEE),
-            {vol.Required(ATTR_IEEE): IEEE_SCHEMA},
-        )
-    ),
-    SERVICE_SET_ZIGBEE_CLUSTER_ATTRIBUTE: vol.Schema(
-        {
-            vol.Required(ATTR_IEEE): IEEE_SCHEMA,
-            vol.Required(ATTR_ENDPOINT_ID): cv.positive_int,
-            vol.Required(ATTR_CLUSTER_ID): cv.positive_int,
-            vol.Optional(ATTR_CLUSTER_TYPE, default=CLUSTER_TYPE_IN): cv.string,
-            vol.Required(ATTR_ATTRIBUTE): vol.Any(cv.positive_int, str),
-            vol.Required(ATTR_VALUE): vol.Any(int, cv.boolean, cv.string),
-            vol.Optional(ATTR_MANUFACTURER): cv.positive_int,
-        }
-    ),
-    SERVICE_WARNING_DEVICE_SQUAWK: vol.Schema(
-        {
-            vol.Required(ATTR_IEEE): IEEE_SCHEMA,
-            vol.Optional(
-                ATTR_WARNING_DEVICE_MODE, default=WARNING_DEVICE_SQUAWK_MODE_ARMED
-            ): cv.positive_int,
-            vol.Optional(
-                ATTR_WARNING_DEVICE_STROBE, default=WARNING_DEVICE_STROBE_YES
-            ): cv.positive_int,
-            vol.Optional(
-                ATTR_LEVEL, default=WARNING_DEVICE_SOUND_HIGH
-            ): cv.positive_int,
-        }
-    ),
-    SERVICE_WARNING_DEVICE_WARN: vol.Schema(
-        {
-            vol.Required(ATTR_IEEE): IEEE_SCHEMA,
-            vol.Optional(
-                ATTR_WARNING_DEVICE_MODE, default=WARNING_DEVICE_MODE_EMERGENCY
-            ): cv.positive_int,
-            vol.Optional(
-                ATTR_WARNING_DEVICE_STROBE, default=WARNING_DEVICE_STROBE_YES
-            ): cv.positive_int,
-            vol.Optional(
-                ATTR_LEVEL, default=WARNING_DEVICE_SOUND_HIGH
-            ): cv.positive_int,
-            vol.Optional(ATTR_WARNING_DEVICE_DURATION, default=5): cv.positive_int,
-            vol.Optional(
-                ATTR_WARNING_DEVICE_STROBE_DUTY_CYCLE, default=0x00
-            ): cv.positive_int,
-            vol.Optional(
-                ATTR_WARNING_DEVICE_STROBE_INTENSITY, default=WARNING_DEVICE_STROBE_HIGH
-            ): cv.positive_int,
-        }
-    ),
-    SERVICE_ISSUE_ZIGBEE_CLUSTER_COMMAND: vol.All(
-        vol.Schema(
-            {
-                vol.Required(ATTR_IEEE): IEEE_SCHEMA,
-                vol.Required(ATTR_ENDPOINT_ID): cv.positive_int,
-                vol.Required(ATTR_CLUSTER_ID): cv.positive_int,
-                vol.Optional(ATTR_CLUSTER_TYPE, default=CLUSTER_TYPE_IN): cv.string,
-                vol.Required(ATTR_COMMAND): cv.positive_int,
-                vol.Required(ATTR_COMMAND_TYPE): cv.string,
-                vol.Exclusive(ATTR_ARGS, "attrs_params"): _ensure_list_if_present,
-                vol.Exclusive(ATTR_PARAMS, "attrs_params"): dict,
-                vol.Optional(ATTR_MANUFACTURER): cv.positive_int,
-            }
-        ),
-        cv.deprecated(ATTR_ARGS),
-        cv.has_at_least_one_key(ATTR_ARGS, ATTR_PARAMS),
-    ),
-    SERVICE_ISSUE_ZIGBEE_GROUP_COMMAND: vol.Schema(
-        {
-            vol.Required(ATTR_GROUP): cv.positive_int,
-            vol.Required(ATTR_CLUSTER_ID): cv.positive_int,
-            vol.Optional(ATTR_CLUSTER_TYPE, default=CLUSTER_TYPE_IN): cv.string,
-            vol.Required(ATTR_COMMAND): cv.positive_int,
-            vol.Optional(ATTR_ARGS, default=[]): cv.ensure_list,
-            vol.Optional(ATTR_MANUFACTURER): cv.positive_int,
-        }
-    ),
+ZHA_CONFIG_SCHEMAS = {
+    ZHA_OPTIONS: CONF_ZHA_OPTIONS_SCHEMA,
+    ZHA_ALARM_OPTIONS: CONF_ZHA_ALARM_SCHEMA,
 }
 
 
@@ -238,9 +113,9 @@ class ClusterBinding(NamedTuple):
     endpoint_id: int
 
 
-def _cv_group_member(value: dict[str, Any]) -> GroupMember:
+def _cv_group_member(value: dict[str, Any]) -> GroupMemberReference:
     """Transform a group member."""
-    return GroupMember(
+    return GroupMemberReference(
         ieee=value[ATTR_IEEE],
         endpoint_id=value[ATTR_ENDPOINT_ID],
     )
@@ -262,27 +137,27 @@ def _cv_zigpy_network_backup(value: dict[str, Any]) -> zigpy.backups.NetworkBack
     try:
         return zigpy.backups.NetworkBackup.from_dict(value)
     except ValueError as err:
-        raise vol.Invalid(str(err)) from err
+        raise probatio.Invalid(str(err)) from err
 
 
-GROUP_MEMBER_SCHEMA = vol.All(
-    vol.Schema(
+GROUP_MEMBER_SCHEMA = probatio.All(
+    probatio.Schema(
         {
-            vol.Required(ATTR_IEEE): IEEE_SCHEMA,
-            vol.Required(ATTR_ENDPOINT_ID): vol.Coerce(int),
+            probatio.Required(ATTR_IEEE): IEEE_SCHEMA,
+            probatio.Required(ATTR_ENDPOINT_ID): probatio.Coerce(int),
         }
     ),
     _cv_group_member,
 )
 
 
-CLUSTER_BINDING_SCHEMA = vol.All(
-    vol.Schema(
+CLUSTER_BINDING_SCHEMA = probatio.All(
+    probatio.Schema(
         {
-            vol.Required(ATTR_NAME): cv.string,
-            vol.Required(ATTR_TYPE): cv.string,
-            vol.Required(ATTR_ID): vol.Coerce(int),
-            vol.Required(ATTR_ENDPOINT_ID): vol.Coerce(int),
+            probatio.Required(ATTR_NAME): cv.string,
+            probatio.Required(ATTR_TYPE): cv.string,
+            probatio.Required(ATTR_ID): probatio.Coerce(int),
+            probatio.Required(ATTR_ENDPOINT_ID): probatio.Coerce(int),
         }
     ),
     _cv_cluster_binding,
@@ -292,7 +167,7 @@ CLUSTER_BINDING_SCHEMA = vol.All(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "zha/devices/permit",
+        probatio.Required("type"): "zha/devices/permit",
         **SERVICE_PERMIT_PARAMS,
     }
 )
@@ -301,7 +176,7 @@ async def websocket_permit_devices(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Permit ZHA zigbee devices."""
-    zha_gateway = get_zha_gateway(hass)
+    zha_gateway_proxy = get_zha_gateway_proxy(hass)
     duration: int = msg[ATTR_DURATION]
     ieee: EUI64 | None = msg.get(ATTR_IEEE)
 
@@ -310,122 +185,125 @@ async def websocket_permit_devices(
         connection.send_message(websocket_api.event_message(msg["id"], data))
 
     remove_dispatcher_function = async_dispatcher_connect(
-        hass, "zha_gateway_message", forward_messages
+        hass, ZHA_GW_MSG, forward_messages
     )
 
     @callback
     def async_cleanup() -> None:
         """Remove signal listener and turn off debug mode."""
-        zha_gateway.async_disable_debug_mode()
+        zha_gateway_proxy.async_disable_debug_mode()
         remove_dispatcher_function()
 
     connection.subscriptions[msg["id"]] = async_cleanup
-    zha_gateway.async_enable_debug_mode()
+    zha_gateway_proxy.async_enable_debug_mode()
     src_ieee: EUI64
-    code: bytes
+    link_key: KeyData
     if ATTR_SOURCE_IEEE in msg:
         src_ieee = msg[ATTR_SOURCE_IEEE]
-        code = msg[ATTR_INSTALL_CODE]
-        _LOGGER.debug("Allowing join for %s device with install code", src_ieee)
-        await zha_gateway.application_controller.permit_with_key(
-            time_s=duration, node=src_ieee, code=code
+        link_key = msg[ATTR_INSTALL_CODE]
+        _LOGGER.debug("Allowing join for %s device with link key", src_ieee)
+        await zha_gateway_proxy.gateway.application_controller.permit_with_link_key(
+            time_s=duration, node=src_ieee, link_key=link_key
         )
     elif ATTR_QR_CODE in msg:
-        src_ieee, code = msg[ATTR_QR_CODE]
-        _LOGGER.debug("Allowing join for %s device with install code", src_ieee)
-        await zha_gateway.application_controller.permit_with_key(
-            time_s=duration, node=src_ieee, code=code
+        src_ieee, link_key = msg[ATTR_QR_CODE]
+        _LOGGER.debug("Allowing join for %s device with link key", src_ieee)
+        await zha_gateway_proxy.gateway.application_controller.permit_with_link_key(
+            time_s=duration, node=src_ieee, link_key=link_key
         )
     else:
-        await zha_gateway.application_controller.permit(time_s=duration, node=ieee)
+        await zha_gateway_proxy.gateway.application_controller.permit(
+            time_s=duration, node=ieee
+        )
     connection.send_result(msg[ID])
 
 
 @websocket_api.require_admin
-@websocket_api.websocket_command({vol.Required(TYPE): "zha/devices"})
+@websocket_api.websocket_command({probatio.Required(TYPE): "zha/devices"})
 @websocket_api.async_response
 async def websocket_get_devices(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Get ZHA devices."""
-    zha_gateway = get_zha_gateway(hass)
-    devices = [device.zha_device_info for device in zha_gateway.devices.values()]
+    zha_gateway_proxy: ZHAGatewayProxy = get_zha_gateway_proxy(hass)
+    devices = [
+        device.zha_device_info for device in zha_gateway_proxy.device_proxies.values()
+    ]
     connection.send_result(msg[ID], devices)
 
 
 @callback
-def _get_entity_name(
-    zha_gateway: ZHAGateway, entity_ref: EntityReference
-) -> str | None:
+def _get_entity_name(zha_gateway: Gateway, entity_ref: EntityReference) -> str | None:
     entity_registry = er.async_get(zha_gateway.hass)
-    entry = entity_registry.async_get(entity_ref.reference_id)
+    entry = entity_registry.async_get(entity_ref.ha_entity_id)
     return entry.name if entry else None
 
 
 @callback
 def _get_entity_original_name(
-    zha_gateway: ZHAGateway, entity_ref: EntityReference
+    zha_gateway: Gateway, entity_ref: EntityReference
 ) -> str | None:
     entity_registry = er.async_get(zha_gateway.hass)
-    entry = entity_registry.async_get(entity_ref.reference_id)
+    entry = entity_registry.async_get(entity_ref.ha_entity_id)
     return entry.original_name if entry else None
 
 
 @websocket_api.require_admin
-@websocket_api.websocket_command({vol.Required(TYPE): "zha/devices/groupable"})
+@websocket_api.websocket_command({probatio.Required(TYPE): "zha/devices/groupable"})
 @websocket_api.async_response
 async def websocket_get_groupable_devices(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Get ZHA devices that can be grouped."""
-    zha_gateway = get_zha_gateway(hass)
+    zha_gateway_proxy = get_zha_gateway_proxy(hass)
 
-    devices = [device for device in zha_gateway.devices.values() if device.is_groupable]
-    groupable_devices = []
+    devices = [
+        device
+        for device in zha_gateway_proxy.device_proxies.values()
+        if device.device.is_groupable
+    ]
+    groupable_devices: list[dict[str, Any]] = []
 
     for device in devices:
-        entity_refs = zha_gateway.device_registry[device.ieee]
-        for ep_id in device.async_get_groupable_endpoints():
-            groupable_devices.append(
-                {
-                    "endpoint_id": ep_id,
-                    "entities": [
-                        {
-                            "name": _get_entity_name(zha_gateway, entity_ref),
-                            "original_name": _get_entity_original_name(
-                                zha_gateway, entity_ref
-                            ),
-                        }
-                        for entity_ref in entity_refs
-                        if list(entity_ref.cluster_handlers.values())[
-                            0
-                        ].cluster.endpoint.endpoint_id
-                        == ep_id
-                    ],
-                    "device": device.zha_device_info,
-                }
-            )
+        entity_refs = zha_gateway_proxy.ha_entity_refs[device.device.ieee]
+        groupable_devices.extend(
+            {
+                "endpoint_id": ep_id,
+                "entities": [
+                    {
+                        "name": _get_entity_name(zha_gateway_proxy, entity_ref),
+                        "original_name": _get_entity_original_name(
+                            zha_gateway_proxy, entity_ref
+                        ),
+                    }
+                    for entity_ref in entity_refs
+                    if entity_ref.entity_data.entity.endpoint.id == ep_id
+                ],
+                "device": device.zha_device_info,
+            }
+            for ep_id in device.device.async_get_groupable_endpoints()
+        )
 
     connection.send_result(msg[ID], groupable_devices)
 
 
 @websocket_api.require_admin
-@websocket_api.websocket_command({vol.Required(TYPE): "zha/groups"})
+@websocket_api.websocket_command({probatio.Required(TYPE): "zha/groups"})
 @websocket_api.async_response
 async def websocket_get_groups(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Get ZHA groups."""
-    zha_gateway = get_zha_gateway(hass)
-    groups = [group.group_info for group in zha_gateway.groups.values()]
+    zha_gateway_proxy = get_zha_gateway_proxy(hass)
+    groups = [group.group_info for group in zha_gateway_proxy.group_proxies.values()]
     connection.send_result(msg[ID], groups)
 
 
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/device",
-        vol.Required(ATTR_IEEE): IEEE_SCHEMA,
+        probatio.Required(TYPE): "zha/device",
+        probatio.Required(ATTR_IEEE): IEEE_SCHEMA,
     }
 )
 @websocket_api.async_response
@@ -433,13 +311,13 @@ async def websocket_get_device(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Get ZHA devices."""
-    zha_gateway = get_zha_gateway(hass)
+    zha_gateway_proxy = get_zha_gateway_proxy(hass)
     ieee: EUI64 = msg[ATTR_IEEE]
 
-    if not (zha_device := zha_gateway.devices.get(ieee)):
+    if not (zha_device := zha_gateway_proxy.device_proxies.get(ieee)):
         connection.send_message(
             websocket_api.error_message(
-                msg[ID], websocket_api.const.ERR_NOT_FOUND, "ZHA Device not found"
+                msg[ID], websocket_api.ERR_NOT_FOUND, "ZHA Device not found"
             )
         )
         return
@@ -451,8 +329,8 @@ async def websocket_get_device(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/group",
-        vol.Required(GROUP_ID): cv.positive_int,
+        probatio.Required(TYPE): "zha/group",
+        probatio.Required(GROUP_ID): cv.positive_int,
     }
 )
 @websocket_api.async_response
@@ -460,13 +338,13 @@ async def websocket_get_group(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Get ZHA group."""
-    zha_gateway = get_zha_gateway(hass)
+    zha_gateway_proxy = get_zha_gateway_proxy(hass)
     group_id: int = msg[GROUP_ID]
 
-    if not (zha_group := zha_gateway.groups.get(group_id)):
+    if not (zha_group := zha_gateway_proxy.group_proxies.get(group_id)):
         connection.send_message(
             websocket_api.error_message(
-                msg[ID], websocket_api.const.ERR_NOT_FOUND, "ZHA Group not found"
+                msg[ID], websocket_api.ERR_NOT_FOUND, "ZHA Group not found"
             )
         )
         return
@@ -478,10 +356,12 @@ async def websocket_get_group(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/group/add",
-        vol.Required(GROUP_NAME): cv.string,
-        vol.Optional(GROUP_ID): cv.positive_int,
-        vol.Optional(ATTR_MEMBERS): vol.All(cv.ensure_list, [GROUP_MEMBER_SCHEMA]),
+        probatio.Required(TYPE): "zha/group/add",
+        probatio.Required(GROUP_NAME): cv.string,
+        probatio.Optional(GROUP_ID): cv.positive_int,
+        probatio.Optional(ATTR_MEMBERS): probatio.All(
+            probatio.EnsureList(), [GROUP_MEMBER_SCHEMA]
+        ),
     }
 )
 @websocket_api.async_response
@@ -489,20 +369,30 @@ async def websocket_add_group(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Add a new ZHA group."""
-    zha_gateway = get_zha_gateway(hass)
+    zha_gateway = get_zha_gateway_proxy(hass)
     group_name: str = msg[GROUP_NAME]
     group_id: int | None = msg.get(GROUP_ID)
-    members: list[GroupMember] | None = msg.get(ATTR_MEMBERS)
-    group = await zha_gateway.async_create_zigpy_group(group_name, members, group_id)
-    assert group
-    connection.send_result(msg[ID], group.group_info)
+    members: list[GroupMemberReference] | None = msg.get(ATTR_MEMBERS)
+    try:
+        group = await zha_gateway.gateway.async_create_zigpy_group(
+            group_name, members, group_id
+        )
+    except ZHAException as err:
+        connection.send_error(msg[ID], websocket_api.ERR_INVALID_FORMAT, str(err))
+        return
+
+    connection.send_result(
+        msg[ID], zha_gateway.group_proxies[group.group_id].group_info
+    )
 
 
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/group/remove",
-        vol.Required(GROUP_IDS): vol.All(cv.ensure_list, [cv.positive_int]),
+        probatio.Required(TYPE): "zha/group/remove",
+        probatio.Required(GROUP_IDS): probatio.All(
+            probatio.EnsureList(), [cv.positive_int]
+        ),
     }
 )
 @websocket_api.async_response
@@ -510,26 +400,29 @@ async def websocket_remove_groups(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Remove the specified ZHA groups."""
-    zha_gateway = get_zha_gateway(hass)
+    zha_gateway = get_zha_gateway_proxy(hass)
     group_ids: list[int] = msg[GROUP_IDS]
 
     if len(group_ids) > 1:
-        tasks = []
-        for group_id in group_ids:
-            tasks.append(zha_gateway.async_remove_zigpy_group(group_id))
+        tasks = [
+            zha_gateway.gateway.async_remove_zigpy_group(group_id)
+            for group_id in group_ids
+        ]
         await asyncio.gather(*tasks)
     else:
-        await zha_gateway.async_remove_zigpy_group(group_ids[0])
-    ret_groups = [group.group_info for group in zha_gateway.groups.values()]
+        await zha_gateway.gateway.async_remove_zigpy_group(group_ids[0])
+    ret_groups = [group.group_info for group in zha_gateway.group_proxies.values()]
     connection.send_result(msg[ID], ret_groups)
 
 
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/group/members/add",
-        vol.Required(GROUP_ID): cv.positive_int,
-        vol.Required(ATTR_MEMBERS): vol.All(cv.ensure_list, [GROUP_MEMBER_SCHEMA]),
+        probatio.Required(TYPE): "zha/group/members/add",
+        probatio.Required(GROUP_ID): cv.positive_int,
+        probatio.Required(ATTR_MEMBERS): probatio.All(
+            probatio.EnsureList(), [GROUP_MEMBER_SCHEMA]
+        ),
     }
 )
 @websocket_api.async_response
@@ -538,28 +431,32 @@ async def websocket_add_group_members(
 ) -> None:
     """Add members to a ZHA group."""
     zha_gateway = get_zha_gateway(hass)
+    zha_gateway_proxy = get_zha_gateway_proxy(hass)
     group_id: int = msg[GROUP_ID]
-    members: list[GroupMember] = msg[ATTR_MEMBERS]
+    members: list[GroupMemberReference] = msg[ATTR_MEMBERS]
 
     if not (zha_group := zha_gateway.groups.get(group_id)):
         connection.send_message(
             websocket_api.error_message(
-                msg[ID], websocket_api.const.ERR_NOT_FOUND, "ZHA Group not found"
+                msg[ID], websocket_api.ERR_NOT_FOUND, "ZHA Group not found"
             )
         )
         return
 
     await zha_group.async_add_members(members)
-    ret_group = zha_group.group_info
-    connection.send_result(msg[ID], ret_group)
+    ret_group = zha_gateway_proxy.get_group_proxy(group_id)
+    assert ret_group
+    connection.send_result(msg[ID], ret_group.group_info)
 
 
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/group/members/remove",
-        vol.Required(GROUP_ID): cv.positive_int,
-        vol.Required(ATTR_MEMBERS): vol.All(cv.ensure_list, [GROUP_MEMBER_SCHEMA]),
+        probatio.Required(TYPE): "zha/group/members/remove",
+        probatio.Required(GROUP_ID): cv.positive_int,
+        probatio.Required(ATTR_MEMBERS): probatio.All(
+            probatio.EnsureList(), [GROUP_MEMBER_SCHEMA]
+        ),
     }
 )
 @websocket_api.async_response
@@ -568,44 +465,53 @@ async def websocket_remove_group_members(
 ) -> None:
     """Remove members from a ZHA group."""
     zha_gateway = get_zha_gateway(hass)
+    zha_gateway_proxy = get_zha_gateway_proxy(hass)
     group_id: int = msg[GROUP_ID]
-    members: list[GroupMember] = msg[ATTR_MEMBERS]
+    members: list[GroupMemberReference] = msg[ATTR_MEMBERS]
 
     if not (zha_group := zha_gateway.groups.get(group_id)):
         connection.send_message(
             websocket_api.error_message(
-                msg[ID], websocket_api.const.ERR_NOT_FOUND, "ZHA Group not found"
+                msg[ID], websocket_api.ERR_NOT_FOUND, "ZHA Group not found"
             )
         )
         return
 
     await zha_group.async_remove_members(members)
-    ret_group = zha_group.group_info
-    connection.send_result(msg[ID], ret_group)
+    ret_group = zha_gateway_proxy.get_group_proxy(group_id)
+    assert ret_group
+    connection.send_result(msg[ID], ret_group.group_info)
 
 
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/devices/reconfigure",
-        vol.Required(ATTR_IEEE): IEEE_SCHEMA,
+        probatio.Required(TYPE): "zha/devices/reconfigure",
+        probatio.Required(ATTR_IEEE): IEEE_SCHEMA,
     }
 )
 @websocket_api.async_response
 async def websocket_reconfigure_node(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Reconfigure a ZHA nodes entities by its ieee address."""
+    """Reconfigure a ZHA node by its ieee address with a prior re-interview."""
     zha_gateway = get_zha_gateway(hass)
     ieee: EUI64 = msg[ATTR_IEEE]
-    device: ZHADevice | None = zha_gateway.get_device(ieee)
+
+    if zha_gateway.get_device(ieee) is None:
+        connection.send_message(
+            websocket_api.error_message(
+                msg[ID], websocket_api.ERR_NOT_FOUND, "ZHA Device not found"
+            )
+        )
+        return
 
     async def forward_messages(data):
         """Forward events to websocket."""
         connection.send_message(websocket_api.event_message(msg["id"], data))
 
     remove_dispatcher_function = async_dispatcher_connect(
-        hass, ZHA_CLUSTER_HANDLER_MSG, forward_messages
+        hass, SIGNAL_DEVICE_RECONFIGURE_EVENT, forward_messages
     )
 
     @callback
@@ -614,16 +520,16 @@ async def websocket_reconfigure_node(
         remove_dispatcher_function()
 
     connection.subscriptions[msg["id"]] = async_cleanup
+    connection.send_result(msg[ID])
 
-    _LOGGER.debug("Reconfiguring node with ieee_address: %s", ieee)
-    assert device
-    hass.async_create_task(device.async_configure())
+    _LOGGER.debug("Re-interview node with ieee_address: %s", ieee)
+    hass.async_create_task(zha_gateway.async_reinterview_device(ieee))
 
 
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/topology/update",
+        probatio.Required(TYPE): "zha/topology/update",
     }
 )
 @websocket_api.async_response
@@ -638,8 +544,8 @@ async def websocket_update_topology(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/devices/clusters",
-        vol.Required(ATTR_IEEE): IEEE_SCHEMA,
+        probatio.Required(TYPE): "zha/devices/clusters",
+        probatio.Required(ATTR_IEEE): IEEE_SCHEMA,
     }
 )
 @websocket_api.async_response
@@ -651,7 +557,8 @@ async def websocket_device_clusters(
     ieee: EUI64 = msg[ATTR_IEEE]
     zha_device = zha_gateway.get_device(ieee)
     response_clusters = []
-    if zha_device is not None:
+    # Green Power devices have no clusters
+    if isinstance(zha_device, ZigbeeDevice):
         clusters_by_endpoint = zha_device.async_get_clusters()
         for ep_id, clusters in clusters_by_endpoint.items():
             for c_id, cluster in clusters[CLUSTER_TYPE_IN].items():
@@ -679,11 +586,11 @@ async def websocket_device_clusters(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/devices/clusters/attributes",
-        vol.Required(ATTR_IEEE): IEEE_SCHEMA,
-        vol.Required(ATTR_ENDPOINT_ID): int,
-        vol.Required(ATTR_CLUSTER_ID): int,
-        vol.Required(ATTR_CLUSTER_TYPE): str,
+        probatio.Required(TYPE): "zha/devices/clusters/attributes",
+        probatio.Required(ATTR_IEEE): IEEE_SCHEMA,
+        probatio.Required(ATTR_ENDPOINT_ID): int,
+        probatio.Required(ATTR_CLUSTER_ID): int,
+        probatio.Required(ATTR_CLUSTER_TYPE): str,
     }
 )
 @websocket_api.async_response
@@ -699,7 +606,8 @@ async def websocket_device_cluster_attributes(
     cluster_attributes: list[dict[str, Any]] = []
     zha_device = zha_gateway.get_device(ieee)
     attributes = None
-    if zha_device is not None:
+    # Green Power devices have no clusters
+    if isinstance(zha_device, ZigbeeDevice):
         attributes = zha_device.async_get_cluster_attributes(
             endpoint_id, cluster_id, cluster_type
         )
@@ -724,11 +632,11 @@ async def websocket_device_cluster_attributes(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/devices/clusters/commands",
-        vol.Required(ATTR_IEEE): IEEE_SCHEMA,
-        vol.Required(ATTR_ENDPOINT_ID): int,
-        vol.Required(ATTR_CLUSTER_ID): int,
-        vol.Required(ATTR_CLUSTER_TYPE): str,
+        probatio.Required(TYPE): "zha/devices/clusters/commands",
+        probatio.Required(ATTR_IEEE): IEEE_SCHEMA,
+        probatio.Required(ATTR_ENDPOINT_ID): int,
+        probatio.Required(ATTR_CLUSTER_ID): int,
+        probatio.Required(ATTR_CLUSTER_TYPE): str,
     }
 )
 @websocket_api.async_response
@@ -736,7 +644,7 @@ async def websocket_device_cluster_commands(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Return a list of cluster commands."""
-    import voluptuous_serialize  # pylint: disable=import-outside-toplevel
+    from probatio import to_field_list  # noqa: PLC0415
 
     zha_gateway = get_zha_gateway(hass)
     ieee: EUI64 = msg[ATTR_IEEE]
@@ -746,7 +654,8 @@ async def websocket_device_cluster_commands(
     zha_device = zha_gateway.get_device(ieee)
     cluster_commands: list[dict[str, Any]] = []
     commands = None
-    if zha_device is not None:
+    # Green Power devices have no clusters
+    if isinstance(zha_device, ZigbeeDevice):
         commands = zha_device.async_get_cluster_commands(
             endpoint_id, cluster_id, cluster_type
         )
@@ -758,7 +667,7 @@ async def websocket_device_cluster_commands(
                         TYPE: CLIENT,
                         ID: cmd_id,
                         ATTR_NAME: cmd.name,
-                        "schema": voluptuous_serialize.convert(
+                        "schema": to_field_list(
                             cluster_command_schema_to_vol_schema(cmd.schema),
                             custom_serializer=cv.custom_serializer,
                         ),
@@ -770,7 +679,7 @@ async def websocket_device_cluster_commands(
                         TYPE: CLUSTER_COMMAND_SERVER,
                         ID: cmd_id,
                         ATTR_NAME: cmd.name,
-                        "schema": voluptuous_serialize.convert(
+                        "schema": to_field_list(
                             cluster_command_schema_to_vol_schema(cmd.schema),
                             custom_serializer=cv.custom_serializer,
                         ),
@@ -794,13 +703,13 @@ async def websocket_device_cluster_commands(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/devices/clusters/attributes/value",
-        vol.Required(ATTR_IEEE): IEEE_SCHEMA,
-        vol.Required(ATTR_ENDPOINT_ID): int,
-        vol.Required(ATTR_CLUSTER_ID): int,
-        vol.Required(ATTR_CLUSTER_TYPE): str,
-        vol.Required(ATTR_ATTRIBUTE): int,
-        vol.Optional(ATTR_MANUFACTURER): cv.positive_int,
+        probatio.Required(TYPE): "zha/devices/clusters/attributes/value",
+        probatio.Required(ATTR_IEEE): IEEE_SCHEMA,
+        probatio.Required(ATTR_ENDPOINT_ID): int,
+        probatio.Required(ATTR_CLUSTER_ID): int,
+        probatio.Required(ATTR_CLUSTER_TYPE): str,
+        probatio.Required(ATTR_ATTRIBUTE): int,
+        probatio.Optional(ATTR_MANUFACTURER): cv.positive_int,
     }
 )
 @websocket_api.async_response
@@ -814,13 +723,12 @@ async def websocket_read_zigbee_cluster_attributes(
     cluster_id: int = msg[ATTR_CLUSTER_ID]
     cluster_type: str = msg[ATTR_CLUSTER_TYPE]
     attribute: int = msg[ATTR_ATTRIBUTE]
-    manufacturer: int | None = msg.get(ATTR_MANUFACTURER)
+    manufacturer: int | ZigpyUndefinedType = msg.get(ATTR_MANUFACTURER, ZIGPY_UNDEFINED)
     zha_device = zha_gateway.get_device(ieee)
     success = {}
     failure = {}
-    if zha_device is not None:
-        if cluster_id >= MFG_CLUSTER_ID_START and manufacturer is None:
-            manufacturer = zha_device.manufacturer_code
+    # Green Power devices have no clusters
+    if isinstance(zha_device, ZigbeeDevice):
         cluster = zha_device.async_get_cluster(
             endpoint_id, cluster_id, cluster_type=cluster_type
         )
@@ -853,8 +761,8 @@ async def websocket_read_zigbee_cluster_attributes(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/devices/bindable",
-        vol.Required(ATTR_IEEE): IEEE_SCHEMA,
+        probatio.Required(TYPE): "zha/devices/bindable",
+        probatio.Required(ATTR_IEEE): IEEE_SCHEMA,
     }
 )
 @websocket_api.async_response
@@ -862,14 +770,15 @@ async def websocket_get_bindable_devices(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Directly bind devices."""
-    zha_gateway = get_zha_gateway(hass)
+    zha_gateway_proxy = get_zha_gateway_proxy(hass)
     source_ieee: EUI64 = msg[ATTR_IEEE]
-    source_device = zha_gateway.get_device(source_ieee)
+    source_device = zha_gateway_proxy.device_proxies.get(source_ieee)
+    assert source_device is not None
 
     devices = [
         device.zha_device_info
-        for device in zha_gateway.devices.values()
-        if async_is_bindable_target(source_device, device)
+        for device in zha_gateway_proxy.device_proxies.values()
+        if async_is_bindable_target(source_device.device, device.device)
     ]
 
     _LOGGER.debug(
@@ -886,9 +795,9 @@ async def websocket_get_bindable_devices(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/devices/bind",
-        vol.Required(ATTR_SOURCE_IEEE): IEEE_SCHEMA,
-        vol.Required(ATTR_TARGET_IEEE): IEEE_SCHEMA,
+        probatio.Required(TYPE): "zha/devices/bind",
+        probatio.Required(ATTR_SOURCE_IEEE): IEEE_SCHEMA,
+        probatio.Required(ATTR_TARGET_IEEE): IEEE_SCHEMA,
     }
 )
 @websocket_api.async_response
@@ -915,9 +824,9 @@ async def websocket_bind_devices(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/devices/unbind",
-        vol.Required(ATTR_SOURCE_IEEE): IEEE_SCHEMA,
-        vol.Required(ATTR_TARGET_IEEE): IEEE_SCHEMA,
+        probatio.Required(TYPE): "zha/devices/unbind",
+        probatio.Required(ATTR_SOURCE_IEEE): IEEE_SCHEMA,
+        probatio.Required(ATTR_TARGET_IEEE): IEEE_SCHEMA,
     }
 )
 @websocket_api.async_response
@@ -944,10 +853,12 @@ async def websocket_unbind_devices(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/groups/bind",
-        vol.Required(ATTR_SOURCE_IEEE): IEEE_SCHEMA,
-        vol.Required(GROUP_ID): cv.positive_int,
-        vol.Required(BINDINGS): vol.All(cv.ensure_list, [CLUSTER_BINDING_SCHEMA]),
+        probatio.Required(TYPE): "zha/groups/bind",
+        probatio.Required(ATTR_SOURCE_IEEE): IEEE_SCHEMA,
+        probatio.Required(GROUP_ID): cv.positive_int,
+        probatio.Required(BINDINGS): probatio.All(
+            probatio.EnsureList(), [CLUSTER_BINDING_SCHEMA]
+        ),
     }
 )
 @websocket_api.async_response
@@ -959,8 +870,13 @@ async def websocket_bind_group(
     source_ieee: EUI64 = msg[ATTR_SOURCE_IEEE]
     group_id: int = msg[GROUP_ID]
     bindings: list[ClusterBinding] = msg[BINDINGS]
-    source_device = zha_gateway.get_device(source_ieee)
-    assert source_device
+    if (
+        source_device := _async_get_zigbee_device(
+            zha_gateway, connection, msg[ID], source_ieee
+        )
+    ) is None:
+        return
+
     await source_device.async_bind_to_group(group_id, bindings)
     connection.send_result(msg[ID])
 
@@ -968,10 +884,12 @@ async def websocket_bind_group(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/groups/unbind",
-        vol.Required(ATTR_SOURCE_IEEE): IEEE_SCHEMA,
-        vol.Required(GROUP_ID): cv.positive_int,
-        vol.Required(BINDINGS): vol.All(cv.ensure_list, [CLUSTER_BINDING_SCHEMA]),
+        probatio.Required(TYPE): "zha/groups/unbind",
+        probatio.Required(ATTR_SOURCE_IEEE): IEEE_SCHEMA,
+        probatio.Required(GROUP_ID): cv.positive_int,
+        probatio.Required(BINDINGS): probatio.All(
+            probatio.EnsureList(), [CLUSTER_BINDING_SCHEMA]
+        ),
     }
 )
 @websocket_api.async_response
@@ -983,24 +901,51 @@ async def websocket_unbind_group(
     source_ieee: EUI64 = msg[ATTR_SOURCE_IEEE]
     group_id: int = msg[GROUP_ID]
     bindings: list[ClusterBinding] = msg[BINDINGS]
-    source_device = zha_gateway.get_device(source_ieee)
-    assert source_device
+    if (
+        source_device := _async_get_zigbee_device(
+            zha_gateway, connection, msg[ID], source_ieee
+        )
+    ) is None:
+        return
+
     await source_device.async_unbind_from_group(group_id, bindings)
     connection.send_result(msg[ID])
 
 
+@callback
+def _async_get_zigbee_device(
+    zha_gateway: Gateway, connection: ActiveConnection, msg_id: int, ieee: EUI64
+) -> ZigbeeDevice | None:
+    """Return the Zigbee device, or send an error if it is missing or not Zigbee."""
+    zha_device = zha_gateway.get_device(ieee)
+    if zha_device is None:
+        connection.send_error(
+            msg_id, websocket_api.ERR_NOT_FOUND, "ZHA Device not found"
+        )
+        return None
+
+    if not isinstance(zha_device, ZigbeeDevice):
+        connection.send_error(
+            msg_id,
+            websocket_api.ERR_NOT_SUPPORTED,
+            f"Device {ieee} is not a Zigbee device",
+        )
+        return None
+
+    return zha_device
+
+
 async def async_binding_operation(
-    zha_gateway: ZHAGateway,
+    zha_gateway: Gateway,
     source_ieee: EUI64,
     target_ieee: EUI64,
     operation: zdo_types.ZDOCmd,
 ) -> None:
     """Create or remove a direct zigbee binding between 2 devices."""
 
-    source_device = zha_gateway.get_device(source_ieee)
+    source_device = zha_gateway.get_zigbee_device(source_ieee)
     target_device = zha_gateway.get_device(target_ieee)
 
-    assert source_device
     assert target_device
     clusters_to_bind = await get_matched_clusters(source_device, target_device)
 
@@ -1029,7 +974,7 @@ async def async_binding_operation(
             )
         )
     res = await asyncio.gather(*(t[0] for t in bind_tasks), return_exceptions=True)
-    for outcome, log_msg in zip(res, bind_tasks):
+    for outcome, log_msg in zip(res, bind_tasks, strict=False):
         if isinstance(outcome, Exception):
             fmt = f"{log_msg[1]} failed: %s"
         else:
@@ -1038,23 +983,21 @@ async def async_binding_operation(
 
 
 @websocket_api.require_admin
-@websocket_api.websocket_command({vol.Required(TYPE): "zha/configuration"})
+@websocket_api.websocket_command({probatio.Required(TYPE): "zha/configuration"})
 @websocket_api.async_response
 async def websocket_get_configuration(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Get ZHA configuration."""
-    zha_gateway = get_zha_gateway(hass)
-    import voluptuous_serialize  # pylint: disable=import-outside-toplevel
+    config_entry: ConfigEntry = get_config_entry(hass)
+    from probatio import to_field_list  # noqa: PLC0415
 
     def custom_serializer(schema: Any) -> Any:
-        """Serialize additional types for voluptuous_serialize."""
+        """Serialize additional types for the field-list serializer."""
         if schema is cv_boolean:
             return {"type": "bool"}
-        if schema is vol.Schema:
-            return voluptuous_serialize.convert(
-                schema, custom_serializer=custom_serializer
-            )
+        if schema is probatio.Schema:
+            return to_field_list(schema, custom_serializer=custom_serializer)
 
         return cv.custom_serializer(schema)
 
@@ -1064,12 +1007,12 @@ async def websocket_get_configuration(
             hass, IasAce.cluster_id
         ):
             continue
-        data["schemas"][section] = voluptuous_serialize.convert(
+        data["schemas"][section] = to_field_list(
             schema, custom_serializer=custom_serializer
         )
-        data["data"][section] = zha_gateway.config_entry.options.get(
-            CUSTOM_CONFIGURATION, {}
-        ).get(section, {})
+        data["data"][section] = config_entry.options.get(CUSTOM_CONFIGURATION, {}).get(
+            section, {}
+        )
 
         # send default values for unconfigured options
         for entry in data["schemas"][section]:
@@ -1082,8 +1025,8 @@ async def websocket_get_configuration(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/configuration/update",
-        vol.Required("data"): ZHA_CONFIG_SCHEMAS,
+        probatio.Required(TYPE): "zha/configuration/update",
+        probatio.Required("data"): ZHA_CONFIG_SCHEMAS,
     }
 )
 @websocket_api.async_response
@@ -1091,9 +1034,9 @@ async def websocket_update_zha_configuration(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Update the ZHA configuration."""
-    zha_gateway = get_zha_gateway(hass)
-    options = zha_gateway.config_entry.options
-    data_to_save = {**options, **{CUSTOM_CONFIGURATION: msg["data"]}}
+    config_entry: ConfigEntry = get_config_entry(hass)
+    options = config_entry.options
+    data_to_save = {**options, CUSTOM_CONFIGURATION: msg["data"]}
 
     for section, schema in ZHA_CONFIG_SCHEMAS.items():
         for entry in schema.schema:
@@ -1123,15 +1066,13 @@ async def websocket_update_zha_configuration(
         data_to_save,
     )
 
-    hass.config_entries.async_update_entry(
-        zha_gateway.config_entry, options=data_to_save
-    )
-    status = await hass.config_entries.async_reload(zha_gateway.config_entry.entry_id)
+    hass.config_entries.async_update_entry(config_entry, options=data_to_save)
+    status = await hass.config_entries.async_reload(config_entry.entry_id)
     connection.send_result(msg[ID], status)
 
 
 @websocket_api.require_admin
-@websocket_api.websocket_command({vol.Required(TYPE): "zha/network/settings"})
+@websocket_api.websocket_command({probatio.Required(TYPE): "zha/network/settings"})
 @websocket_api.async_response
 async def websocket_get_network_settings(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
@@ -1139,10 +1080,11 @@ async def websocket_get_network_settings(
     """Get ZHA network settings."""
     backup = async_get_active_network_settings(hass)
     zha_gateway = get_zha_gateway(hass)
+    config_entry: ConfigEntry = get_config_entry(hass)
     connection.send_result(
         msg[ID],
         {
-            "radio_type": async_get_radio_type(hass, zha_gateway.config_entry).name,
+            "radio_type": async_get_radio_type(hass, config_entry).name,
             "device": zha_gateway.application_controller.config[CONF_DEVICE],
             "settings": backup.as_dict(),
         },
@@ -1150,7 +1092,7 @@ async def websocket_get_network_settings(
 
 
 @websocket_api.require_admin
-@websocket_api.websocket_command({vol.Required(TYPE): "zha/network/backups/list"})
+@websocket_api.websocket_command({probatio.Required(TYPE): "zha/network/backups/list"})
 @websocket_api.async_response
 async def websocket_list_network_backups(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
@@ -1166,7 +1108,9 @@ async def websocket_list_network_backups(
 
 
 @websocket_api.require_admin
-@websocket_api.websocket_command({vol.Required(TYPE): "zha/network/backups/create"})
+@websocket_api.websocket_command(
+    {probatio.Required(TYPE): "zha/network/backups/create"}
+)
 @websocket_api.async_response
 async def websocket_create_network_backup(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
@@ -1189,9 +1133,9 @@ async def websocket_create_network_backup(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/network/backups/restore",
-        vol.Required("backup"): _cv_zigpy_network_backup,
-        vol.Optional("ezsp_force_write_eui64", default=False): cv.boolean,
+        probatio.Required(TYPE): "zha/network/backups/restore",
+        probatio.Required("backup"): _cv_zigpy_network_backup,
+        probatio.Optional("ezsp_force_write_eui64", default=False): cv.boolean,
     }
 )
 @websocket_api.async_response
@@ -1212,7 +1156,7 @@ async def websocket_restore_network_backup(
     try:
         await application_controller.backups.restore_backup(backup)
     except ValueError as err:
-        connection.send_error(msg[ID], websocket_api.const.ERR_INVALID_FORMAT, str(err))
+        connection.send_error(msg[ID], websocket_api.ERR_INVALID_FORMAT, str(err))
     else:
         connection.send_result(msg[ID])
 
@@ -1220,8 +1164,10 @@ async def websocket_restore_network_backup(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "zha/network/change_channel",
-        vol.Required(ATTR_NEW_CHANNEL): vol.Any("auto", vol.Range(11, 26)),
+        probatio.Required(TYPE): "zha/network/change_channel",
+        probatio.Required(ATTR_NEW_CHANNEL): probatio.Any(
+            "auto", probatio.Range(11, 26)
+        ),
     }
 )
 @websocket_api.async_response
@@ -1237,302 +1183,6 @@ async def websocket_change_channel(
 @callback
 def async_load_api(hass: HomeAssistant) -> None:
     """Set up the web socket API."""
-    zha_gateway = get_zha_gateway(hass)
-    application_controller = zha_gateway.application_controller
-
-    async def permit(service: ServiceCall) -> None:
-        """Allow devices to join this network."""
-        duration: int = service.data[ATTR_DURATION]
-        ieee: EUI64 | None = service.data.get(ATTR_IEEE)
-        src_ieee: EUI64
-        code: bytes
-        if ATTR_SOURCE_IEEE in service.data:
-            src_ieee = service.data[ATTR_SOURCE_IEEE]
-            code = service.data[ATTR_INSTALL_CODE]
-            _LOGGER.info("Allowing join for %s device with install code", src_ieee)
-            await application_controller.permit_with_key(
-                time_s=duration, node=src_ieee, code=code
-            )
-            return
-
-        if ATTR_QR_CODE in service.data:
-            src_ieee, code = service.data[ATTR_QR_CODE]
-            _LOGGER.info("Allowing join for %s device with install code", src_ieee)
-            await application_controller.permit_with_key(
-                time_s=duration, node=src_ieee, code=code
-            )
-            return
-
-        if ieee:
-            _LOGGER.info("Permitting joins for %ss on %s device", duration, ieee)
-        else:
-            _LOGGER.info("Permitting joins for %ss", duration)
-        await application_controller.permit(time_s=duration, node=ieee)
-
-    async_register_admin_service(
-        hass, DOMAIN, SERVICE_PERMIT, permit, schema=SERVICE_SCHEMAS[SERVICE_PERMIT]
-    )
-
-    async def remove(service: ServiceCall) -> None:
-        """Remove a node from the network."""
-        zha_gateway = get_zha_gateway(hass)
-        ieee: EUI64 = service.data[ATTR_IEEE]
-        zha_device: ZHADevice | None = zha_gateway.get_device(ieee)
-        if zha_device is not None and zha_device.is_active_coordinator:
-            _LOGGER.info("Removing the coordinator (%s) is not allowed", ieee)
-            return
-        _LOGGER.info("Removing node %s", ieee)
-        await application_controller.remove(ieee)
-
-    async_register_admin_service(
-        hass, DOMAIN, SERVICE_REMOVE, remove, schema=SERVICE_SCHEMAS[IEEE_SERVICE]
-    )
-
-    async def set_zigbee_cluster_attributes(service: ServiceCall) -> None:
-        """Set zigbee attribute for cluster on zha entity."""
-        ieee: EUI64 = service.data[ATTR_IEEE]
-        endpoint_id: int = service.data[ATTR_ENDPOINT_ID]
-        cluster_id: int = service.data[ATTR_CLUSTER_ID]
-        cluster_type: str = service.data[ATTR_CLUSTER_TYPE]
-        attribute: int | str = service.data[ATTR_ATTRIBUTE]
-        value: int | bool | str = service.data[ATTR_VALUE]
-        manufacturer: int | None = service.data.get(ATTR_MANUFACTURER)
-        zha_device = zha_gateway.get_device(ieee)
-        response = None
-        if zha_device is not None:
-            if cluster_id >= MFG_CLUSTER_ID_START and manufacturer is None:
-                manufacturer = zha_device.manufacturer_code
-            response = await zha_device.write_zigbee_attribute(
-                endpoint_id,
-                cluster_id,
-                attribute,
-                value,
-                cluster_type=cluster_type,
-                manufacturer=manufacturer,
-            )
-        else:
-            raise ValueError(f"Device with IEEE {str(ieee)} not found")
-
-        _LOGGER.debug(
-            (
-                "Set attribute for: %s: [%s] %s: [%s] %s: [%s] %s: [%s] %s: [%s] %s:"
-                " [%s] %s: [%s]"
-            ),
-            ATTR_CLUSTER_ID,
-            cluster_id,
-            ATTR_CLUSTER_TYPE,
-            cluster_type,
-            ATTR_ENDPOINT_ID,
-            endpoint_id,
-            ATTR_ATTRIBUTE,
-            attribute,
-            ATTR_VALUE,
-            value,
-            ATTR_MANUFACTURER,
-            manufacturer,
-            RESPONSE,
-            response,
-        )
-
-    async_register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_SET_ZIGBEE_CLUSTER_ATTRIBUTE,
-        set_zigbee_cluster_attributes,
-        schema=SERVICE_SCHEMAS[SERVICE_SET_ZIGBEE_CLUSTER_ATTRIBUTE],
-    )
-
-    async def issue_zigbee_cluster_command(service: ServiceCall) -> None:
-        """Issue command on zigbee cluster on ZHA entity."""
-        ieee: EUI64 = service.data[ATTR_IEEE]
-        endpoint_id: int = service.data[ATTR_ENDPOINT_ID]
-        cluster_id: int = service.data[ATTR_CLUSTER_ID]
-        cluster_type: str = service.data[ATTR_CLUSTER_TYPE]
-        command: int = service.data[ATTR_COMMAND]
-        command_type: str = service.data[ATTR_COMMAND_TYPE]
-        args: list | None = service.data.get(ATTR_ARGS)
-        params: dict | None = service.data.get(ATTR_PARAMS)
-        manufacturer: int | None = service.data.get(ATTR_MANUFACTURER)
-        zha_device = zha_gateway.get_device(ieee)
-        if zha_device is not None:
-            if cluster_id >= MFG_CLUSTER_ID_START and manufacturer is None:
-                manufacturer = zha_device.manufacturer_code
-
-            await zha_device.issue_cluster_command(
-                endpoint_id,
-                cluster_id,
-                command,
-                command_type,
-                args,
-                params,
-                cluster_type=cluster_type,
-                manufacturer=manufacturer,
-            )
-            _LOGGER.debug(
-                (
-                    "Issued command for: %s: [%s] %s: [%s] %s: [%s] %s: [%s] %s: [%s]"
-                    " %s: [%s] %s: [%s] %s: [%s]"
-                ),
-                ATTR_CLUSTER_ID,
-                cluster_id,
-                ATTR_CLUSTER_TYPE,
-                cluster_type,
-                ATTR_ENDPOINT_ID,
-                endpoint_id,
-                ATTR_COMMAND,
-                command,
-                ATTR_COMMAND_TYPE,
-                command_type,
-                ATTR_ARGS,
-                args,
-                ATTR_PARAMS,
-                params,
-                ATTR_MANUFACTURER,
-                manufacturer,
-            )
-        else:
-            raise ValueError(f"Device with IEEE {str(ieee)} not found")
-
-    async_register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_ISSUE_ZIGBEE_CLUSTER_COMMAND,
-        issue_zigbee_cluster_command,
-        schema=SERVICE_SCHEMAS[SERVICE_ISSUE_ZIGBEE_CLUSTER_COMMAND],
-    )
-
-    async def issue_zigbee_group_command(service: ServiceCall) -> None:
-        """Issue command on zigbee cluster on a zigbee group."""
-        group_id: int = service.data[ATTR_GROUP]
-        cluster_id: int = service.data[ATTR_CLUSTER_ID]
-        command: int = service.data[ATTR_COMMAND]
-        args: list = service.data[ATTR_ARGS]
-        manufacturer: int | None = service.data.get(ATTR_MANUFACTURER)
-        group = zha_gateway.get_group(group_id)
-        if cluster_id >= MFG_CLUSTER_ID_START and manufacturer is None:
-            _LOGGER.error("Missing manufacturer attribute for cluster: %d", cluster_id)
-        response = None
-        if group is not None:
-            cluster = group.endpoint[cluster_id]
-            response = await cluster.command(
-                command, *args, manufacturer=manufacturer, expect_reply=True
-            )
-        _LOGGER.debug(
-            "Issued group command for: %s: [%s] %s: [%s] %s: %s %s: [%s] %s: %s",
-            ATTR_CLUSTER_ID,
-            cluster_id,
-            ATTR_COMMAND,
-            command,
-            ATTR_ARGS,
-            args,
-            ATTR_MANUFACTURER,
-            manufacturer,
-            RESPONSE,
-            response,
-        )
-
-    async_register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_ISSUE_ZIGBEE_GROUP_COMMAND,
-        issue_zigbee_group_command,
-        schema=SERVICE_SCHEMAS[SERVICE_ISSUE_ZIGBEE_GROUP_COMMAND],
-    )
-
-    def _get_ias_wd_cluster_handler(zha_device):
-        """Get the IASWD cluster handler for a device."""
-        cluster_handlers = {
-            ch.name: ch
-            for endpoint in zha_device.endpoints.values()
-            for ch in endpoint.claimed_cluster_handlers.values()
-        }
-        return cluster_handlers.get(CLUSTER_HANDLER_IAS_WD)
-
-    async def warning_device_squawk(service: ServiceCall) -> None:
-        """Issue the squawk command for an IAS warning device."""
-        ieee: EUI64 = service.data[ATTR_IEEE]
-        mode: int = service.data[ATTR_WARNING_DEVICE_MODE]
-        strobe: int = service.data[ATTR_WARNING_DEVICE_STROBE]
-        level: int = service.data[ATTR_LEVEL]
-
-        if (zha_device := zha_gateway.get_device(ieee)) is not None:
-            if cluster_handler := _get_ias_wd_cluster_handler(zha_device):
-                await cluster_handler.issue_squawk(mode, strobe, level)
-            else:
-                _LOGGER.error(
-                    "Squawking IASWD: %s: [%s] is missing the required IASWD cluster handler!",
-                    ATTR_IEEE,
-                    str(ieee),
-                )
-        else:
-            _LOGGER.error(
-                "Squawking IASWD: %s: [%s] could not be found!", ATTR_IEEE, str(ieee)
-            )
-        _LOGGER.debug(
-            "Squawking IASWD: %s: [%s] %s: [%s] %s: [%s] %s: [%s]",
-            ATTR_IEEE,
-            str(ieee),
-            ATTR_WARNING_DEVICE_MODE,
-            mode,
-            ATTR_WARNING_DEVICE_STROBE,
-            strobe,
-            ATTR_LEVEL,
-            level,
-        )
-
-    async_register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_WARNING_DEVICE_SQUAWK,
-        warning_device_squawk,
-        schema=SERVICE_SCHEMAS[SERVICE_WARNING_DEVICE_SQUAWK],
-    )
-
-    async def warning_device_warn(service: ServiceCall) -> None:
-        """Issue the warning command for an IAS warning device."""
-        ieee: EUI64 = service.data[ATTR_IEEE]
-        mode: int = service.data[ATTR_WARNING_DEVICE_MODE]
-        strobe: int = service.data[ATTR_WARNING_DEVICE_STROBE]
-        level: int = service.data[ATTR_LEVEL]
-        duration: int = service.data[ATTR_WARNING_DEVICE_DURATION]
-        duty_mode: int = service.data[ATTR_WARNING_DEVICE_STROBE_DUTY_CYCLE]
-        intensity: int = service.data[ATTR_WARNING_DEVICE_STROBE_INTENSITY]
-
-        if (zha_device := zha_gateway.get_device(ieee)) is not None:
-            if cluster_handler := _get_ias_wd_cluster_handler(zha_device):
-                await cluster_handler.issue_start_warning(
-                    mode, strobe, level, duration, duty_mode, intensity
-                )
-            else:
-                _LOGGER.error(
-                    "Warning IASWD: %s: [%s] is missing the required IASWD cluster handler!",
-                    ATTR_IEEE,
-                    str(ieee),
-                )
-        else:
-            _LOGGER.error(
-                "Warning IASWD: %s: [%s] could not be found!", ATTR_IEEE, str(ieee)
-            )
-        _LOGGER.debug(
-            "Warning IASWD: %s: [%s] %s: [%s] %s: [%s] %s: [%s]",
-            ATTR_IEEE,
-            str(ieee),
-            ATTR_WARNING_DEVICE_MODE,
-            mode,
-            ATTR_WARNING_DEVICE_STROBE,
-            strobe,
-            ATTR_LEVEL,
-            level,
-        )
-
-    async_register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_WARNING_DEVICE_WARN,
-        warning_device_warn,
-        schema=SERVICE_SCHEMAS[SERVICE_WARNING_DEVICE_WARN],
-    )
-
     websocket_api.async_register_command(hass, websocket_permit_devices)
     websocket_api.async_register_command(hass, websocket_get_devices)
     websocket_api.async_register_command(hass, websocket_get_groupable_devices)
@@ -1561,15 +1211,3 @@ def async_load_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_create_network_backup)
     websocket_api.async_register_command(hass, websocket_restore_network_backup)
     websocket_api.async_register_command(hass, websocket_change_channel)
-
-
-@callback
-def async_unload_api(hass: HomeAssistant) -> None:
-    """Unload the ZHA API."""
-    hass.services.async_remove(DOMAIN, SERVICE_PERMIT)
-    hass.services.async_remove(DOMAIN, SERVICE_REMOVE)
-    hass.services.async_remove(DOMAIN, SERVICE_SET_ZIGBEE_CLUSTER_ATTRIBUTE)
-    hass.services.async_remove(DOMAIN, SERVICE_ISSUE_ZIGBEE_CLUSTER_COMMAND)
-    hass.services.async_remove(DOMAIN, SERVICE_ISSUE_ZIGBEE_GROUP_COMMAND)
-    hass.services.async_remove(DOMAIN, SERVICE_WARNING_DEVICE_SQUAWK)
-    hass.services.async_remove(DOMAIN, SERVICE_WARNING_DEVICE_WARN)

@@ -1,27 +1,33 @@
-"""Cisco Webex Teams notify component."""
-from __future__ import annotations
+"""Cisco Webex notify component."""
 
 import logging
+from typing import Any, override
 
-import voluptuous as vol
-from webexteamssdk import ApiError, WebexTeamsAPI, exceptions
+import probatio
+from webexpythonsdk import ApiError, WebexAPI, exceptions
 
 from homeassistant.components.notify import (
     ATTR_TITLE,
-    PLATFORM_SCHEMA,
+    PLATFORM_SCHEMA as NOTIFY_PLATFORM_SCHEMA,
     BaseNotificationService,
 )
 from homeassistant.const import CONF_TOKEN
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
 
+DOMAIN = "cisco_webex_teams"
+
 CONF_ROOM_ID = "room_id"
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {vol.Required(CONF_TOKEN): cv.string, vol.Required(CONF_ROOM_ID): cv.string}
+PLATFORM_SCHEMA = NOTIFY_PLATFORM_SCHEMA.extend(
+    {
+        probatio.Required(probatio.Secret(CONF_TOKEN)): cv.string,
+        probatio.Required(CONF_ROOM_ID): cv.string,
+    }
 )
 
 
@@ -29,10 +35,9 @@ def get_service(
     hass: HomeAssistant,
     config: ConfigType,
     discovery_info: DiscoveryInfoType | None = None,
-) -> CiscoWebexTeamsNotificationService | None:
-    """Get the CiscoWebexTeams notification service."""
-
-    client = WebexTeamsAPI(access_token=config[CONF_TOKEN])
+) -> CiscoWebexNotificationService | None:
+    """Get the Cisco Webex notification service."""
+    client = WebexAPI(access_token=config[CONF_TOKEN])
     try:
         # Validate the token & room_id
         client.rooms.get(config[CONF_ROOM_ID])
@@ -40,18 +45,19 @@ def get_service(
         _LOGGER.error(error)
         return None
 
-    return CiscoWebexTeamsNotificationService(client, config[CONF_ROOM_ID])
+    return CiscoWebexNotificationService(client, config[CONF_ROOM_ID])
 
 
-class CiscoWebexTeamsNotificationService(BaseNotificationService):
-    """The Cisco Webex Teams Notification Service."""
+class CiscoWebexNotificationService(BaseNotificationService):
+    """The Cisco Webex Notification Service."""
 
     def __init__(self, client, room):
         """Initialize the service."""
         self.room = room
         self.client = client
 
-    def send_message(self, message="", **kwargs):
+    @override
+    def send_message(self, message: str = "", **kwargs: Any) -> None:
         """Send a message to a user."""
 
         title = ""
@@ -61,6 +67,7 @@ class CiscoWebexTeamsNotificationService(BaseNotificationService):
         try:
             self.client.messages.create(roomId=self.room, html=f"{title}{message}")
         except ApiError as api_error:
-            _LOGGER.error(
-                "Could not send CiscoWebexTeams notification. Error: %s", api_error
-            )
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="send_message_failed",
+            ) from api_error

@@ -1,8 +1,13 @@
 {
   "domain": "tado",
   "name": "Tado",
-  "codeowners": ["@michaelarnauts", "@chiefdragon"],
+  "categories": [
+    "climate.thermostats_heating",
+    "climate.heat_pumps_air_conditioning"
+  ],
+  "codeowners": ["@erwindouna"],
   "config_flow": true,
+  "connectivity": ["cloud"],
   "dhcp": [
     {
       "hostname": "tado*"
@@ -12,7 +17,8 @@
   "homekit": {
     "models": ["tado", "AC02"]
   },
+  "integration_type": "hub",
   "iot_class": "cloud_polling",
   "loggers": ["PyTado"],
-  "requirements": ["python-tado==0.15.0"]
+  "requirements": ["python-tado==0.18.16"]
 }

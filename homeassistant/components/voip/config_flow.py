@@ -1,30 +1,37 @@
 """Config flow for VoIP integration."""
-from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
+import probatio
 from voip_utils import SIP_PORT
-import voluptuous as vol
 
-from homeassistant import config_entries
-from homeassistant.core import callback
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, callback
 from homeassistant.helpers import config_validation as cv
 
-from .const import CONF_SIP_PORT, DOMAIN
+from .const import CONF_SIP_PORT, CONF_SIP_USER, DOMAIN
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class VoIPConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for VoIP integration."""
 
     VERSION = 1
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         if self._async_current_entries():
-            return self.async_abort(reason="single_instance_allowed")
+            return self.async_abort(
+                reason="single_instance_allowed",
+                translation_domain=HOMEASSISTANT_DOMAIN,
+            )
 
         if user_input is None:
             return self.async_show_form(
@@ -38,38 +45,51 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> config_entries.OptionsFlow:
+        config_entry: ConfigEntry,
+    ) -> OptionsFlow:
         """Create the options flow."""
-        return VoipOptionsFlowHandler(config_entry)
+        return VoipOptionsFlowHandler()
 
 
-class VoipOptionsFlowHandler(config_entries.OptionsFlow):
+class VoipOptionsFlowHandler(OptionsFlow):
     """Handle VoIP options."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Manage the options."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            if CONF_SIP_USER in user_input and not user_input[CONF_SIP_USER]:
+                del user_input[CONF_SIP_USER]
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, options=user_input
+            )
+            return self.async_create_entry(
+                title="",
+                data=user_input,
+            )
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    probatio.Required(
                         CONF_SIP_PORT,
                         default=self.config_entry.options.get(
                             CONF_SIP_PORT,
                             SIP_PORT,
                         ),
-                    ): cv.port
+                    ): probatio.Port(),
+                    probatio.Optional(
+                        CONF_SIP_USER,
+                        description={
+                            "suggested_value": self.config_entry.options.get(
+                                CONF_SIP_USER, None
+                            )
+                        },
+                    ): probatio.Any(None, cv.string),
                 }
             ),
         )

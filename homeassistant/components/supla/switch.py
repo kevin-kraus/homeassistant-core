@@ -1,9 +1,8 @@
-"""Support for Supla switch."""
-from __future__ import annotations
+"""Support for SUPLA switch."""
 
 import logging
 from pprint import pformat
-from typing import Any
+from typing import Any, override
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
@@ -22,7 +21,7 @@ async def async_setup_platform(
     async_add_entities: AddEntitiesCallback,
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
-    """Set up the Supla switches."""
+    """Set up the SUPLA switches."""
     if discovery_info is None:
         return
 
@@ -44,18 +43,21 @@ async def async_setup_platform(
 
 
 class SuplaSwitchEntity(SuplaEntity, SwitchEntity):
-    """Representation of a Supla Switch."""
+    """Representation of a SUPLA Switch."""
 
+    @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the switch."""
         await self.async_action("TURN_ON")
 
+    @override
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the switch."""
         await self.async_action("TURN_OFF")
 
     @property
-    def is_on(self):
+    @override
+    def is_on(self) -> bool:
         """Return true if switch is on."""
         if state := self.channel_data.get("state"):
             return state["on"]

@@ -1,12 +1,11 @@
 """The tests for the KMtronic component."""
-import asyncio
+
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.test_util.aiohttp import AiohttpClientMocker
 
 from homeassistant.components.kmtronic.const import DOMAIN
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
-
-from tests.common import MockConfigEntry
-from tests.test_util.aiohttp import AiohttpClientMocker
 
 
 async def test_unload_config_entry(
@@ -46,7 +45,7 @@ async def test_config_entry_not_ready(
 
     aioclient_mock.get(
         "http://1.1.1.1/status.xml",
-        exc=asyncio.TimeoutError(),
+        exc=TimeoutError(),
     )
 
     config_entry = MockConfigEntry(

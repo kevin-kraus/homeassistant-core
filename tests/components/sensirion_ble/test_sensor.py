@@ -1,6 +1,8 @@
 """Test the Sensirion BLE sensors."""
 
-from __future__ import annotations
+import pytest
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.components.bluetooth import inject_bluetooth_service_info
 
 from homeassistant.components.sensirion_ble.const import DOMAIN
 from homeassistant.components.sensor import ATTR_STATE_CLASS
@@ -9,11 +11,9 @@ from homeassistant.core import HomeAssistant
 
 from .fixtures import CONFIGURED_NAME, CONFIGURED_PREFIX, SENSIRION_SERVICE_INFO
 
-from tests.common import MockConfigEntry
-from tests.components.bluetooth import inject_bluetooth_service_info
 
-
-async def test_sensors(enable_bluetooth: None, hass: HomeAssistant) -> None:
+@pytest.mark.usefixtures("enable_bluetooth")
+async def test_sensors(hass: HomeAssistant) -> None:
     """Test the Sensirion BLE sensors."""
     entry = MockConfigEntry(domain=DOMAIN, unique_id=SENSIRION_SERVICE_INFO.address)
     entry.add_to_hass(hass)
@@ -29,11 +29,11 @@ async def test_sensors(enable_bluetooth: None, hass: HomeAssistant) -> None:
     await hass.async_block_till_done()
     assert len(hass.states.async_all()) >= 3
 
-    for sensor, value, unit, state_class in [
+    for sensor, value, unit, state_class in (
         ("carbon_dioxide", "724", "ppm", "measurement"),
         ("humidity", "27.8", "%", "measurement"),
         ("temperature", "20.1", "°C", "measurement"),
-    ]:
+    ):
         state = hass.states.get(f"sensor.{CONFIGURED_PREFIX}_{sensor}")
         assert state is not None
         assert state.state == value

@@ -1,23 +1,28 @@
 """Support for alexa Smart Home Skill API."""
+
 import logging
-from typing import Any
+from typing import Any, override
 
 from aiohttp import web
 from yarl import URL
 
 from homeassistant import core
 from homeassistant.auth.models import User
-from homeassistant.components.http import HomeAssistantRequest
-from homeassistant.components.http.view import HomeAssistantView
-from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET
+from homeassistant.components.http import (
+    KEY_HASS,
+    HomeAssistantRequest,
+    HomeAssistantView,
+)
+from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET, CONF_NAME
 from homeassistant.core import Context, HomeAssistant
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import entity_registry as er, start
 from homeassistant.helpers.typing import ConfigType
 
 from .auth import Auth
-from .config import AbstractConfig
+from .config import ENTITY_SETTINGS_VERSION, AbstractConfig
 from .const import (
     API_DIRECTIVE,
+    API_ENDPOINT,
     API_HEADER,
     CONF_ENDPOINT,
     CONF_ENTITY_CONFIG,
@@ -25,6 +30,8 @@ from .const import (
     CONF_LOCALE,
     EVENT_ALEXA_SMART_HOME,
 )
+from .diagnostics import async_redact_auth_data
+from .entities import async_get_entities
 from .errors import AlexaBridgeUnreachableError, AlexaError
 from .handlers import HANDLERS
 from .state_report import AlexaDirective
@@ -48,37 +55,64 @@ class AlexaConfig(AbstractConfig):
         else:
             self._auth = None
 
+    @override
+    async def async_initialize(self) -> None:
+        """Initialize the config and migrate the entity settings."""
+        await super().async_initialize()
+
+        if self._store.entity_settings_version < ENTITY_SETTINGS_VERSION:
+            # Discovery needs the entity states
+            start.async_at_started(self.hass, self._async_migrate_entity_settings)
+
+    async def _async_migrate_entity_settings(self, _: HomeAssistant) -> None:
+        """Migrate the entity settings to the current version."""
+        # v2: preserve the pre-migration name of exposed entities as an alias
+        for entity in async_get_entities(self.hass, self):
+            entity_id = entity.entity_id
+            if CONF_NAME in self.entity_config.get(entity_id, {}):
+                continue
+            if self.should_expose(entity_id):
+                er.async_preserve_compat_name_as_alias(self.hass, entity_id)
+        await self._store.async_set_entity_settings_version(ENTITY_SETTINGS_VERSION)
+
     @property
+    @override
     def supports_auth(self) -> bool:
         """Return if config supports auth."""
         return self._auth is not None
 
     @property
+    @override
     def should_report_state(self) -> bool:
         """Return if we should proactively report states."""
         return self._auth is not None and self.authorized
 
     @property
+    @override
     def endpoint(self) -> str | URL | None:
         """Endpoint for report state."""
         return self._config.get(CONF_ENDPOINT)
 
     @property
+    @override
     def entity_config(self) -> dict[str, Any]:
         """Return entity config."""
         return self._config.get(CONF_ENTITY_CONFIG) or {}
 
     @property
+    @override
     def locale(self) -> str | None:
         """Return config locale."""
         return self._config.get(CONF_LOCALE)
 
     @core.callback
+    @override
     def user_identifier(self) -> str:
         """Return an identifier for the user that represents this config."""
         return ""
 
     @core.callback
+    @override
     def should_expose(self, entity_id: str) -> bool:
         """If an entity should be exposed."""
         if not self._config[CONF_FILTER].empty_filter:
@@ -95,16 +129,19 @@ class AlexaConfig(AbstractConfig):
         return not auxiliary_entity
 
     @core.callback
+    @override
     def async_invalidate_access_token(self) -> None:
         """Invalidate access token."""
         assert self._auth is not None
         self._auth.async_invalidate_access_token()
 
+    @override
     async def async_get_access_token(self) -> str | None:
         """Get an access token."""
         assert self._auth is not None
         return await self._auth.async_get_access_token()
 
+    @override
     async def async_accept_grant(self, code: str) -> str | None:
         """Accept a grant."""
         assert self._auth is not None
@@ -145,16 +182,31 @@ class SmartHomeView(HomeAssistantView):
         Lambda, which will need to forward the requests to here and pass back
         the response.
         """
-        hass: HomeAssistant = request.app["hass"]
+        hass = request.app[KEY_HASS]
         user: User = request["hass_user"]
         message: dict[str, Any] = await request.json()
 
-        _LOGGER.debug("Received Alexa Smart Home request: %s", message)
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            endpoint_id = (
+                message.get(API_DIRECTIVE, {}).get(API_ENDPOINT, {}).get("endpointId")
+            )
+            _LOGGER.debug(
+                "Received Alexa Smart Home request for entity %s: %s",
+                endpoint_id.replace("#", ".")
+                if isinstance(endpoint_id, str)
+                else endpoint_id,
+                async_redact_auth_data(message),
+            )
 
         response = await async_handle_message(
             hass, self.smart_home_config, message, context=core.Context(user_id=user.id)
         )
-        _LOGGER.debug("Sending Alexa Smart Home response: %s", response)
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Sending Alexa Smart Home response: %s",
+                async_redact_auth_data(response),
+            )
+
         return b"" if response is None else self.json(response)
 
 
@@ -180,7 +232,7 @@ async def async_handle_message(
 
     try:
         if not enabled:
-            raise AlexaBridgeUnreachableError(
+            raise AlexaBridgeUnreachableError(  # noqa: TRY301
                 "Alexa API not enabled in Home Assistant configuration"
             )
 
@@ -205,7 +257,7 @@ async def async_handle_message(
             error_message=err.error_message,
             payload=err.payload,
         )
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
         _LOGGER.exception(
             "Uncaught exception processing Alexa %s/%s request (%s)",
             directive.namespace,

@@ -1,10 +1,12 @@
 """Script to ensure a configuration file exists."""
+
 import argparse
 import asyncio
 import os
 
-import homeassistant.config as config_util
+from homeassistant import config as config_util
 from homeassistant.core import HomeAssistant
+from homeassistant.runner import create_event_loop
 
 # mypy: allow-untyped-calls, allow-untyped-defs
 
@@ -32,7 +34,7 @@ def run(args):
         print("Creating directory", config_dir)
         os.makedirs(config_dir, exist_ok=True)
 
-    config_path = asyncio.run(async_run(config_dir))
+    config_path = asyncio.run(async_run(config_dir), loop_factory=create_event_loop)
     print("Configuration file:", config_path)
     return 0
 

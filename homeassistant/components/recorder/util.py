@@ -1,16 +1,14 @@
 """SQLAlchemy util functions."""
-from __future__ import annotations
 
-from collections.abc import Callable, Generator, Iterable, Sequence
+from collections.abc import Callable, Generator, Sequence
+import contextlib
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 import functools
-from functools import partial
-from itertools import islice
 import logging
 import os
 import time
-from typing import TYPE_CHECKING, Any, Concatenate, NoReturn, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, NamedTuple, NoReturn
 
 from awesomeversion import (
     AwesomeVersion,
@@ -18,20 +16,31 @@ from awesomeversion import (
     AwesomeVersionStrategy,
 )
 import ciso8601
+import probatio
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Result, Row
 from sqlalchemy.engine.interfaces import DBAPIConnection
-from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError, StatementError
 from sqlalchemy.orm.query import Query
 from sqlalchemy.orm.session import Session
 from sqlalchemy.sql.lambdas import StatementLambdaElement
-import voluptuous as vol
+from sqlalchemy.sql.selectable import Select
 
+from homeassistant.const import WEEKDAYS
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.generated.recorder_database_versions import (
+    SUPPORTED_DATABASE_VERSIONS,
+)
 from homeassistant.helpers import config_validation as cv, issue_registry as ir
-import homeassistant.util.dt as dt_util
+from homeassistant.helpers.recorder import (  # noqa: F401
+    DATA_INSTANCE,
+    SESSION_INFO_READ_ONLY,
+    get_instance,
+    session_scope,
+)
+from homeassistant.util import dt as dt_util
 
-from .const import DATA_INSTANCE, DOMAIN, SQLITE_URL_PREFIX, SupportedDialect
+from .const import DEFAULT_MAX_BIND_VARS, DOMAIN, SQLITE_URL_PREFIX, SupportedDialect
 from .db_schema import (
     TABLE_RECORDER_RUNS,
     TABLE_SCHEMA_CHANGES,
@@ -51,15 +60,11 @@ if TYPE_CHECKING:
 
     from . import Recorder
 
-_RecorderT = TypeVar("_RecorderT", bound="Recorder")
-_P = ParamSpec("_P")
-
 _LOGGER = logging.getLogger(__name__)
 
 RETRIES = 3
 QUERY_RETRY_WAIT = 0.1
 SQLITE3_POSTFIXES = ["", "-wal", "-shm"]
-DEFAULT_YIELD_STATES_ROWS = 32768
 
 
 # Our minimum versions for each database
@@ -86,7 +91,48 @@ RECOMMENDED_MIN_VERSION_MARIA_DB_108 = _simple_version("10.8.4")
 MARIADB_WITH_FIXED_IN_QUERIES_108 = _simple_version("10.8.4")
 MIN_VERSION_MYSQL = _simple_version("8.0.0")
 MIN_VERSION_PGSQL = _simple_version("12.0")
-MIN_VERSION_SQLITE = _simple_version("3.31.0")
+MIN_VERSION_SQLITE = _simple_version("3.40.1")
+
+# PostgreSQL has no LTS/short-term split, so we warn once the version drops
+# below this upcoming minimum, as (version, breaks_in_ha_version).
+UPCOMING_MIN_VERSION_PGSQL = (_simple_version("15.0"), "2027.3.0")
+
+
+# MariaDB and MySQL ship both long-term support (LTS) releases, supported for
+# years, and short-term/innovation releases, supported only until the next
+# release (~3 months). We allow versions on a currently-supported (non-EoL) LTS
+# series and warn against all others (short-term releases and end-of-life LTS
+# series).
+# Versions newer than the latest known non-LTS release are assumed supported
+# so we don't warn about releases we don't know about yet.
+class _LTSVersionSupport(NamedTuple):
+    """Supported LTS policy for an engine that ships LTS + short-term releases."""
+
+    supported_series: frozenset[tuple[int, int]]
+    latest_non_lts_series: tuple[int, int]
+    breaks_in_ha_version: str
+
+
+def _parse_db_series(cycle: str) -> tuple[int, int]:
+    """Parse a "<major>.<minor>" release series into a tuple."""
+    major, _, minor = cycle.partition(".")
+    return int(major), int(minor)
+
+
+def _lts_support(engine: str, breaks_in_ha_version: str) -> _LTSVersionSupport:
+    """Build the LTS support policy for an engine from the generated version file."""
+    versions = SUPPORTED_DATABASE_VERSIONS[engine]
+    return _LTSVersionSupport(
+        supported_series=frozenset(
+            _parse_db_series(cycle) for cycle in versions["supported_lts"]
+        ),
+        latest_non_lts_series=_parse_db_series(versions["latest_non_lts"]),
+        breaks_in_ha_version=breaks_in_ha_version,
+    )
+
+
+SUPPORTED_MARIA_DB_LTS = _lts_support("mariadb", "2027.3.0")
+SUPPORTED_MYSQL_LTS = _lts_support("mysql", "2027.3.0")
 
 
 # This is the maximum time after the recorder ends the session
@@ -96,6 +142,8 @@ MAX_RESTART_TIME = timedelta(minutes=10)
 
 # Retry when one of the following MySQL errors occurred:
 RETRYABLE_MYSQL_ERRORS = (1205, 1206, 1213)
+# The error codes are hard coded because the PyMySQL library may not be
+# installed when using database engines other than MySQL or MariaDB.
 # 1205: Lock wait timeout exceeded; try restarting transaction
 # 1206: The total number of locks exceeds the lock table size
 # 1213: Deadlock found when trying to get lock; try restarting transaction
@@ -105,89 +153,51 @@ SUNDAY_WEEKDAY = 6
 DAYS_IN_WEEK = 7
 
 
-@contextmanager
-def session_scope(
-    *,
-    hass: HomeAssistant | None = None,
-    session: Session | None = None,
-    exception_filter: Callable[[Exception], bool] | None = None,
-    read_only: bool = False,
-) -> Generator[Session, None, None]:
-    """Provide a transactional scope around a series of operations.
+def _rollback_read_only_session(session: Session) -> None:
+    """Roll back a read-only session so a retried query can reconnect.
 
-    read_only is used to indicate that the session is only used for reading
-    data and that no commit is required. It does not prevent the session
-    from writing and is not a security measure.
+    A query after a lost connection otherwise raises PendingRollbackError. Only a
+    read-only session is rolled back: it is never committed, so nothing is lost. A
+    session holding writes is left alone, a rollback would discard them while the
+    retry succeeds and the caller commits what is left of its unit of work.
     """
-    if session is None and hass is not None:
-        session = get_instance(hass).get_session()
-
-    if session is None:
-        raise RuntimeError("Session required")
-
-    need_rollback = False
+    if not session.info.get(SESSION_INFO_READ_ONLY):
+        return
     try:
-        yield session
-        if session.get_transaction() and not read_only:
-            need_rollback = True
-            session.commit()
-    except Exception as err:  # pylint: disable=broad-except
-        _LOGGER.exception("Error executing query: %s", err)
-        if need_rollback:
-            session.rollback()
-        if not exception_filter or not exception_filter(err):
-            raise
-    finally:
-        session.close()
+        session.rollback()
+    except SQLAlchemyError as err:
+        _LOGGER.error("Error rolling back the session: %s", err)
 
 
-def execute(
-    qry: Query, to_native: bool = False, validate_entity_ids: bool = True
-) -> list[Row]:
+def execute(qry: Query) -> list[Row]:
     """Query the database and convert the objects to HA native form.
 
     This method also retries a few times in the case of stale connections.
     """
     debug = _LOGGER.isEnabledFor(logging.DEBUG)
-    for tryno in range(0, RETRIES):
+    for tryno in range(RETRIES):
         try:
             if debug:
                 timer_start = time.perf_counter()
-
-            if to_native:
-                result = [
-                    row
-                    for row in (
-                        row.to_native(validate_entity_id=validate_entity_ids)
-                        for row in qry
-                    )
-                    if row is not None
-                ]
-            else:
-                result = qry.all()
+            result = qry.all()
 
             if debug:
                 elapsed = time.perf_counter() - timer_start
-                if to_native:
-                    _LOGGER.debug(
-                        "converting %d rows to native objects took %fs",
-                        len(result),
-                        elapsed,
-                    )
-                else:
-                    _LOGGER.debug(
-                        "querying %d rows took %fs",
-                        len(result),
-                        elapsed,
-                    )
+                _LOGGER.debug(
+                    "querying %d rows took %fs",
+                    len(result),
+                    elapsed,
+                )
 
-            return result
         except SQLAlchemyError as err:
             _LOGGER.error("Error executing query: %s", err)
 
             if tryno == RETRIES - 1:
                 raise
+            _rollback_read_only_session(qry.session)
             time.sleep(QUERY_RETRY_WAIT)
+        else:
+            return result
 
     # Unreachable
     raise RuntimeError  # pragma: no cover
@@ -196,36 +206,52 @@ def execute(
 def execute_stmt_lambda_element(
     session: Session,
     stmt: StatementLambdaElement,
-    start_time: datetime | None = None,
-    end_time: datetime | None = None,
-    yield_per: int = DEFAULT_YIELD_STATES_ROWS,
     orm_rows: bool = True,
+    stream: bool = False,
 ) -> Sequence[Row] | Result:
     """Execute a StatementLambdaElement.
 
-    If the time window passed is greater than one day
-    the execution method will switch to yield_per to
-    reduce memory pressure.
-
-    It is not recommended to pass a time window
-    when selecting non-ranged rows (ie selecting
-    specific entities) since they are usually faster
-    with .all().
+    If stream is True the result is returned without building a list of
+    rows, so rows can be consumed one at a time and freed right away, which
+    avoids promoting large result sets into the oldest garbage collector
+    generation. Errors raised while consuming the rows are not retried.
     """
-    use_all = not start_time or ((end_time or dt_util.utcnow()) - start_time).days <= 1
     for tryno in range(RETRIES):
         try:
             if orm_rows:
                 executed = session.execute(stmt)
             else:
                 executed = session.connection().execute(stmt)
-            if use_all:
-                return executed.all()
-            return executed.yield_per(yield_per)
+            if stream:
+                return executed
+            return executed.all()
         except SQLAlchemyError as err:
             _LOGGER.error("Error executing query: %s", err)
             if tryno == RETRIES - 1:
                 raise
+            _rollback_read_only_session(session)
+            time.sleep(QUERY_RETRY_WAIT)
+
+    # Unreachable
+    raise RuntimeError  # pragma: no cover
+
+
+def execute_select(
+    session: Session, stmt: Select, params: dict[str, Any]
+) -> Sequence[Row]:
+    """Execute a Select with bound parameters and return all rows.
+
+    Unlike execute_stmt_lambda_element, the statement is not analyzed on every
+    call, which matters for lookups that run on every write.
+    """
+    for tryno in range(RETRIES):
+        try:
+            return session.connection().execute(stmt, params).all()
+        except SQLAlchemyError as err:
+            _LOGGER.error("Error executing query: %s", err)
+            if tryno == RETRIES - 1:
+                raise
+            _rollback_read_only_session(session)
             time.sleep(QUERY_RETRY_WAIT)
 
     # Unreachable
@@ -289,12 +315,11 @@ def basic_sanity_check(cursor: SQLiteCursor) -> bool:
 
 def validate_sqlite_database(dbpath: str) -> bool:
     """Run a quick check on an sqlite database to see if it is corrupt."""
-    import sqlite3  # pylint: disable=import-outside-toplevel
+    import sqlite3  # noqa: PLC0415
 
     try:
-        conn = sqlite3.connect(dbpath)
-        run_checks_on_open_db(dbpath, conn.cursor())
-        conn.close()
+        with contextlib.closing(sqlite3.connect(dbpath)) as conn:
+            run_checks_on_open_db(dbpath, conn.cursor())
     except sqlite3.DatabaseError:
         _LOGGER.exception("The database at %s is corrupt or malformed", dbpath)
         return False
@@ -381,7 +406,7 @@ def _fail_unsupported_dialect(dialect_name: str) -> NoReturn:
     raise UnsupportedDialect
 
 
-def _fail_unsupported_version(
+def _raise_if_version_unsupported(
     server_version: str, dialect_name: str, minimum_version: str
 ) -> NoReturn:
     """Warn about unsupported database version."""
@@ -398,16 +423,139 @@ def _fail_unsupported_version(
     raise UnsupportedDialect
 
 
+@callback
+def _async_delete_issue_deprecated_version(hass: HomeAssistant, issue_id: str) -> None:
+    """Delete a deprecated database version repair issue."""
+    ir.async_delete_issue(hass, DOMAIN, issue_id)
+
+
+@callback
+def _async_create_issue_deprecated_version(
+    hass: HomeAssistant,
+    server_version: AwesomeVersion,
+    database_engine: str,
+    min_version: AwesomeVersion,
+    breaks_in_ha_version: str,
+) -> None:
+    """Warn about upcoming unsupported database version."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "database_engine_too_old",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="database_engine_too_old",
+        translation_placeholders={
+            "database_engine": database_engine,
+            "server_version": str(server_version),
+            "min_version": str(min_version),
+        },
+        breaks_in_ha_version=breaks_in_ha_version,
+    )
+
+
+@callback
+def _async_create_issue_not_supported_lts(
+    hass: HomeAssistant,
+    server_version: AwesomeVersion,
+    database_engine: str,
+    lts_versions: str,
+    breaks_in_ha_version: str,
+) -> None:
+    """Warn about a database version that is not a supported LTS release."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "database_engine_not_supported_lts",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="database_engine_not_supported_lts",
+        translation_placeholders={
+            "database_engine": database_engine,
+            "server_version": str(server_version),
+            "lts_versions": lts_versions,
+        },
+        breaks_in_ha_version=breaks_in_ha_version,
+    )
+
+
+def _check_deprecated_version(
+    hass: HomeAssistant,
+    server_version: AwesomeVersion,
+    database_engine: str,
+    upcoming_min_version: tuple[AwesomeVersion, str],
+) -> None:
+    """Create or remove the issue about an upcoming unsupported database version."""
+    min_version, breaks_in_ha_version = upcoming_min_version
+    if server_version < min_version:
+        hass.add_job(
+            _async_create_issue_deprecated_version,
+            hass,
+            server_version,
+            database_engine,
+            min_version,
+            breaks_in_ha_version,
+        )
+    else:
+        hass.add_job(
+            _async_delete_issue_deprecated_version, hass, "database_engine_too_old"
+        )
+
+
+def _check_lts_version(
+    hass: HomeAssistant,
+    server_version: AwesomeVersion,
+    database_engine: str,
+    lts_support: _LTSVersionSupport,
+) -> None:
+    """Warn unless the version is on a supported LTS series or newer than we know.
+
+    MariaDB and MySQL only support long-term support (LTS) releases for years;
+    short-term releases and end-of-life LTS series are deprecated. Versions newer
+    than the latest known non-LTS release are assumed supported to avoid warning
+    about releases we don't know about yet.
+    """
+    series = (server_version.section(0), server_version.section(1))
+    if (
+        series in lts_support.supported_series
+        or series > lts_support.latest_non_lts_series
+    ):
+        hass.add_job(
+            _async_delete_issue_deprecated_version,
+            hass,
+            "database_engine_not_supported_lts",
+        )
+    else:
+        lts_versions = ", ".join(
+            f"{major}.{minor}" for major, minor in sorted(lts_support.supported_series)
+        )
+        hass.add_job(
+            _async_create_issue_not_supported_lts,
+            hass,
+            server_version,
+            database_engine,
+            lts_versions,
+            lts_support.breaks_in_ha_version,
+        )
+
+
+def _extract_version_from_server_response_or_raise(
+    server_response: str,
+) -> AwesomeVersion:
+    """Extract version from server response."""
+    return AwesomeVersion(
+        server_response,
+        ensure_strategy=AwesomeVersionStrategy.SIMPLEVER,
+        find_first_match=True,
+    )
+
+
 def _extract_version_from_server_response(
     server_response: str,
 ) -> AwesomeVersion | None:
     """Attempt to extract version from server response."""
     try:
-        return AwesomeVersion(
-            server_response,
-            ensure_strategy=AwesomeVersionStrategy.SIMPLEVER,
-            find_first_match=True,
-        )
+        return _extract_version_from_server_response_or_raise(server_response)
     except AwesomeVersionException:
         return None
 
@@ -426,9 +574,8 @@ def _datetime_or_none(value: str) -> datetime | None:
 def build_mysqldb_conv() -> dict:
     """Build a MySQLDB conv dict that uses cisco8601 to parse datetimes."""
     # Late imports since we only call this if they are using mysqldb
-    # pylint: disable=import-outside-toplevel
-    from MySQLdb.constants import FIELD_TYPE
-    from MySQLdb.converters import conversions
+    from MySQLdb.constants import FIELD_TYPE  # noqa: PLC0415
+    from MySQLdb.converters import conversions  # noqa: PLC0415
 
     return {**conversions, FIELD_TYPE.DATETIME: _datetime_or_none}
 
@@ -461,6 +608,24 @@ def _async_create_mariadb_range_index_regression_issue(
     )
 
 
+@callback
+def async_create_backup_failure_issue(
+    hass: HomeAssistant,
+    local_start_time: datetime,
+) -> None:
+    """Create an issue when the backup fails because we run out of resources."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "backup_failed_out_of_resources",
+        is_fixable=False,
+        severity=ir.IssueSeverity.CRITICAL,
+        learn_more_url="https://www.home-assistant.io/integrations/recorder",
+        translation_key="backup_failed_out_of_resources",
+        translation_placeholders={"start_time": local_start_time.strftime("%H:%M:%S")},
+    )
+
+
 def setup_connection_for_dialect(
     instance: Recorder,
     dialect_name: str,
@@ -470,21 +635,22 @@ def setup_connection_for_dialect(
     """Execute statements needed for dialect connection."""
     version: AwesomeVersion | None = None
     slow_range_in_select = False
+    slow_dependent_subquery = False
     if dialect_name == SupportedDialect.SQLITE:
         if first_connection:
-            old_isolation = dbapi_connection.isolation_level  # type: ignore[attr-defined]
-            dbapi_connection.isolation_level = None  # type: ignore[attr-defined]
+            old_isolation = dbapi_connection.isolation_level
+            dbapi_connection.isolation_level = None
             execute_on_connection(dbapi_connection, "PRAGMA journal_mode=WAL")
-            dbapi_connection.isolation_level = old_isolation  # type: ignore[attr-defined]
+            dbapi_connection.isolation_level = old_isolation
             # WAL mode only needs to be setup once
             # instead of every time we open the sqlite connection
             # as its persistent and isn't free to call every time.
             result = query_on_connection(dbapi_connection, "SELECT sqlite_version()")
             version_string = result[0][0]
-            version = _extract_version_from_server_response(version_string)
+            version = _extract_version_from_server_response_or_raise(version_string)
 
-            if not version or version < MIN_VERSION_SQLITE:
-                _fail_unsupported_version(
+            if version < MIN_VERSION_SQLITE:
+                _raise_if_version_unsupported(
                     version or version_string, "SQLite", MIN_VERSION_SQLITE
                 )
 
@@ -511,13 +677,16 @@ def setup_connection_for_dialect(
             result = query_on_connection(dbapi_connection, "SELECT VERSION()")
             version_string = result[0][0]
             version = _extract_version_from_server_response(version_string)
-            is_maria_db = "mariadb" in version_string.lower()
 
-            if is_maria_db:
+            if "mariadb" in version_string.lower():
                 if not version or version < MIN_VERSION_MARIA_DB:
-                    _fail_unsupported_version(
+                    _raise_if_version_unsupported(
                         version or version_string, "MariaDB", MIN_VERSION_MARIA_DB
                     )
+                # No elif here since _raise_if_version_unsupported raises
+                _check_lts_version(
+                    instance.hass, version, "MariaDB", SUPPORTED_MARIA_DB_LTS
+                )
                 if version and (
                     (version < RECOMMENDED_MIN_VERSION_MARIA_DB)
                     or (MARIA_DB_106 <= version < RECOMMENDED_MIN_VERSION_MARIA_DB_106)
@@ -529,32 +698,55 @@ def setup_connection_for_dialect(
                         instance.hass,
                         version,
                     )
-
+                slow_range_in_select = bool(
+                    not version
+                    or version < MARIADB_WITH_FIXED_IN_QUERIES_105
+                    or MARIA_DB_106 <= version < MARIADB_WITH_FIXED_IN_QUERIES_106
+                    or MARIA_DB_107 <= version < MARIADB_WITH_FIXED_IN_QUERIES_107
+                    or MARIA_DB_108 <= version < MARIADB_WITH_FIXED_IN_QUERIES_108
+                )
             elif not version or version < MIN_VERSION_MYSQL:
-                _fail_unsupported_version(
+                _raise_if_version_unsupported(
                     version or version_string, "MySQL", MIN_VERSION_MYSQL
                 )
-
-            slow_range_in_select = bool(
-                not version
-                or version < MARIADB_WITH_FIXED_IN_QUERIES_105
-                or MARIA_DB_106 <= version < MARIADB_WITH_FIXED_IN_QUERIES_106
-                or MARIA_DB_107 <= version < MARIADB_WITH_FIXED_IN_QUERIES_107
-                or MARIA_DB_108 <= version < MARIADB_WITH_FIXED_IN_QUERIES_108
-            )
+            else:
+                # MySQL
+                # https://github.com/home-assistant/core/issues/137178
+                slow_dependent_subquery = True
+                _check_lts_version(instance.hass, version, "MySQL", SUPPORTED_MYSQL_LTS)
 
         # Ensure all times are using UTC to avoid issues with daylight savings
         execute_on_connection(dbapi_connection, "SET time_zone = '+00:00'")
     elif dialect_name == SupportedDialect.POSTGRESQL:
+        # PostgreSQL does not support a skip/loose index scan so its
+        # also slow for large distinct queries:
+        # https://wiki.postgresql.org/wiki/Loose_indexscan
+        # https://github.com/home-assistant/core/issues/126084
+        # so we set slow_range_in_select to True
+        slow_range_in_select = True
         if first_connection:
             # server_version_num was added in 2006
             result = query_on_connection(dbapi_connection, "SHOW server_version")
             version_string = result[0][0]
             version = _extract_version_from_server_response(version_string)
+            if version is None:
+                # PostgreSQL prereleases such as 19beta3 are not SimpleVer.
+                result = query_on_connection(
+                    dbapi_connection, "SHOW server_version_num"
+                )
+                version_num = int(result[0][0])
+                # PostgreSQL < 12 is rejected regardless of the minor version.
+                version = _simple_version(
+                    f"{version_num // 10000}.{version_num % 10000}"
+                )
             if not version or version < MIN_VERSION_PGSQL:
-                _fail_unsupported_version(
+                _raise_if_version_unsupported(
                     version or version_string, "PostgreSQL", MIN_VERSION_PGSQL
                 )
+            # No elif here since _raise_if_version_unsupported raises
+            _check_deprecated_version(
+                instance.hass, version, "PostgreSQL", UPCOMING_MIN_VERSION_PGSQL
+            )
 
     else:
         _fail_unsupported_dialect(dialect_name)
@@ -565,7 +757,11 @@ def setup_connection_for_dialect(
     return DatabaseEngine(
         dialect=SupportedDialect(dialect_name),
         version=version,
-        optimizer=DatabaseOptimizer(slow_range_in_select=slow_range_in_select),
+        optimizer=DatabaseOptimizer(
+            slow_range_in_select=slow_range_in_select,
+            slow_dependent_subquery=slow_dependent_subquery,
+        ),
+        max_bind_vars=DEFAULT_MAX_BIND_VARS,
     )
 
 
@@ -591,49 +787,71 @@ def _is_retryable_error(instance: Recorder, err: OperationalError) -> bool:
     )
 
 
-_FuncType = Callable[Concatenate[_RecorderT, _P], bool]
+type _FuncType[**P, R] = Callable[Concatenate[Recorder, P], R]
+type _MethType[Self, **P, R] = Callable[Concatenate[Self, Recorder, P], R]
+type _FuncOrMethType[**_P, _R] = Callable[_P, _R]
 
 
-def retryable_database_job(
+def retryable_database_job[**_P](
     description: str,
-) -> Callable[[_FuncType[_RecorderT, _P]], _FuncType[_RecorderT, _P]]:
-    """Try to execute a database job.
+) -> Callable[[_FuncType[_P, bool]], _FuncType[_P, bool]]:
+    """Execute a database job repeatedly until it succeeds.
 
     The job should return True if it finished, and False if it needs to be rescheduled.
     """
 
-    def decorator(job: _FuncType[_RecorderT, _P]) -> _FuncType[_RecorderT, _P]:
-        @functools.wraps(job)
-        def wrapper(instance: _RecorderT, *args: _P.args, **kwargs: _P.kwargs) -> bool:
-            try:
-                return job(instance, *args, **kwargs)
-            except OperationalError as err:
-                if _is_retryable_error(instance, err):
-                    assert isinstance(err.orig, BaseException)
-                    _LOGGER.info(
-                        "%s; %s not completed, retrying", err.orig.args[1], description
-                    )
-                    time.sleep(instance.db_retry_wait)
-                    # Failed with retryable error
-                    return False
-
-                _LOGGER.warning("Error executing %s: %s", description, err)
-
-            # Failed with permanent error
-            return True
-
-        return wrapper
+    def decorator(job: _FuncType[_P, bool]) -> _FuncType[_P, bool]:
+        return _wrap_retryable_database_job_func_or_meth(job, description, False)
 
     return decorator
 
 
-_WrappedFuncType = Callable[Concatenate[_RecorderT, _P], None]
+def retryable_database_job_method[_Self, **_P](
+    description: str,
+) -> Callable[[_MethType[_Self, _P, bool]], _MethType[_Self, _P, bool]]:
+    """Execute a database job repeatedly until it succeeds.
+
+    The job should return True if it finished, and False if it needs to be rescheduled.
+    """
+
+    def decorator(job: _MethType[_Self, _P, bool]) -> _MethType[_Self, _P, bool]:
+        return _wrap_retryable_database_job_func_or_meth(job, description, True)
+
+    return decorator
 
 
-def database_job_retry_wrapper(
-    description: str, attempts: int = 5
-) -> Callable[[_WrappedFuncType[_RecorderT, _P]], _WrappedFuncType[_RecorderT, _P]]:
-    """Try to execute a database job multiple times.
+def _wrap_retryable_database_job_func_or_meth[**_P](
+    job: _FuncOrMethType[_P, bool], description: str, method: bool
+) -> _FuncOrMethType[_P, bool]:
+    recorder_pos = 1 if method else 0
+
+    @functools.wraps(job)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> bool:
+        instance: Recorder = args[recorder_pos]  # type: ignore[assignment]
+        try:
+            return job(*args, **kwargs)
+        except OperationalError as err:
+            if _is_retryable_error(instance, err):
+                assert isinstance(err.orig, BaseException)  # noqa: PT017
+                _LOGGER.info(
+                    "%s; %s not completed, retrying", err.orig.args[1], description
+                )
+                time.sleep(instance.db_retry_wait)
+                # Failed with retryable error
+                return False
+
+            _LOGGER.error("Error executing %s: %s", description, err)
+
+        # Failed with permanent error
+        return True
+
+    return wrapper
+
+
+def database_job_retry_wrapper[**_P, _R](
+    description: str, attempts: int
+) -> Callable[[_FuncType[_P, _R]], _FuncType[_P, _R]]:
+    """Execute a database job repeatedly until it succeeds, at most attempts times.
 
     This wrapper handles InnoDB deadlocks and lock timeouts.
 
@@ -642,29 +860,61 @@ def database_job_retry_wrapper(
     """
 
     def decorator(
-        job: _WrappedFuncType[_RecorderT, _P]
-    ) -> _WrappedFuncType[_RecorderT, _P]:
-        @functools.wraps(job)
-        def wrapper(instance: _RecorderT, *args: _P.args, **kwargs: _P.kwargs) -> None:
-            for attempt in range(attempts):
-                try:
-                    job(instance, *args, **kwargs)
-                    return
-                except OperationalError as err:
-                    if attempt == attempts - 1 or not _is_retryable_error(
-                        instance, err
-                    ):
-                        raise
-                    assert isinstance(err.orig, BaseException)
-                    _LOGGER.info(
-                        "%s; %s failed, retrying", err.orig.args[1], description
-                    )
-                    time.sleep(instance.db_retry_wait)
-                    # Failed with retryable error
-
-        return wrapper
+        job: _FuncType[_P, _R],
+    ) -> _FuncType[_P, _R]:
+        return _database_job_retry_wrapper_func_or_meth(
+            job, description, attempts, False
+        )
 
     return decorator
+
+
+def database_job_retry_wrapper_method[_Self, **_P, _R](
+    description: str, attempts: int
+) -> Callable[[_MethType[_Self, _P, _R]], _MethType[_Self, _P, _R]]:
+    """Execute a database job repeatedly until it succeeds, at most attempts times.
+
+    This wrapper handles InnoDB deadlocks and lock timeouts.
+
+    This is different from retryable_database_job in that it will retry the job
+    attempts number of times instead of returning False if the job fails.
+    """
+
+    def decorator(
+        job: _MethType[_Self, _P, _R],
+    ) -> _MethType[_Self, _P, _R]:
+        return _database_job_retry_wrapper_func_or_meth(
+            job, description, attempts, True
+        )
+
+    return decorator
+
+
+def _database_job_retry_wrapper_func_or_meth[**_P, _R](
+    job: _FuncOrMethType[_P, _R],
+    description: str,
+    attempts: int,
+    method: bool,
+) -> _FuncOrMethType[_P, _R]:
+    recorder_pos = 1 if method else 0
+
+    @functools.wraps(job)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        instance: Recorder = args[recorder_pos]  # type: ignore[assignment]
+        for attempt in range(attempts):
+            try:
+                return job(*args, **kwargs)
+            except OperationalError as err:
+                # Failed with retryable error
+                if attempt == attempts - 1 or not _is_retryable_error(instance, err):
+                    raise
+                assert isinstance(err.orig, BaseException)  # noqa: PT017
+                _LOGGER.info("%s; %s failed, retrying", err.orig.args[1], description)
+                time.sleep(instance.db_retry_wait)
+
+        raise ValueError("attempts must be a positive integer")
+
+    return wrapper
 
 
 def periodic_db_cleanups(instance: Recorder) -> None:
@@ -682,7 +932,7 @@ def periodic_db_cleanups(instance: Recorder) -> None:
 
 
 @contextmanager
-def write_lock_db_sqlite(instance: Recorder) -> Generator[None, None, None]:
+def write_lock_db_sqlite(instance: Recorder) -> Generator[None]:
     """Lock database for writes."""
     assert instance.engine is not None
     with instance.engine.connect() as connection:
@@ -707,8 +957,7 @@ def async_migration_in_progress(hass: HomeAssistant) -> bool:
     """
     if DATA_INSTANCE not in hass.data:
         return False
-    instance = get_instance(hass)
-    return instance.migration_in_progress
+    return hass.data[DATA_INSTANCE].migration_in_progress
 
 
 def async_migration_is_live(hass: HomeAssistant) -> bool:
@@ -719,8 +968,7 @@ def async_migration_is_live(hass: HomeAssistant) -> bool:
     """
     if DATA_INSTANCE not in hass.data:
         return False
-    instance: Recorder = hass.data[DATA_INSTANCE]
-    return instance.migration_is_live
+    return hass.data[DATA_INSTANCE].migration_is_live
 
 
 def second_sunday(year: int, month: int) -> date:
@@ -739,34 +987,136 @@ def is_second_sunday(date_time: datetime) -> bool:
     return bool(second_sunday(date_time.year, date_time.month).day == date_time.day)
 
 
-def get_instance(hass: HomeAssistant) -> Recorder:
-    """Get the recorder instance."""
-    instance: Recorder = hass.data[DATA_INSTANCE]
-    return instance
-
-
-PERIOD_SCHEMA = vol.Schema(
+PERIOD_SCHEMA = probatio.Schema(
     {
-        vol.Exclusive("calendar", "period"): vol.Schema(
+        probatio.Exclusive("calendar", "period"): probatio.Schema(
             {
-                vol.Required("period"): vol.Any("hour", "day", "week", "month", "year"),
-                vol.Optional("offset"): int,
+                probatio.Required("period"): probatio.Any(
+                    "hour", "day", "week", "month", "year"
+                ),
+                probatio.Optional("offset"): int,
+                probatio.Optional("first_weekday"): probatio.Any(*WEEKDAYS),
             }
         ),
-        vol.Exclusive("fixed_period", "period"): vol.Schema(
+        probatio.Exclusive("fixed_period", "period"): probatio.Schema(
             {
-                vol.Optional("start_time"): vol.All(cv.datetime, dt_util.as_utc),
-                vol.Optional("end_time"): vol.All(cv.datetime, dt_util.as_utc),
+                probatio.Optional("start_time"): probatio.All(
+                    cv.datetime, dt_util.as_utc
+                ),
+                probatio.Optional("end_time"): probatio.All(
+                    cv.datetime, dt_util.as_utc
+                ),
             }
         ),
-        vol.Exclusive("rolling_window", "period"): vol.Schema(
+        probatio.Exclusive("rolling_window", "period"): probatio.Schema(
             {
-                vol.Required("duration"): cv.time_period_dict,
-                vol.Optional("offset"): cv.time_period_dict,
+                probatio.Required("duration"): cv.time_period_dict,
+                probatio.Optional("offset"): cv.time_period_dict,
             }
         ),
     }
 )
+
+
+_HOUR = timedelta(hours=1)
+_OFFSET_CHANGE_SCAN_STEP = timedelta(days=1)
+
+
+def _utc_offset_change(low: datetime, high: datetime) -> datetime:
+    """Return when the local UTC offset changes between two UTC times.
+
+    Assumes a single change, after low and no later than high.
+    """
+    offset = dt_util.as_local(high).utcoffset()
+    while high - low > timedelta(seconds=1):
+        middle = low + (high - low) / 2
+        if dt_util.as_local(middle).utcoffset() == offset:
+            high = middle
+        else:
+            low = middle
+    # Offset changes happen on whole seconds
+    return high.replace(microsecond=0)
+
+
+def _start_of_local_hour(utc_time: datetime) -> datetime:
+    """Return the start of the local calendar hour containing a UTC time.
+
+    A calendar hour starts at the top of a local hour or at a UTC offset change,
+    so DST changes of half an hour give half-hour calendar hours.
+    """
+    local_time = dt_util.as_local(utc_time)
+    start = utc_time - timedelta(
+        minutes=local_time.minute,
+        seconds=local_time.second,
+        microseconds=local_time.microsecond,
+    )
+    if dt_util.as_local(start).utcoffset() != local_time.utcoffset():
+        return _utc_offset_change(start, utc_time)
+    return start
+
+
+def _local_hours_later(start: datetime, hours: int) -> datetime:
+    """Return the start of the local calendar hour a number of hours later.
+
+    Jumps whole hours in UTC while the UTC offset is unchanged and only searches
+    for offset changes, which are assumed to be more than a day apart.
+    """
+    while True:
+        local_start = dt_util.as_local(start)
+        offset = local_start.utcoffset()
+        next_top = (
+            start
+            - timedelta(
+                minutes=local_start.minute,
+                seconds=local_start.second,
+                microseconds=local_start.microsecond,
+            )
+            + _HOUR
+        )
+        target = next_top + (hours - 1) * _HOUR
+        low = start
+        while low < target:
+            high = min(low + _OFFSET_CHANGE_SCAN_STEP, target)
+            if dt_util.as_local(high).utcoffset() != offset:
+                break
+            low = high
+        else:
+            return target
+        start = _utc_offset_change(low, high)
+        # Skip the hours that started before the offset change, and the change
+        hours -= max(0, -((next_top - start) // _HOUR)) + 1
+        if not hours:
+            return start
+
+
+def _local_hours_earlier(start: datetime, hours: int) -> datetime:
+    """Return the start of the local calendar hour a number of hours earlier.
+
+    Jumps whole hours in UTC while the UTC offset is unchanged and only searches
+    for offset changes, which are assumed to be more than a day apart.
+    """
+    while True:
+        high = start - timedelta(microseconds=1)
+        local_high = dt_util.as_local(high)
+        offset = local_high.utcoffset()
+        last_top = high - timedelta(
+            minutes=local_high.minute,
+            seconds=local_high.second,
+            microseconds=local_high.microsecond,
+        )
+        target = last_top - (hours - 1) * _HOUR
+        while high > target:
+            low = max(high - _OFFSET_CHANGE_SCAN_STEP, target)
+            if dt_util.as_local(low).utcoffset() != offset:
+                break
+            high = low
+        else:
+            return target
+        start = _utc_offset_change(low, high)
+        # Skip the hours that started after the offset change, and the change
+        hours -= max(0, -((start - last_top) // _HOUR)) + 1
+        if not hours:
+            return start
 
 
 def resolve_period(
@@ -781,29 +1131,36 @@ def resolve_period(
         start_of_day = dt_util.start_of_local_day()
         cal_offset = period_def["calendar"].get("offset", 0)
         if calendar_period == "hour":
-            start_time = dt_util.now().replace(minute=0, second=0, microsecond=0)
-            start_time += timedelta(hours=cal_offset)
-            end_time = start_time + timedelta(hours=1)
+            start_time = _start_of_local_hour(dt_util.utcnow())
+            if cal_offset > 0:
+                start_time = _local_hours_later(start_time, cal_offset)
+            elif cal_offset < 0:
+                start_time = _local_hours_earlier(start_time, -cal_offset)
+            end_time = _local_hours_later(start_time, 1)
         elif calendar_period == "day":
             start_time = start_of_day
             start_time += timedelta(days=cal_offset)
             end_time = start_time + timedelta(days=1)
         elif calendar_period == "week":
-            start_time = start_of_day - timedelta(days=start_of_day.weekday())
+            first_weekday = WEEKDAYS.index(
+                period_def["calendar"].get("first_weekday", WEEKDAYS[0])
+            )
+            start_time = start_of_day - timedelta(
+                days=(start_of_day.weekday() - first_weekday) % 7
+            )
             start_time += timedelta(days=cal_offset * 7)
             end_time = start_time + timedelta(weeks=1)
         elif calendar_period == "month":
-            start_time = start_of_day.replace(day=28)
-            # This works for up to 48 months of offset
-            start_time = (start_time + timedelta(days=cal_offset * 31)).replace(day=1)
+            month_now = start_of_day.month
+            new_month = (month_now - 1 + cal_offset) % 12 + 1
+            new_year = start_of_day.year + (month_now - 1 + cal_offset) // 12
+            start_time = start_of_day.replace(year=new_year, month=new_month, day=1)
             end_time = (start_time + timedelta(days=31)).replace(day=1)
         else:  # calendar_period = "year"
-            start_time = start_of_day.replace(month=12, day=31)
-            # This works for 100+ years of offset
-            start_time = (start_time + timedelta(days=cal_offset * 366)).replace(
-                month=1, day=1
+            start_time = start_of_day.replace(
+                year=start_of_day.year + cal_offset, month=1, day=1
             )
-            end_time = (start_time + timedelta(days=365)).replace(day=1)
+            end_time = (start_time + timedelta(days=366)).replace(day=1)
 
         start_time = dt_util.as_utc(start_time)
         end_time = dt_util.as_utc(end_time)
@@ -825,22 +1182,6 @@ def resolve_period(
     return (start_time, end_time)
 
 
-def take(take_num: int, iterable: Iterable) -> list[Any]:
-    """Return first n items of the iterable as a list.
-
-    From itertools recipes
-    """
-    return list(islice(iterable, take_num))
-
-
-def chunked(iterable: Iterable, chunked_num: int) -> Iterable[Any]:
-    """Break *iterable* into lists of length *n*.
-
-    From more-itertools
-    """
-    return iter(partial(take, chunked_num, iter(iterable)), [])
-
-
 def get_index_by_name(session: Session, table_name: str, index_name: str) -> str | None:
     """Get an index by name."""
     connection = session.connection()
@@ -858,3 +1199,51 @@ def get_index_by_name(session: Session, table_name: str, index_name: str) -> str
         ),
         None,
     )
+
+
+def filter_unique_constraint_integrity_error(
+    instance: Recorder, row_type: str
+) -> Callable[[Exception], bool]:
+    """Create a filter for unique constraint integrity errors."""
+
+    def _filter_unique_constraint_integrity_error(err: Exception) -> bool:
+        """Handle unique constraint integrity errors."""
+        if not isinstance(err, StatementError):
+            return False
+
+        assert instance.engine is not None
+        dialect_name = instance.engine.dialect.name
+
+        ignore = False
+        if (
+            dialect_name == SupportedDialect.SQLITE
+            and "UNIQUE constraint failed" in str(err)
+        ):
+            ignore = True
+        if (
+            dialect_name == SupportedDialect.POSTGRESQL
+            and err.orig
+            and hasattr(err.orig, "pgcode")
+            and err.orig.pgcode == "23505"
+        ):
+            ignore = True
+        if (
+            dialect_name == SupportedDialect.MYSQL
+            and err.orig
+            and hasattr(err.orig, "args")
+        ):
+            with contextlib.suppress(TypeError):
+                if err.orig.args[0] == 1062:
+                    ignore = True
+
+        if ignore:
+            _LOGGER.warning(
+                "Blocked attempt to insert duplicated %s rows, please report at %s",
+                row_type,
+                "https://github.com/home-assistant/core/issues?q=is%3Aopen+is%3Aissue+label%3A%22integration%3A+recorder%22",
+                exc_info=err,
+            )
+
+        return ignore
+
+    return _filter_unique_constraint_integrity_error

@@ -1,7 +1,5 @@
 """Support for Xiaomi Yeelight WiFi color bulb."""
-from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -14,7 +12,6 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later
 
 from .const import (
-    ACTIVE_COLOR_FLOWING,
     ACTIVE_MODE_NIGHTLIGHT,
     DATA_UPDATED,
     STATE_CHANGE_TIME,
@@ -32,13 +29,13 @@ def async_format_model(model: str) -> str:
 
 
 @callback
-def async_format_id(id_: str) -> str:
+def async_format_id(id_: str | None) -> str:
     """Generate a more human readable id."""
     return hex(int(id_, 16)) if id_ else "None"
 
 
 @callback
-def async_format_model_id(model: str, id_: str) -> str:
+def async_format_model_id(model: str, id_: str | None) -> str:
     """Generate a more human readable name."""
     return f"{async_format_model(model)} {async_format_id(id_)}"
 
@@ -145,17 +142,8 @@ class YeelightDevice:
         return False
 
     @property
-    def is_color_flow_enabled(self) -> bool:
-        """Return true / false if color flow is currently running."""
-        return self._color_flow and int(self._color_flow) == ACTIVE_COLOR_FLOWING
-
-    @property
     def _active_mode(self):
         return self.bulb.last_properties.get("active_mode")
-
-    @property
-    def _color_flow(self):
-        return self.bulb.last_properties.get("flowing")
 
     @property
     def _nightlight_brightness(self):
@@ -176,7 +164,7 @@ class YeelightDevice:
             self._available = True
             if not self._initialized:
                 self._initialized = True
-        except asyncio.TimeoutError as ex:
+        except TimeoutError as ex:
             _LOGGER.debug(
                 "timed out while trying to update device %s, %s: %s",
                 self._host,

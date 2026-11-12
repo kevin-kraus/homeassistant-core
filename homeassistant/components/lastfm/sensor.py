@@ -1,20 +1,12 @@
 """Sensor for Last.fm account status."""
-from __future__ import annotations
 
 import hashlib
-from typing import Any
+from typing import Any, override
 
-import voluptuous as vol
-
-from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
-from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
-from homeassistant.const import CONF_API_KEY
-from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.components.sensor import SensorEntity
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
@@ -26,54 +18,17 @@ from .const import (
     DOMAIN,
     STATE_NOT_SCROBBLING,
 )
-from .coordinator import LastFMDataUpdateCoordinator, LastFMUserData
-
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_API_KEY): cv.string,
-        vol.Required(CONF_USERS, default=[]): vol.All(cv.ensure_list, [cv.string]),
-    }
-)
-
-
-async def async_setup_platform(
-    hass: HomeAssistant,
-    config: ConfigType,
-    async_add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None,
-) -> None:
-    """Set up the Last.fm sensor platform from yaml."""
-
-    async_create_issue(
-        hass,
-        HOMEASSISTANT_DOMAIN,
-        f"deprecated_yaml_{DOMAIN}",
-        breaks_in_ha_version="2023.12.0",
-        is_fixable=False,
-        issue_domain=DOMAIN,
-        severity=IssueSeverity.WARNING,
-        translation_key="deprecated_yaml",
-        translation_placeholders={
-            "domain": DOMAIN,
-            "integration_title": "LastFM",
-        },
-    )
-
-    hass.async_create_task(
-        hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_IMPORT}, data=config
-        )
-    )
+from .coordinator import LastFMConfigEntry, LastFMDataUpdateCoordinator, LastFMUserData
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: LastFMConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Initialize the entries."""
 
-    coordinator: LastFMDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     async_add_entities(
         (
             LastFmSensor(coordinator, username, entry.entry_id)
@@ -86,7 +41,7 @@ class LastFmSensor(CoordinatorEntity[LastFMDataUpdateCoordinator], SensorEntity)
     """A class for the Last.fm account."""
 
     _attr_attribution = "Data provided by Last.fm"
-    _attr_icon = "mdi:radio-fm"
+    _attr_translation_key = "lastfm"
     _attr_has_entity_name = True
     _attr_name = None
 
@@ -114,11 +69,13 @@ class LastFmSensor(CoordinatorEntity[LastFMDataUpdateCoordinator], SensorEntity)
         return self.coordinator.data.get(self._username)
 
     @property
+    @override
     def available(self) -> bool:
         """If user not found in coordinator, entity is unavailable."""
         return super().available and self.user_data is not None
 
     @property
+    @override
     def entity_picture(self) -> str | None:
         """Return user avatar."""
         if self.user_data and self.user_data.image is not None:
@@ -126,6 +83,7 @@ class LastFmSensor(CoordinatorEntity[LastFMDataUpdateCoordinator], SensorEntity)
         return None
 
     @property
+    @override
     def native_value(self) -> str:
         """Return value of sensor."""
         if self.user_data and self.user_data.now_playing is not None:
@@ -133,6 +91,7 @@ class LastFmSensor(CoordinatorEntity[LastFMDataUpdateCoordinator], SensorEntity)
         return STATE_NOT_SCROBBLING
 
     @property
+    @override
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return state attributes."""
         play_count = None
