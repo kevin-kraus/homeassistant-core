@@ -257,9 +257,8 @@ def test_apply_skips_unknown_library_version(
     assert "Ring FCM fix not applied: firebase-messaging 0.5.0" in caplog.text
 
 
+@pytest.mark.usefixtures("stock_client_class")
 async def test_setup_entry_applies_fix(
-    stock_client_class: None,
-    mock_ring_client: Any,
     mock_added_config_entry: MockConfigEntry,
 ) -> None:
     """Setting up the integration patches the library."""
